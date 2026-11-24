@@ -164,11 +164,12 @@ zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결�
 | github.com 메시지 순서 | `JobAvailable` 없이 `JobAssigned` 가 바로 온다(`runnerRequestId=0`). repo·workflow·job 이름·요청 라벨이 실려 있다 | 수요 = `JobAssigned` 기준. 잡 단위 정보로 배치 판단 가능 |
 | 러너가 조용히 죽으면 | 폐기된 러너 버전(2.329.0)은 접속 직후 **종료 코드 0** 으로 끝났다. GitHub 은 약 5분 뒤 그 배정을 끝내고(`JobCompleted`) 다시 배정했다 | 컨테이너·VM 종료를 에이전트가 직접 감시해 즉시 다시 띄운다. 러너 버전은 최신을 따라간다 |
 | 잡 도중 호스트 사망 | 러너를 강제 종료한 뒤 **약 9분 43초** 만에 잡이 `failure` 로 끝났다("self-hosted runner lost communication"). 그동안 메시지 없음. 자동 재시도 없음. 끝난 뒤에도 등록 러너 수가 1 로 남음 | 데스크톱에 긴 잡을 보내지 않는 정책이 맞다. 죽은 등록은 장부로 찾아 `RemoveRunner` |
-| 러너 없이 대기 | (진행 중) | |
+| 러너 없이 대기 | `JobAssigned` → 5분 뒤 `JobCompleted`(빈 결과) + 재배정, 이것이 **3번**(10:46 · 10:51 · 10:56). 그 뒤 **35분간 메시지 없음**, 잡은 계속 `queued`. 46분 뒤 컨트롤러를 다시 시작하자 세션 첫 통계(`totalAssignedJobs=1`)로 러너를 띄웠고 잡을 가져가 성공 | "자리가 없으면 큐에서 기다린다"는 성립한다. 단 **재배정 3번 뒤엔 새 메시지가 없으므로**, 미룬 수요를 장부에 들고 있다가 자리가 나면 컨트롤러가 스스로 러너를 띄워야 한다(메시지를 기다리면 영원히 안 온다). 24시간 큐 한도는 미확인 |
+| `self-hosted` 라벨 | 라벨 `[self-hosted, pumasi-m0]` 인 scale set 을 만들 수 있고, `runs-on: [self-hosted, pumasi-m0]` 잡을 받아 성공 | **기존 워크플로를 안 고치고 옮길 수 있다.** 클래스 라벨 = 기존 러너 라벨 그대로 |
+| 러너 기동 시간 | 한가한 호스트에서 컨테이너 시작 → 잡 시작 약 8초. 부하가 큰 호스트(load 70+)에서는 **약 2분 40초**(GitHub 연결 조회가 회당 30초 가까이) | 기동 시간은 호스트 상태의 신호다. 잡 수명 지표에 넣고 배치 순위에도 쓴다 |
 
 ## 남은 열린 질문
 
-1. 러너를 하나도 안 띄우면 잡은 얼마나 큐에서 기다리는가 (위 표 마지막 행, 실측 중).
-2. OS 별 사람 활동 신호: macOS(HID idle), Linux(logind `IdleHint` / X·Wayland), Windows(`GetLastInputInfo` 는 사용자 세션 안에서만 읽힌다).
-3. 클래스 라벨에 `self-hosted` 를 넣으면 기존 `[self-hosted, X]` 잡을 받는가.
-4. 잡 안 docker: `kata` 와 `microvm` 중 무엇이 e2e 클래스에 맞는가 (기동 시간, 캐시 마운트, 메모리).
+1. OS 별 사람 활동 신호: macOS(HID idle), Linux(logind `IdleHint` / X·Wayland), Windows(`GetLastInputInfo` 는 사용자 세션 안에서만 읽힌다).
+2. 잡 안 docker: `kata` 와 `microvm` 중 무엇이 e2e 클래스에 맞는가 (기동 시간, 캐시 마운트, 메모리).
+3. 미룬 수요를 오래 들고 있을 때 GitHub 쪽 한도(큐 24시간 등)와, 3번 재배정이 끝난 잡을 통계 말고 다시 확인할 방법.
