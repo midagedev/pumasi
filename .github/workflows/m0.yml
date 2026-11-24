@@ -1,0 +1,38 @@
+name: m0
+# M0 spike probes. Each job targets the scale set a different way (open question 1)
+# or runs long enough to kill its runner mid-job (open question 4).
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: "label-name | label-extra | label-selfhosted | label-both | long"
+        required: true
+        default: label-name
+
+jobs:
+  label-name:
+    if: inputs.probe == 'label-name'
+    runs-on: pumasi-m0
+    steps:
+      - run: echo "runner=$RUNNER_NAME" && uname -a && nproc
+  label-extra:
+    if: inputs.probe == 'label-extra'
+    runs-on: pumasi-extra
+    steps:
+      - run: echo "runner=$RUNNER_NAME"
+  label-selfhosted:
+    if: inputs.probe == 'label-selfhosted'
+    runs-on: [self-hosted, pumasi-m0]
+    steps:
+      - run: echo "runner=$RUNNER_NAME"
+  label-both:
+    if: inputs.probe == 'label-both'
+    runs-on: [pumasi-m0, pumasi-extra]
+    steps:
+      - run: echo "runner=$RUNNER_NAME"
+  long:
+    if: inputs.probe == 'long'
+    runs-on: pumasi-m0
+    timeout-minutes: 30
+    steps:
+      - run: for i in $(seq 1 120); do echo "tick $i $(date -u +%T)"; sleep 10; done
