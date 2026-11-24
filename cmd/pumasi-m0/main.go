@@ -40,7 +40,7 @@ func main() {
 	flag.StringVar(&c.name, "name", "pumasi-m0", "scale set name")
 	flag.StringVar(&c.labels, "labels", "", "comma separated labels (default: name)")
 	flag.StringVar(&c.sshHost, "ssh-host", "", "docker host reached as `ssh <host> docker ...`")
-	flag.StringVar(&c.image, "image", "ghcr.io/actions/actions-runner:2.329.0", "runner image")
+	flag.StringVar(&c.image, "image", "ghcr.io/actions/actions-runner:2.338.2", "runner image")
 	flag.IntVar(&c.maxRunners, "max-runners", 2, "max runners")
 	flag.StringVar(&c.holdFile, "hold-file", "", "while this file exists, do not start runners")
 	flag.StringVar(&c.logPath, "log", "m0-events.jsonl", "event log (JSON lines)")
@@ -230,8 +230,7 @@ func (s *scaler) start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	// The JIT config goes over stdin so it never lands on the remote disk or in argv.
-	cmd := exec.CommandContext(ctx, "ssh", s.cfg.sshHost,
-		"docker", "run", "-d", "--name", name, "--label", "pumasi=m0",
+	cmd := s.remote(ctx, "docker", "run", "-d", "--name", name, "--label", "pumasi=m0",
 		"--cpus", "2", "--memory", "2g", "--env-file", "/dev/stdin",
 		s.cfg.image, "/home/runner/run.sh")
 	cmd.Stdin = strings.NewReader("ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit.EncodedJITConfig + "\n")
@@ -259,7 +258,7 @@ func (s *scaler) mark(name, state string) {
 }
 
 func (s *scaler) removeContainer(ctx context.Context, name string) {
-	out, err := exec.CommandContext(ctx, "ssh", s.cfg.sshHost, "docker", "rm", "-f", name).CombinedOutput()
+	out, err := s.remote(ctx, "docker", "rm", "-f", name).CombinedOutput()
 	s.ev.write("runner-remove", map[string]any{"name": name, "out": strings.TrimSpace(string(out)), "err": errString(err)})
 }
 
@@ -272,7 +271,7 @@ func (s *scaler) watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			out, err := exec.CommandContext(ctx, "ssh", s.cfg.sshHost, "docker", "ps", "-a",
+			out, err := s.remote(ctx, "docker", "ps", "-a",
 				"--filter", "label=pumasi=m0", "--format", "{{.Names}} {{.Status}}").CombinedOutput()
 			s.ev.write("containers", map[string]any{"ps": strings.TrimSpace(string(out)), "err": errString(err)})
 		}
@@ -291,6 +290,16 @@ func (s *scaler) shutdown(ctx context.Context) {
 	for _, n := range names {
 		s.removeContainer(ctx, n)
 	}
+}
+
+// remote runs a command on the docker host. ssh joins argv into one shell string,
+// so every argument is single-quoted here.
+func (s *scaler) remote(ctx context.Context, args ...string) *exec.Cmd {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", s.cfg.sshHost, strings.Join(quoted, " "))
 }
 
 func errString(err error) string {

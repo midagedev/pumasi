@@ -99,7 +99,11 @@ zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결�
 | `docker` | 컨테이너 1개 = 러너 1개, 끝나면 삭제 | Linux 서버·데스크톱, WSL2 | e2e 처럼 잡 안에서 docker 가 필요하면 dind 또는 sysbox. 호스트 docker 소켓을 넘기면 격리가 깨진다 |
 | `native` | 러너마다 새 작업 디렉터리, 끝나면 삭제 | Mac, Windows | 격리가 약하다. 대신 Mac 동시 VM 제한(아래)에 안 걸린다 |
 | `tart` | APFS 복제 macOS VM | Mac | macOS 라이선스가 Mac 한 대당 macOS VM 동시 2개까지만 허용한다 → Mac 한 대당 이 클래스 2개가 상한 |
+| `kata` | `docker run --runtime kata` — 컨테이너 사용법 그대로, 격리는 경량 VM | Linux (KVM) | 컨테이너 드라이버에서 런타임만 바꾸는 중간 단계 |
+| `microvm` | Firecracker·Cloud Hypervisor, 잡마다 커널 따로 | Linux (KVM) | VM 안에 dockerd 를 띄워 잡 안 docker 문제가 사라진다. e2e(`linux-l`) 후보 |
 | `hyperv` | VM 복제 | Windows 서버 | 나중 |
+
+기본 방향: 짧고 많은 잡(`linux-s`)은 컨테이너, compose 스택을 띄우는 잡(`linux-l`)은 `kata` → `microvm` 순으로 비교한다. Mac·Windows 는 VM 이 사실상 유일하다.
 
 호스트의 정리 작업도 드라이버 몫이다. 컨테이너 안에서 virtiofs 너머로 지우지 말고 호스트에서 직접 지운다(실측: 수십 분 → 20초).
 
@@ -114,22 +118,57 @@ zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결�
 - 에이전트 heartbeat 가 끊긴 호스트의 러너는 `lost` 로 두고 `RemoveRunner` 를 시도한다. `JobStillRunningError` 면 다음 주기에 다시.
 - 러너를 띄우다 실패해도 GitHub 에 알릴 방법이 없다(이슈 #124). 장부에서 다른 호스트로 다시 띄운다.
 
+## 메트릭 — VM 이든 컨테이너든 같은 모양으로
+
+원칙: **러너 하나 = 측정 단위 하나.** 격리 방식이 달라도 에이전트가 호스트 쪽 경계에서 같은 지표를 같은 이름으로 낸다. 게스트 안 에이전트 없이도 숫자가 나와야 한다.
+
+| OS | 측정 경계 | 읽는 것 |
+|---|---|---|
+| Linux | 러너마다 cgroup v2 하나. 컨테이너는 원래 cgroup 이고, `kata`·`microvm` 은 VMM 프로세스를 러너 전용 cgroup 에 넣는다 | `cpu.stat`, `memory.current`·`memory.peak`, `io.stat`, PSI(`cpu`·`memory`·`io.pressure`) |
+| macOS | 러너 프로세스 트리 (Tart VM 은 Virtualization 프로세스) | `proc_pid_rusage` — CPU 시간, `phys_footprint`, 디스크 I/O |
+| Windows | 러너마다 Job Object | `QueryInformationJobObject` 회계 정보 |
+
+지표는 세 층이다.
+
+| 층 | 예 | 라벨 |
+|---|---|---|
+| 러너(잡) 자원 | CPU 초, 메모리 peak, I/O 바이트, 압력 대기 시간, 네트워크 바이트 | host, class, driver, runner, repo, workflow, job, run_id |
+| 잡 수명 | 큐 대기(`queueTime`→러너 배정), 기동 시간(배치 결정→러너 Listening), 실행 시간, 결과 | class, repo, workflow, job |
+| 호스트·결정 | 클래스별 남은 자리, 사람 상태, 호스트 PSI, 배치 결정과 사유, 자리 없어 미룬 수 | host, class |
+
+- 러너↔잡 연결은 `JobStarted` 의 `runnerName` 으로 한다. `JobAssigned` 에 repo·workflow·job 이름이 온다(M0 실측).
+- 에이전트는 Prometheus(OpenMetrics) 엔드포인트를 연다. controller 는 잡이 끝날 때 요약 한 줄(peak 메모리, CPU 초, 대기·기동·실행 시간, 결과)을 장부에 남긴다 → 이력.
+- 쓰임:
+  1. **부하 판단은 load average 대신 PSI.** "load 74" 보다 "CPU 를 기다린 시간 비율"이 배치 판단에 맞다.
+  2. **클래스 크기를 이력으로 맞춘다.** 워크플로·잡별 실측 peak 로 "이 잡은 `linux-s` 로 충분 / `linux-l` 이 필요"를 추천한다. 슬롯 1개 = 잡 1개 문제를 숫자로 푼다.
+  3. **실패를 환경 탓과 코드 탓으로 가른다.** 잡이 실패한 시각의 호스트 PSI·러너 메모리 peak·사람 상태를 잡 옆에 붙여 보여 준다.
+
 ## 단계
 
 | 단계 | 내용 | 끝났다는 기준 |
 |---|---|---|
 | **M0 검증 스파이크** | scale set 1개, Linux 호스트 1대, `docker` 드라이버로 잡 하나를 끝까지 | 아래 열린 질문 1·2·4 를 실제로 확인해 적는다 |
-| M1 | 여러 Linux 호스트 + 용량 배치 + 장부·맞추기 | 서버 2대에 `linux-s`·`linux-l` 를 섞어 넣어도 클래스 크기 합이 호스트 용량을 넘지 않는다 |
+| M1 | 여러 Linux 호스트 + 용량 배치 + 장부·맞추기 + 러너 cgroup 메트릭·잡 수명 지표 | 서버 2대에 `linux-s`·`linux-l` 를 섞어 넣어도 클래스 크기 합이 호스트 용량을 넘지 않고, 잡마다 peak 메모리·CPU 초가 장부에 남는다 |
 | M2 | 사람 우선 (Linux 데스크톱, Mac) | 입력이 생기면 새 러너가 그 호스트에 안 뜬다 |
 | M3 | Mac `native`·`tart`, Windows `native` | 세 OS 에서 잡 하나씩 |
 | M4 | 따뜻한 캐시, 잡 안 docker (e2e) | compose 스택 e2e 한 벌이 `linux-l` 에서 통과 |
 | 이후 | 결정 로그 대시보드, GARM 어댑터, Gitea | — |
 
-## 열린 질문 (M0 에서 확인)
+## M0 실측 (2026-11-24)
 
-1. `runs-on` 이 scale set 이름·라벨과 어떻게 맞춰지는가 (코드에 없음, 실측 필요).
-2. 러너를 하나도 안 띄우면 잡은 얼마나 큐에서 기다리는가. 시간 초과로 취소되는가 (`README.md:114` 의 재큐 3회가 이 경우인지).
-3. OS 별 사람 활동 신호: macOS(HID idle), Linux(logind `IdleHint` / X·Wayland), Windows(`GetLastInputInfo` 는 사용자 세션 안에서만 읽힌다).
-4. 호스트가 잡 도중 죽으면 GitHub 쪽 잡은 언제 실패로 끝나는가.
-5. github.com 에서 `JobAvailable` 없이 `JobAssigned` 가 바로 오는 경우(#107)를 수요 계산에 어떻게 넣을지.
-6. dind 와 sysbox 중 무엇으로 잡 안 docker 를 줄지 (e2e 클래스의 격리 수준).
+컨트롤러는 노트북, 러너는 Linux 서버 1대에 `ssh <host> docker run` 으로 띄웠다(PAT 는 서버에 두지 않고 JIT 설정만 stdin 으로 넘김). 원본 이벤트는 `cmd/pumasi-m0` 가 남긴 JSON lines.
+
+| 질문 | 결과 | 설계에 주는 뜻 |
+|---|---|---|
+| `runs-on` 매칭 | 잡 라벨이 **전부** scale set 라벨 안에 있으면 그 scale set 으로 온다. `pumasi-m0` · `pumasi-extra` · `[pumasi-m0, pumasi-extra]` 모두 통과. **`[self-hosted, pumasi-m0]` 은 scale set 에 메시지조차 오지 않고 대기만 한다** — scale set 에는 `self-hosted` 가 자동으로 붙지 않는다 | 기존 `runs-on: [self-hosted, X]` 워크플로를 옮기려면 워크플로를 고치거나 클래스 라벨에 `self-hosted` 를 넣어야 한다(넣는 쪽은 미확인) |
+| github.com 메시지 순서 | `JobAvailable` 없이 `JobAssigned` 가 바로 온다(`runnerRequestId=0`). repo·workflow·job 이름·요청 라벨이 실려 있다 | 수요 = `JobAssigned` 기준. 잡 단위 정보로 배치 판단 가능 |
+| 러너가 조용히 죽으면 | 폐기된 러너 버전(2.329.0)은 접속 직후 **종료 코드 0** 으로 끝났다. GitHub 은 약 5분 뒤 그 배정을 끝내고(`JobCompleted`) 다시 배정했다 | 컨테이너·VM 종료를 에이전트가 직접 감시해 즉시 다시 띄운다. 러너 버전은 최신을 따라간다 |
+| 잡 도중 호스트 사망 | 러너를 강제 종료한 뒤 **약 9분 43초** 만에 잡이 `failure` 로 끝났다("self-hosted runner lost communication"). 그동안 메시지 없음. 자동 재시도 없음. 끝난 뒤에도 등록 러너 수가 1 로 남음 | 데스크톱에 긴 잡을 보내지 않는 정책이 맞다. 죽은 등록은 장부로 찾아 `RemoveRunner` |
+| 러너 없이 대기 | (진행 중) | |
+
+## 남은 열린 질문
+
+1. 러너를 하나도 안 띄우면 잡은 얼마나 큐에서 기다리는가 (위 표 마지막 행, 실측 중).
+2. OS 별 사람 활동 신호: macOS(HID idle), Linux(logind `IdleHint` / X·Wayland), Windows(`GetLastInputInfo` 는 사용자 세션 안에서만 읽힌다).
+3. 클래스 라벨에 `self-hosted` 를 넣으면 기존 `[self-hosted, X]` 잡을 받는가.
+4. 잡 안 docker: `kata` 와 `microvm` 중 무엇이 e2e 클래스에 맞는가 (기동 시간, 캐시 마운트, 메모리).
