@@ -10,7 +10,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
+        packages: ["./..."]
+        include:
+          # Windows is a host, not a place for the controller: the host side only.
+          - os: windows-latest
+            packages: ./cmd/pumasi ./internal/agent ./internal/cgroup ./internal/join
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -19,4 +24,4 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      - run: go test -count=1 ./...
+      - run: go test -count=1 ${{ matrix.packages }}

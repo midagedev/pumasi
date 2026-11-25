@@ -1,0 +1,2 @@
+# Fixtures and scripts are read byte for byte: no CRLF on a Windows checkout.
+* text=auto eol=lf
