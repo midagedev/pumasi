@@ -31,7 +31,7 @@ func (f *fakeDriver) List(context.Context) ([]Container, error) {
 	}
 	return out, nil
 }
-func (f *fakeDriver) ListeningAt(_ context.Context, name string) (time.Time, bool, error) {
+func (f *fakeDriver) ListeningAt(_ context.Context, name string, _ time.Time) (time.Time, bool, error) {
 	t, ok := f.listening[name]
 	return t, ok, nil
 }

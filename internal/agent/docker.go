@@ -40,8 +40,9 @@ type Driver interface {
 	Start(ctx context.Context, s Spec) error
 	Remove(ctx context.Context, name string) error
 	List(ctx context.Context) ([]Container, error)
-	// ListeningAt reports when the runner printed "Listening for Jobs".
-	ListeningAt(ctx context.Context, name string) (time.Time, bool, error)
+	// ListeningAt reports when the runner printed "Listening for Jobs", looking
+	// only at output after since (the runner image traces verbosely to stdout).
+	ListeningAt(ctx context.Context, name string, since time.Time) (time.Time, bool, error)
 }
 
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
@@ -113,8 +114,12 @@ func (d Docker) List(ctx context.Context) ([]Container, error) {
 	return cs, nil
 }
 
-func (d Docker) ListeningAt(ctx context.Context, name string) (time.Time, bool, error) {
-	out, err := exec.CommandContext(ctx, "docker", "logs", "-t", "--tail", "40", name).CombinedOutput()
+func (d Docker) ListeningAt(ctx context.Context, name string, since time.Time) (time.Time, bool, error) {
+	args := []string{"logs", "-t"}
+	if !since.IsZero() {
+		args = append(args, "--since", since.UTC().Format(time.RFC3339Nano))
+	}
+	out, err := exec.CommandContext(ctx, "docker", append(args, name)...).CombinedOutput()
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("docker logs: %w", err)
 	}

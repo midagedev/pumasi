@@ -48,6 +48,7 @@ type rec struct {
 	receivedAt time.Time
 	cgDir      string
 	lastUsec   uint64
+	logsSince  time.Time // container output before this was already searched
 }
 
 type hostState struct {
@@ -127,8 +128,11 @@ func (a *Agent) Sample(ctx context.Context) {
 		var listening time.Time
 		var gotListening bool
 		if c.State == "running" && r.ListeningAt == nil {
-			if listening, gotListening, err = a.drv.ListeningAt(ctx, c.Name); err != nil {
+			checked := a.now().Add(-time.Second) // overlap: docker log timestamps vs. our clock
+			if listening, gotListening, err = a.drv.ListeningAt(ctx, c.Name, r.logsSince); err != nil {
 				a.log.Warn("runner logs", "runner", c.Name, "err", err)
+			} else {
+				r.logsSince = checked
 			}
 		}
 

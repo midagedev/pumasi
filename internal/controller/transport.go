@@ -58,7 +58,10 @@ func (t *SSHTunnel) start(ctx context.Context) error {
 
 	fwd := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", port, t.RemotePort)
 	// Not bound to ctx: the tunnel outlives the call that opened it. Close stops it.
+	// ControlPath=none: through a shared master connection ssh ignores -N and opens
+	// a shell that exits at once (seen with a Windows OpenSSH host).
 	cmd := exec.Command("ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+		"-o", "ControlMaster=no", "-o", "ControlPath=none",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-L", fwd, t.Dest)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("ssh %s: %w", t.Dest, err)

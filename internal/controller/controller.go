@@ -38,7 +38,9 @@ type Controller struct {
 	classes []*class
 	kick    chan struct{}
 
-	mu        sync.Mutex // guards class.stats
+	mu        sync.Mutex // guards class.stats and inflight
+	inflight  map[string]bool // runners whose start request has not returned yet
+	starts    sync.WaitGroup
 	lastDefer map[string]deferRec
 	runCheck  map[int64]time.Time
 }
@@ -72,7 +74,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 		return nil, fmt.Errorf("github client: %w", err)
 	}
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ev: ev, now: time.Now,
-		kick: make(chan struct{}, 1), lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
+		kick: make(chan struct{}, 1), inflight: map[string]bool{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
 		c.hosts = append(c.hosts, &host{cfg: hc, tr: tr,
@@ -134,6 +136,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
+			c.starts.Wait()
 			return nil
 		case <-t.C:
 		case <-c.kick:
@@ -209,7 +212,8 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		}
 	}
 	for _, j := range msg.JobStartedMessages {
-		ours, err := c.ledger.JobStarted(j.RunnerName, job(cls, j.JobMessageBase), now)
+		// JobStarted arrives 30-50s late (the long poll does not wake for it); keep GitHub's time.
+		ours, err := c.ledger.JobStarted(j.RunnerName, job(cls, j.JobMessageBase), orNow(j.RunnerAssignTime, now))
 		if err != nil {
 			return err
 		}
@@ -224,7 +228,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 			c.log.Info("job completed without a runner", "class", cls, "job", j.JobDisplayName, "result", j.Result)
 			continue
 		}
-		if err := c.ledger.JobCompleted(j.RunnerName, job(cls, j.JobMessageBase), j.Result, now); err != nil {
+		if err := c.ledger.JobCompleted(j.RunnerName, job(cls, j.JobMessageBase), j.Result, orNow(j.FinishTime, now)); err != nil {
 			return err
 		}
 	}
@@ -241,11 +245,22 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 }
 
 func job(class string, j scaleset.JobMessageBase) ledger.Job {
+	queued := j.QueueTime
+	if queued.Year() < 2000 { // github.com leaves queueTime empty; scaleSetAssignTime is the closest
+		queued = j.ScaleSetAssignTime
+	}
 	return ledger.Job{
 		ID: j.JobID, Class: class, Repo: j.OwnerName + "/" + j.RepositoryName,
 		Workflow: j.JobWorkflowRef, Name: j.JobDisplayName, RunID: j.WorkflowRunID,
-		Labels: strings.Join(j.RequestLabels, ","), QueueTime: j.QueueTime,
+		Labels: strings.Join(j.RequestLabels, ","), QueueTime: queued,
 	}
+}
+
+func orNow(t, now time.Time) time.Time {
+	if t.Year() < 2000 {
+		return now
+	}
+	return t
 }
 
 // Evaluate is one reconciliation round: read agents, update the ledger, decide, act.
@@ -264,15 +279,11 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	for _, st := range plan.Stop {
 		c.stop(ctx, st, now)
 	}
-	var wg sync.WaitGroup
+	// Starts run in the background: a slow `docker run` on one host must not hold
+	// up placement elsewhere. The ledger row exists before Evaluate returns.
 	for _, s := range plan.Start {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c.start(ctx, s, now)
-		}()
+		c.start(ctx, s, now)
 	}
-	wg.Wait()
 	c.recordDefers(plan.Defer, now)
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
@@ -340,10 +351,16 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 			out = append(out, dr)
 		}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, lr := range live {
 		if !seen[lr.Name] {
-			out = append(out, decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State,
-				CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt})
+			dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State,
+				CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt}
+			if c.inflight[lr.Name] {
+				dr.Container = "starting" // not at the agent yet
+			}
+			out = append(out, dr)
 		}
 	}
 	return out
@@ -445,9 +462,8 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	}
 }
 
+// start records the runner and launches it in the background.
 func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
-	cl := c.classByName(s.Class)
-	h := c.hostByName(s.Host)
 	name := fmt.Sprintf("%s-%s-%s", s.Class, s.Host, uuid.NewString()[:8])
 	c.log.Info("start runner", "runner", name, "reason", s.Reason)
 	c.decision(now, s.Class, s.Host, "start", name, s.Reason)
@@ -455,6 +471,22 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 		c.log.Error("ledger insert", "err", err)
 		return
 	}
+	c.mu.Lock()
+	c.inflight[name] = true
+	c.mu.Unlock()
+	c.starts.Add(1)
+	go func() {
+		defer c.starts.Done()
+		c.launch(ctx, name, s, now)
+		c.mu.Lock()
+		delete(c.inflight, name)
+		c.mu.Unlock()
+	}()
+}
+
+func (c *Controller) launch(ctx context.Context, name string, s decide.Start, now time.Time) {
+	cl := c.classByName(s.Class)
+	h := c.hostByName(s.Host)
 	fail := func(reason string) {
 		c.log.Error("start failed", "runner", name, "reason", reason)
 		_ = c.ledger.SetState(name, "failed", reason)
