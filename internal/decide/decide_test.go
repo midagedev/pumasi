@@ -253,3 +253,40 @@ func TestDeferReasonNamesEachHost(t *testing.T) {
 		}
 	}
 }
+
+func TestRebootLostAndMaxDuration(t *testing.T) {
+	s := snap([]Host{server()}, nil, []Runner{
+		{Name: "gone", Class: "linux-l", Host: "server1", State: "busy", JobKnown: true, CreatedAt: t0, Lost: "host rebooted"},
+		{Name: "long", Class: "linux-l", Host: "server1", State: "busy", JobKnown: true, CreatedAt: t0, Container: "running", Working: true, JobStartedAt: t0},
+		{Name: "short", Class: "linux-s", Host: "server1", State: "busy", JobKnown: true, CreatedAt: t0, Container: "running", Working: true, JobStartedAt: t0},
+	})
+	for i := range s.Classes {
+		if s.Classes[i].Name == "linux-l" {
+			s.Classes[i].MaxDuration = time.Minute
+		}
+	}
+	s.Now = t0.Add(2 * time.Minute)
+	p := Decide(s)
+	if len(p.Stop) != 2 {
+		t.Fatalf("stops %+v", p.Stop)
+	}
+	if st := p.Stop[0]; st.Runner != "gone" || st.State != "lost" || st.Reason != "host rebooted" {
+		t.Errorf("reboot stop %+v", st)
+	}
+	if st := p.Stop[1]; st.Runner != "long" || st.State != "failed" || !strings.HasPrefix(st.Reason, OverMaxDuration) {
+		t.Errorf("maxDuration stop %+v", st)
+	}
+}
+
+func TestClosedHostTakesNoRunners(t *testing.T) {
+	closed := server()
+	closed.Closed = "quarantined"
+	p := Decide(snap([]Host{closed}, demand("linux-s", 1), nil))
+	if len(p.Start) != 0 || len(p.Defer) != 1 || !strings.Contains(p.Defer[0].Reason, "server1 quarantined") {
+		t.Fatalf("plan %+v", p)
+	}
+	p = Decide(snap([]Host{closed, desktop()}, demand("linux-s", 1), nil))
+	if len(p.Start) != 1 || p.Start[0].Host != "desk1" {
+		t.Fatalf("plan with an open host %+v", p)
+	}
+}

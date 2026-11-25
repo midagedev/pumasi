@@ -17,6 +17,8 @@ type Class struct {
 	MemBytes   int64
 	MaxRunners int
 	Hosts      []string // empty = every host
+	// MaxDuration stops a runner whose job has run this long (0 = never).
+	MaxDuration time.Duration
 }
 
 type Host struct {
@@ -33,6 +35,9 @@ type Host struct {
 	NonRunnerCPU float64
 	NonRunnerMem int64
 	PSICPU       float64
+	// Closed: why the host takes no new runners although it is up
+	// ("quarantined", "disk 4% free"). Empty = open.
+	Closed string
 }
 
 // Runner joins the ledger row with what the host's agent reports.
@@ -55,6 +60,10 @@ type Runner struct {
 	ExitCode  int
 	// Working: the agent sees this container running a job right now.
 	Working bool
+	// JobStartedAt: when the runner took its job (zero = no job yet).
+	JobStartedAt time.Time
+	// Lost: the agent's reason why the container cannot have finished ("host rebooted").
+	Lost string
 }
 
 // Demand is one job waiting for a runner of its class.
@@ -117,7 +126,7 @@ func Decide(s Snapshot) Plan {
 	live := map[string]int{}         // class -> runners holding capacity
 	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
 	for _, r := range runners {
-		if st, ok := stopRule(s, hosts[r.Host], r); ok {
+		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r); ok {
 			p.Stop = append(p.Stop, st)
 			continue
 		}
@@ -186,6 +195,9 @@ func Decide(s Snapshot) Plan {
 			case !h.Up:
 				why = append(why, hn+" down")
 				continue
+			case h.Closed != "":
+				why = append(why, hn+" "+h.Closed)
+				continue
 			case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
 				why = append(why, fmt.Sprintf("%s cpu pressure %.0f", hn, h.PSICPU))
 				continue
@@ -216,12 +228,17 @@ func Decide(s Snapshot) Plan {
 	return p
 }
 
+// OverMaxDuration starts the reason of a stop made because of a class's maxDuration.
+const OverMaxDuration = "job ran longer than maxDuration "
+
 // stopRule returns the removal of a runner that no longer serves a purpose.
-func stopRule(s Snapshot, h Host, r Runner) (Stop, bool) {
+func stopRule(s Snapshot, h Host, c Class, r Runner) (Stop, bool) {
 	stop := func(state, format string, args ...any) (Stop, bool) {
 		return Stop{Runner: r.Name, Host: r.Host, State: state, Reason: fmt.Sprintf(format, args...)}, true
 	}
 	switch {
+	case r.Lost != "" && r.State != "":
+		return stop("lost", "%s", r.Lost)
 	case r.State == "" && r.Working:
 		return Stop{}, false // unknown to the ledger, but never kill a running job
 	case r.State == "":
@@ -244,6 +261,9 @@ func stopRule(s Snapshot, h Host, r Runner) (Stop, bool) {
 		return stop("", "runner exited during or after its job (code %d); result comes with JobCompleted", r.ExitCode)
 	case r.Container == "exited":
 		return stop("failed", "exited before a job (code %d)", r.ExitCode)
+	case c.MaxDuration > 0 && !r.JobStartedAt.IsZero() && s.Now.Sub(r.JobStartedAt) > c.MaxDuration:
+		// The one stop of a running job pumasi makes on its own: the user asked for it.
+		return stop("failed", "%s%s", OverMaxDuration, c.MaxDuration)
 	case r.State == "starting" && r.ListeningAt.IsZero() && s.ProvisionTimeout > 0 && s.Now.Sub(r.CreatedAt) > s.ProvisionTimeout:
 		return stop("failed", "provision timeout: not listening %s after start", s.ProvisionTimeout)
 	case r.State != "busy" && !r.ListeningAt.IsZero() && s.IdleTimeout > 0 && s.Now.Sub(r.ListeningAt) > s.IdleTimeout:

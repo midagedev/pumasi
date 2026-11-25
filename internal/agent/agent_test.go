@@ -139,3 +139,65 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestRestartKeepsRecordsAndRebootMarksLost(t *testing.T) {
+	drv := &fakeDriver{cs: map[string]Container{}, listening: map[string]time.Time{}}
+	state := filepath.Join(t.TempDir(), "runners.json")
+	mk := func(boot string) *Agent {
+		a := testAgent(drv)
+		a.cfg.StateFile, a.cfg.BootID = state, boot
+		a.load()
+		return a
+	}
+	ctx := context.Background()
+	a := mk("boot-1")
+	for _, n := range []string{"done", "busy", "kept"} {
+		if _, err := a.Start(ctx, api.StartRequest{Name: n, Class: "linux-s", CPUs: 1, MemBytes: 1 << 30, Image: "img", JITConfig: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Sample(ctx)
+	peak := a.Snapshot().Runners[0].MemPeak
+	if peak == 0 {
+		t.Fatal("no cgroup numbers sampled")
+	}
+	c := drv.cs["done"]
+	c.State, c.Pid = "exited", 0
+	drv.cs["done"] = c
+	a.Sample(ctx)
+
+	// Agent restart, same boot: the exited container keeps its final numbers.
+	a = mk("boot-1")
+	a.Sample(ctx)
+	for _, r := range a.Snapshot().Runners {
+		if r.Lost != "" {
+			t.Fatalf("%s lost after a plain restart", r.Name)
+		}
+		if r.Name == "done" && r.MemPeak != peak {
+			t.Fatalf("exited runner lost its numbers: peak %d, want %d", r.MemPeak, peak)
+		}
+	}
+
+	// Reboot: one container is gone, one is still running (a false alarm for it).
+	delete(drv.cs, "busy")
+	a = mk("boot-2")
+	a.Sample(ctx)
+	got := map[string]api.Runner{}
+	for _, r := range a.Snapshot().Runners {
+		got[r.Name] = r
+	}
+	if r := got["busy"]; r.Lost != lostRebooted || r.State != "gone" {
+		t.Fatalf("busy after reboot: %+v", r)
+	}
+	if got["kept"].Lost != "" || got["done"].Lost != "" {
+		t.Fatalf("running or finished runner marked lost: %+v %+v", got["kept"], got["done"])
+	}
+	// The lost record stays until the controller collects it, and frees budget meanwhile.
+	a.Sample(ctx)
+	if _, err := a.Start(ctx, api.StartRequest{Name: "next", Class: "linux-s", CPUs: 1, MemBytes: 1 << 30, Image: "img", JITConfig: "x"}); err != nil {
+		t.Fatalf("budget still held by a lost runner: %v", err)
+	}
+	if r, err := a.Delete(ctx, "busy"); err != nil || r.Lost != lostRebooted {
+		t.Fatalf("delete lost runner: %+v %v", r, err)
+	}
+}

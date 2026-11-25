@@ -121,6 +121,9 @@ type Runner struct {
 	CreatedAt, PostedAt      time.Time
 	ListeningAt              time.Time
 	JobID, Job               string // Job is the job's display name, known from JobStarted on
+	Repo, Result             string
+	RunID                    int64
+	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
 }
 
@@ -245,7 +248,8 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 	return out, rows.Err()
 }
 
-const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at`
+const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
+  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -256,11 +260,13 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	var out []Runner
 	for rows.Next() {
 		var r Runner
-		var created, posted, listening, removed sql.NullString
-		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed); err != nil {
+		var created, posted, listening, removed, started sql.NullString
+		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
+			&r.Repo, &r.Result, &r.RunID, &started); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
+		r.StartedAt = parseTS(started)
 		out = append(out, r)
 	}
 	return out, rows.Err()

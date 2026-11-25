@@ -53,6 +53,8 @@ type Controller struct {
 	adopted   bool // the first round has reported what it found on the hosts
 	book      *incidentBook
 	lastAlive time.Time // when an earlier controller last ran (zero = never)
+	// Runners closed in this round because their host rebooted, per host.
+	rebootLost map[string][]ledger.Runner
 }
 
 type host struct {
@@ -89,7 +91,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 		return nil, fmt.Errorf("github client: %w", err)
 	}
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
-		kick: make(chan struct{}, 1), inflight: map[string]bool{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
+		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
 		c.hosts = append(c.hosts, &host{cfg: hc, tr: tr,
@@ -384,6 +386,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	for _, st := range plan.Stop {
 		c.stop(ctx, st, now)
 	}
+	c.reportReboots(now)
 	// Starts run in the background: a slow `docker run` on one host must not hold
 	// up placement elsewhere. The ledger row exists before Evaluate returns.
 	for _, s := range plan.Start {
@@ -487,7 +490,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 				}
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
-				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working}
+				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost}
 			if ar.ExitCode != nil {
 				dr.ExitCode = *ar.ExitCode
 			}
@@ -582,6 +585,7 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
 	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
 	before, _ := c.ledger.Runner(st.Runner)
+	rebooted := st.Reason == rebootReason
 	died := before.State == "busy" && strings.HasPrefix(st.Reason, "container missing")
 	code := "unknown"
 	removed := false
@@ -614,7 +618,9 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	if err := c.ledger.SetState(st.Runner, st.State, st.Reason); err != nil {
 		c.log.Error("ledger state", "err", err)
 	}
-	if died {
+	if rebooted {
+		c.rebootLost[st.Host] = append(c.rebootLost[st.Host], before)
+	} else if died {
 		job := before.Job
 		if job == "" {
 			job = "its job"
@@ -864,6 +870,36 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 		}
 		c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, did))
 	}()
+}
+
+// rebootReason is the agent's word for a runner whose host rebooted under it.
+const rebootReason = "host rebooted"
+
+// reportReboots tells of each rebooted host once, with the jobs it took down.
+func (c *Controller) reportReboots(now time.Time) {
+	for host, rs := range c.rebootLost {
+		var jobs []string
+		for _, r := range rs {
+			if r.State == "busy" {
+				jobs = append(jobs, jobName(r))
+			}
+		}
+		detail := fmt.Sprintf("host %s rebooted: %d runners lost, no job was running", host, len(rs))
+		if len(jobs) > 0 {
+			detail = fmt.Sprintf("host %s rebooted: %d runners lost with %d running jobs (%s); GitHub will fail those jobs",
+				host, len(rs), len(jobs), strings.Join(jobs, ", "))
+		}
+		c.book.report("problem", fmt.Sprintf("host-rebooted/%s/%d", host, now.Unix()), "host-rebooted", host, detail,
+			"runners closed as lost, registrations removed")
+	}
+	clear(c.rebootLost)
+}
+
+func jobName(r ledger.Runner) string {
+	if r.Job == "" {
+		return "a job on " + r.Name
+	}
+	return r.Job
 }
 
 func (c *Controller) aliveFile() string { return filepath.Join(c.cfg.StateDir(), "alive") }

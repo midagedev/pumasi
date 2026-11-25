@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +32,8 @@ func runAgent(args []string) error {
 	budgetMem := fs.String("budget-mem", "", "memory pumasi may lend, e.g. 6G (empty = no agent-side limit)")
 	interval := fs.Duration("interval", 5*time.Second, "cgroup sampling interval")
 	pidfile := fs.String("pidfile", "", "write the agent's pid here")
+	cache, _ := os.UserCacheDir()
+	state := fs.String("state", filepath.Join(cache, "pumasi", "runners.json"), "runner records kept across agent restarts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -38,7 +42,9 @@ func runAgent(args []string) error {
 		return fmt.Errorf("-budget-mem: %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	a := agent.New(agent.Config{Host: *host, BudgetCPUs: *budgetCPUs, BudgetMem: mem, Interval: *interval},
+	bootID, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	a := agent.New(agent.Config{Host: *host, BudgetCPUs: *budgetCPUs, BudgetMem: mem, Interval: *interval,
+		StateFile: *state, BootID: strings.TrimSpace(string(bootID))},
 		agent.Docker{Tag: *tag}, cgroup.DefaultReader(), log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

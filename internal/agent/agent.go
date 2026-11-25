@@ -23,6 +23,8 @@ type Config struct {
 	BudgetCPUs float64 // 0 = no limit from the agent side
 	BudgetMem  int64
 	Interval   time.Duration
+	StateFile  string // runner records survive an agent restart here ("" = keep nothing)
+	BootID     string // /proc/sys/kernel/random/boot_id; a change means the host rebooted
 }
 
 type Agent struct {
@@ -49,6 +51,7 @@ type rec struct {
 	cgDir      string
 	lastUsec   uint64
 	logsSince  time.Time // container output before this was already searched
+	rebooted   bool      // loaded from a state file written before the last reboot
 }
 
 type hostState struct {
@@ -64,7 +67,9 @@ func New(cfg Config, drv Driver, cg cgroup.Reader, log *slog.Logger) *Agent {
 	if cfg.Interval == 0 {
 		cfg.Interval = 5 * time.Second
 	}
-	return &Agent{cfg: cfg, drv: drv, cg: cg, log: log, now: time.Now, recs: map[string]*rec{}}
+	a := &Agent{cfg: cfg, drv: drv, cg: cg, log: log, now: time.Now, recs: map[string]*rec{}}
+	a.load()
+	return a
 }
 
 // Run samples every Interval until ctx ends.
@@ -144,7 +149,11 @@ func (a *Agent) Sample(ctx context.Context) {
 			r.ExitedAt = ptr(c.FinishedAt)
 			r.ExitCode = ptr(c.ExitCode)
 			r.MemCurrent = 0
+			if r.rebooted && c.ExitCode != 0 {
+				r.Lost = lostRebooted
+			}
 		}
+		r.rebooted = false // either it survived (not a real reboot of its world) or it is marked now
 		if st != nil {
 			applyStats(r, *st)
 		}
@@ -164,11 +173,18 @@ func (a *Agent) Sample(ctx context.Context) {
 	for name, r := range a.recs {
 		// Gone from docker without DELETE (removed by hand). Keep runners that are
 		// still being started: they are not listed until `docker run` creates them.
-		if !seen[name] && r.State != "starting" {
-			delete(a.recs, name)
+		if seen[name] || r.State == "starting" {
+			continue
 		}
+		if r.rebooted || r.Lost != "" {
+			// The reboot took the container; keep the record until the controller collects it.
+			r.rebooted, r.Lost, r.State, r.MemCurrent = false, lostRebooted, "gone", 0
+			continue
+		}
+		delete(a.recs, name)
 	}
 	a.dataMu.Unlock()
+	a.save()
 
 	a.sampleHost(now, runnerUsecDelta, runnerMem)
 }
@@ -236,6 +252,8 @@ func (a *Agent) Snapshot() api.Snapshot {
 
 var errOverBudget = errors.New("over budget")
 
+const lostRebooted = "host rebooted"
+
 // Start launches one runner. It refuses when the agent's own budget would be exceeded.
 func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, error) {
 	received := a.now() // before waiting for other starts: queueing here is part of provisioning
@@ -246,7 +264,7 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	var cpus float64
 	var mem int64
 	for _, r := range a.recs {
-		if r.State != "exited" {
+		if r.State != "exited" && r.State != "gone" {
 			cpus += r.CPUs
 			mem += r.MemBytes
 		}
@@ -267,13 +285,16 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	err := a.drv.Start(ctx, Spec{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig})
 
 	a.dataMu.Lock()
-	defer a.dataMu.Unlock()
 	if err != nil {
 		delete(a.recs, req.Name)
+		a.dataMu.Unlock()
 		return api.Runner{}, err
 	}
 	r.State = "created"
-	return r.Runner, nil
+	out := r.Runner
+	a.dataMu.Unlock()
+	a.save()
+	return out, nil
 }
 
 // Delete removes a runner container and returns its last values. A running
@@ -297,8 +318,9 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 		return api.Runner{}, err
 	}
 	a.dataMu.Lock()
-	defer a.dataMu.Unlock()
 	delete(a.recs, name)
+	a.dataMu.Unlock()
+	a.save()
 	if !ok {
 		return api.Runner{Name: name, State: "unknown"}, nil
 	}

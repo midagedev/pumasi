@@ -31,11 +31,13 @@ type Snapshot struct {
 // Runner is one runner container as the agent last sampled it. Resource values
 // survive the container's exit until the controller deletes it.
 type Runner struct {
-	Name        string     `json:"name"`
-	Class       string     `json:"class"`
-	CPUs        float64    `json:"cpus"`
-	MemBytes    int64      `json:"memBytes"`
-	State       string     `json:"state"` // created | running | exited
+	Name     string  `json:"name"`
+	Class    string  `json:"class"`
+	CPUs     float64 `json:"cpus"`
+	MemBytes int64   `json:"memBytes"`
+	State    string  `json:"state"` // created | running | exited | gone
+	// Why the runner cannot have finished its work: "host rebooted". Empty otherwise.
+	Lost        string     `json:"lost,omitempty"`
 	ListeningAt *time.Time `json:"listeningAt,omitempty"`
 	// Agent clock: from POST /v1/runners received to "Listening for Jobs".
 	ProvisionMs int64 `json:"provisionMs,omitempty"`
