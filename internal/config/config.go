@@ -2,7 +2,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -137,7 +140,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%w (copy pumasi.example.yaml to %s, or pass -config)", err, path)
 	}
 	c := &Config{}
-	if err := yaml.Unmarshal(b, c); err != nil {
+	// A key that is not known is a typo: maxduration instead of maxDuration
+	// would otherwise run without the limit and say nothing.
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	c.defaults()
@@ -299,10 +306,16 @@ func (c *Config) validate() error {
 		}
 		hosts[h.Name] = true
 	}
+	classes := map[string]bool{}
 	for _, cl := range c.Classes {
 		if !nameRE.MatchString(cl.Name) || cl.CPUs <= 0 || cl.Memory <= 0 {
 			return fmt.Errorf("class needs name, cpus and memory: %+v", cl)
 		}
+		// Two classes of one name would be two listeners on one scale set.
+		if classes[cl.Name] {
+			return fmt.Errorf("duplicate class %s", cl.Name)
+		}
+		classes[cl.Name] = true
 		if cl.OS != "linux" && cl.OS != "macos" && cl.OS != "windows" {
 			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
 		}

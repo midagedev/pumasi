@@ -109,3 +109,33 @@ func TestWorkDirSitsInTheFirstWritableMount(t *testing.T) {
 		}
 	}
 }
+
+// A misspelt key is an error, not a setting that silently does not apply.
+func TestUnknownKeysAndDuplicateClasses(t *testing.T) {
+	load := func(body string) error {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte(body), 0o600)
+		_, err := Load(p)
+		return err
+	}
+	const hosts = "\nhosts: [{ssh: h, budget: {cpus: 1, memory: 1G}}]\n"
+	for body, want := range map[string]string{
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G, maxduration: 1h}]" + hosts:                "maxduration",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}]\nhosts: [{ssh: h, budget: {cpu: 1}}]\n":  "cpu",
+		"url: u\nidleTimout: 1m\nclasses: [{name: a, cpus: 1, memory: 1G}]" + hosts:                 "idleTimout",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}, {name: a, cpus: 2, memory: 2G}]" + hosts: "duplicate class a",
+	} {
+		if err := load(body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err %v, want one naming %q", body, err, want)
+		}
+	}
+	if err := load("url: u\nclasses: [{name: a, cpus: 1, memory: 1G, maxDuration: 1h}]" + hosts); err != nil {
+		t.Errorf("a correct file: %v", err)
+	}
+}
+
+func TestExampleLoads(t *testing.T) {
+	if _, err := Load(filepath.Join("..", "..", "pumasi.example.yaml")); err != nil {
+		t.Fatal(err)
+	}
+}

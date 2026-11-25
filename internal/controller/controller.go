@@ -33,7 +33,7 @@ import (
 type Controller struct {
 	noMarker map[string]time.Time // runners warned about in markerCheck, by GitHub's job start; Evaluate's goroutine only
 	cfg      *config.Config
-	gh       *scaleset.Client
+	gh       github
 	token    string
 	ledger   *ledger.Ledger
 	log      *slog.Logger
@@ -50,8 +50,10 @@ type Controller struct {
 	classes []*class
 	kick    chan struct{}
 
-	mu        sync.Mutex      // guards class.stats and inflight
-	inflight  map[string]bool // runners whose start request has not returned yet
+	mu sync.Mutex // guards class.stats and inflight
+	// Runners whose start request the agent has not answered yet (zero), or
+	// answered at that time: a snapshot asked for before then cannot show them.
+	inflight  map[string]time.Time
 	starts    sync.WaitGroup
 	lastDefer map[string]deferRec
 	runCheck  map[int64]time.Time
@@ -67,6 +69,17 @@ type Controller struct {
 	rerunWanted map[string]string
 	// LedgerMoved names the damaged ledger that was set aside at startup ("" = none).
 	LedgerMoved string
+}
+
+// github is what the controller asks of GitHub's scale set service.
+type github interface {
+	GetRunnerScaleSet(ctx context.Context, runnerGroupID int, name string) (*scaleset.RunnerScaleSet, error)
+	CreateRunnerScaleSet(ctx context.Context, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error)
+	DeleteRunnerScaleSet(ctx context.Context, id int) error
+	MessageSessionClient(ctx context.Context, id int, owner string, options ...scaleset.HTTPOption) (*scaleset.MessageSessionClient, error)
+	GenerateJitRunnerConfig(ctx context.Context, s *scaleset.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*scaleset.RunnerScaleSetJitRunnerConfig, error)
+	GetRunnerByName(ctx context.Context, name string) (*scaleset.RunnerReference, error)
+	RemoveRunner(ctx context.Context, id int64) error
 }
 
 type host struct {
@@ -88,6 +101,7 @@ type host struct {
 	snap        *api.Snapshot
 	downSince   time.Time
 	seenAt      time.Time     // the last snapshot that arrived
+	askedAt     time.Time     // when that snapshot was asked for (this process's clock)
 	rtt         time.Duration // how long that snapshot took, there and back
 	version     string        // the agent's build, as that snapshot named it
 	os          string        // as the agent last said ("" = not heard yet)
@@ -114,7 +128,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 		return nil, fmt.Errorf("github client: %w", err)
 	}
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
-		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
+		kick: make(chan struct{}, 1), inflight: map[string]time.Time{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		l := newSSHLink(hc, log)
 		c.hosts = append(c.hosts, &host{cfg: hc, tr: l, agent: l.Agent()})
@@ -468,7 +482,7 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			asked := time.Now()
 			s, err := h.agent.Snapshot(cctx, c.cfg.MountPaths()...)
 			if err == nil {
-				h.seenAt, h.rtt, h.version = now, time.Since(asked), s.Version
+				h.seenAt, h.askedAt, h.rtt, h.version = now, asked, time.Since(asked), s.Version
 			}
 			warming := err == nil && s.SampledAt.IsZero()
 			if warming {
@@ -574,14 +588,23 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, lr := range live {
-		if !seen[lr.Name] {
-			dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State, JobKnown: lr.JobID != "",
-				CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt}
-			if c.inflight[lr.Name] {
-				dr.Container = "starting" // not at the agent yet
-			}
-			out = append(out, dr)
+		if seen[lr.Name] {
+			delete(c.inflight, lr.Name)
+			continue
 		}
+		dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State, JobKnown: lr.JobID != "",
+			CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt}
+		if answered, ok := c.inflight[lr.Name]; ok {
+			// Missing from a snapshot that was asked for before the agent answered
+			// the start says nothing: the runner was not there to be listed yet.
+			h := c.hostOf(lr.Host)
+			if answered.IsZero() || h == nil || h.snap == nil || !h.askedAt.After(answered) {
+				dr.Container = "starting"
+			} else {
+				delete(c.inflight, lr.Name)
+			}
+		}
+		out = append(out, dr)
 	}
 	return out
 }
@@ -699,6 +722,16 @@ func minPositive(a, b float64) float64 {
 	return math.Min(a, b)
 }
 
+// hostOf is hostByName for the evaluating goroutine, which owns c.hosts.
+func (c *Controller) hostOf(name string) *host {
+	for _, h := range c.hosts {
+		if h.cfg.Name == name {
+			return h
+		}
+	}
+	return nil
+}
+
 func (c *Controller) hostByName(name string) *host {
 	c.hostsMu.Lock()
 	hosts := c.hosts
@@ -713,10 +746,19 @@ func (c *Controller) hostByName(name string) *host {
 
 // stop removes the container (when the agent answers), stores its final values and the new state.
 func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
-	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
-	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
 	before, _ := c.ledger.Runner(st.Runner)
 	h := c.hostByName(st.Host)
+	// maxDuration is the one stop that is meant to end a job; a completed job
+	// has nothing left to lose.
+	if h != nil && before.State != "done" && !strings.HasPrefix(st.Reason, decide.OverMaxDuration) &&
+		alive(h.snap, st.Runner) && !c.release(ctx, st.Runner, before, st.Reason) {
+		return
+	}
+	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
+	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
+	c.mu.Lock()
+	delete(c.inflight, st.Runner)
+	c.mu.Unlock()
 	var final *api.Runner
 	removed := false
 	if h != nil && h.snap != nil {
@@ -781,6 +823,65 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	}
 }
 
+// alive: the host's last snapshot shows the runner up, so it may hold a job.
+func alive(s *api.Snapshot, runner string) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.Runners {
+		if r.Name == runner {
+			return r.Lost == "" && r.State != "exited" && r.State != "gone"
+		}
+	}
+	return false
+}
+
+// release asks GitHub to drop a runner's registration and reports whether its
+// container may be removed. GitHub refuses while the runner holds a job, and
+// that refusal is the one word on the matter that cannot be late: the agent
+// reads the runner's output every few seconds and JobStarted arrives half a
+// minute after the fact, so a runner that looks idle here may have just been
+// handed a job. Every removal of a runner that is up asks first; only
+// maxDuration does not. When GitHub cannot be asked, the runner stays for
+// this round.
+func (c *Controller) release(ctx context.Context, name string, lr ledger.Runner, why string) bool {
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	id := lr.RunnerID
+	if id == 0 {
+		ref, err := c.gh.GetRunnerByName(cctx, name)
+		if err != nil {
+			c.log.Warn(fmt.Sprintf("runner %s left alone (%s): GitHub could not be asked whether it holds a job", name, why), "err", err)
+			return false
+		}
+		if ref == nil {
+			return true // never registered, or gone already: no job can be on it
+		}
+		id = int64(ref.ID)
+	}
+	err := c.gh.RemoveRunner(cctx, id)
+	switch {
+	case err == nil || errors.Is(err, scaleset.RunnerNotFoundError):
+		if lr.Name != "" {
+			if err := c.ledger.MarkUnregistered(name); err != nil {
+				c.log.Error("ledger unregistered", "err", err)
+			}
+		}
+		return true
+	case errors.Is(err, scaleset.JobStillRunningError):
+		c.log.Info(fmt.Sprintf("busy %s  GitHub has a job on it; not stopped (%s)", name, why))
+		c.ev.Write("runner-busy", map[string]any{"runner": name, "from": "github", "insteadOf": why})
+		if lr.Name != "" {
+			if err := c.ledger.HoldsJob(name, c.now()); err != nil {
+				c.log.Error("ledger busy", "err", err)
+			}
+		}
+		return false
+	}
+	c.log.Warn(fmt.Sprintf("runner %s left alone (%s): GitHub could not be asked whether it holds a job", name, why), "err", err)
+	return false
+}
+
 // start records the runner and launches it in the background.
 func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	name := fmt.Sprintf("%s-%s-%s", s.Class, s.Host, uuid.NewString()[:8])
@@ -791,31 +892,41 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 		return
 	}
 	c.mu.Lock()
-	c.inflight[name] = true
+	c.inflight[name] = time.Time{}
 	c.mu.Unlock()
 	c.starts.Add(1)
 	go func() {
 		defer c.starts.Done()
-		c.launch(ctx, name, s, now)
+		answered := c.launch(ctx, name, s, now)
 		c.mu.Lock()
-		delete(c.inflight, name)
+		if _, ok := c.inflight[name]; ok && answered {
+			c.inflight[name] = time.Now()
+		}
 		c.mu.Unlock()
 	}()
 }
 
-func (c *Controller) launch(ctx context.Context, name string, s decide.Start, now time.Time) {
+// launch registers the runner and asks the host's agent to start it. It
+// reports whether the outcome is known. When the agent did not answer (a
+// timeout, a connection that broke), the runner may still come up: its row
+// stays "starting" and the provision timeout closes it if it never shows.
+func (c *Controller) launch(ctx context.Context, name string, s decide.Start, now time.Time) bool {
 	cl := c.classByName(s.Class)
 	h := c.hostByName(s.Host)
-	fail := func(reason string) {
+	fail := func(reason string) bool {
 		c.log.Error("start failed", "runner", name, "reason", reason)
-		_ = c.ledger.SetState(name, "failed", reason)
-		_ = c.ledger.MarkRemoved(name, c.now())
+		if err := errors.Join(c.ledger.SetState(name, "failed", reason), c.ledger.MarkRemoved(name, c.now())); err != nil {
+			c.log.Error("ledger start failed", "runner", name, "err", err)
+		}
+		return true
+	}
+	if h == nil || cl == nil {
+		return fail(fmt.Sprintf("host %s left before the runner was started", s.Host))
 	}
 	workDir := cl.cfg.WorkDir(name)
 	jit, err := c.gh.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name, WorkFolder: workDir}, cl.setID)
 	if err != nil {
-		fail("jit: " + err.Error())
-		return
+		return fail("jit: " + err.Error())
 	}
 	posted := c.now()
 	if err := c.ledger.SetRegistration(name, int64(jit.Runner.ID), posted); err != nil {
@@ -826,19 +937,23 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
 		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
 		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir, InnerDocker: cl.cfg.Docker == "inside"})
-	if err != nil {
-		// The registration stays until unregister removes it.
+	var se *api.StatusError
+	switch {
+	case err == nil:
+		c.ev.Write("runner-started", map[string]any{"runner": name, "host": s.Host, "class": s.Class,
+			"jitMs": posted.Sub(now).Milliseconds(), "postMs": c.now().Sub(posted).Milliseconds()})
+	case errors.As(err, &se):
+		// The agent answered and could not start it. The registration stays until
+		// unregister removes it. Over budget (409) is not the host's doing.
 		fail("agent start: " + err.Error())
-		// The agent answered and could not start it: the host's doing. Over budget
-		// (409) and an unreachable agent are not.
-		var se *api.StatusError
-		if errors.As(err, &se) && se.Code != http.StatusConflict {
+		if se.Code != http.StatusConflict {
 			c.provisionFailed(h, err.Error())
 		}
-		return
+	default:
+		c.log.Warn(fmt.Sprintf("start of %s on %s not answered; it counts as starting until it shows or the provision timeout passes", name, s.Host), "err", err)
+		return false
 	}
-	c.ev.Write("runner-started", map[string]any{"runner": name, "host": s.Host, "class": s.Class,
-		"jitMs": posted.Sub(now).Milliseconds(), "postMs": c.now().Sub(posted).Milliseconds()})
+	return true
 }
 
 func (c *Controller) classByName(name string) *class {
@@ -934,6 +1049,10 @@ func (c *Controller) checkStaleDemand(ctx context.Context, now time.Time) {
 	}
 }
 
+// githubREST calls api.github.com from inside a round: an answer that never
+// comes must not hold the round.
+var githubREST = &http.Client{Timeout: 30 * time.Second}
+
 func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/actions/runs/%d", repo, runID), nil)
 	if err != nil {
@@ -941,7 +1060,7 @@ func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (s
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := githubREST.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -1149,12 +1268,18 @@ func (c *Controller) shutdown() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	defer c.Close()
 	c.refreshHosts(ctx, c.now())
+	live, err := c.ledger.LiveRunners()
+	if err != nil {
+		// Without the ledger nothing says which runner has a job: all stay.
+		c.log.Error("stopped  the ledger could not be read, so no runner was removed; `pumasi up` picks them up again", "err", err)
+		return
+	}
 	removed, running := 0, 0
-	live, _ := c.ledger.LiveRunners()
-	busy := map[string]bool{}
+	byName := map[string]ledger.Runner{}
 	for _, r := range live {
-		busy[r.Name] = r.State == "busy"
+		byName[r.Name] = r
 	}
 	for _, h := range c.hosts {
 		if h.snap == nil {
@@ -1166,9 +1291,14 @@ func (c *Controller) shutdown() {
 			continue
 		}
 		for _, r := range h.snap.Runners {
+			lr, known := byName[r.Name]
+			if !known {
+				lr, _ = c.ledger.Runner(r.Name) // closed earlier: its registration id is still of use
+			}
 			// A job is known from the runner's own output or from GitHub's JobStarted
-			// message, whichever came first; either one is enough to leave it alone.
-			if r.JobStartedAt != nil || busy[r.Name] {
+			// message, whichever came first; a runner that shows neither is removed
+			// only when GitHub lets go of its registration.
+			if r.JobStartedAt != nil || lr.State == "busy" || (alive(h.snap, r.Name) && !c.release(ctx, r.Name, lr, "controller stopped")) {
 				// Running a job, or finished one whose numbers the next `up` collects.
 				if r.State == "running" {
 					running++
@@ -1179,13 +1309,13 @@ func (c *Controller) shutdown() {
 				c.log.Error("remove runner", "runner", r.Name, "err", err)
 				continue
 			}
-			_ = c.ledger.SetState(r.Name, "", "controller stopped")
-			_ = c.ledger.MarkRemoved(r.Name, c.now())
+			if err := errors.Join(c.ledger.SetState(r.Name, "", "controller stopped"), c.ledger.MarkRemoved(r.Name, c.now())); err != nil {
+				c.log.Error("ledger removed", "runner", r.Name, "err", err)
+			}
 			removed++
 		}
 	}
 	c.unregister(ctx)
-	c.Close()
 	if running > 0 {
 		c.log.Info(fmt.Sprintf("stopped  %d jobs still running on the hosts; `pumasi up` picks them up again (%d idle runners removed)", running, removed))
 		return
@@ -1195,9 +1325,15 @@ func (c *Controller) shutdown() {
 
 // forgetLiveRunners marks runners whose container we could not see removed as lost.
 func (c *Controller) forgetLiveRunners(reason string) {
-	live, _ := c.ledger.LiveRunners()
+	live, err := c.ledger.LiveRunners()
+	if err != nil {
+		c.log.Error("ledger runners", "err", err)
+		return
+	}
 	for _, r := range live {
-		_ = c.ledger.SetState(r.Name, "lost", reason)
+		if err := c.ledger.SetState(r.Name, "lost", reason); err != nil {
+			c.log.Error("ledger state", "runner", r.Name, "err", err)
+		}
 	}
 }
 

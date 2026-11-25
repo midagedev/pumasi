@@ -113,8 +113,15 @@ func (c *Controller) series(now time.Time) (Series, error) {
 		cpus[cl.Name] = cl.CPUs
 	}
 	s := Series{HostCPUs: map[string][]float64{}}
-	for _, h := range c.cfg.Hosts {
+	// Every host there is now, joined ones too, and every host that held a
+	// runner in these 24 hours even if it has left since.
+	for _, h := range KnownHosts(c.cfg) {
 		s.HostCPUs[h.Name] = make([]float64, steps)
+	}
+	for _, r := range runners {
+		if _, ok := s.HostCPUs[r.Host]; !ok {
+			s.HostCPUs[r.Host] = make([]float64, steps)
+		}
 	}
 	covers := func(sp ledger.Span, t time.Time) bool {
 		return !sp.From.After(t) && (sp.To.IsZero() || sp.To.After(t))

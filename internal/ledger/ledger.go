@@ -436,6 +436,13 @@ func (l *Ledger) Revive(name string) (bool, error) {
 	return n == 1, nil
 }
 
+// HoldsJob records GitHub's word that the runner has a job: it refused to drop
+// the registration. The row is live and busy again, whatever closed it.
+func (l *Ledger) HoldsJob(name string, at time.Time) error {
+	return l.exec(`UPDATE runners SET state='busy', reason='GitHub has a job on it', removed_at=NULL, unregistered=0,
+	  started_at=COALESCE(started_at, ?) WHERE name=? AND state<>'done'`, ts(at), name)
+}
+
 // CloseFromExit ends a busy runner whose JobCompleted message never came (the
 // controller was away): the result is the container's exit code as the agent
 // saw it. A later JobCompleted still overwrites it with GitHub's result.
