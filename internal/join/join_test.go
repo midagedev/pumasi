@@ -165,7 +165,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 
 	var ref *Refused
 	err := hc.Register(ctx, "not-the-token", true)
-	if !errors.As(err, &ref) || ref.Code != http.StatusUnauthorized || !strings.HasPrefix(ref.Why, "rotated on ") {
+	if !errors.As(err, &ref) || ref.Code != http.StatusUnauthorized || !strings.HasPrefix(ref.Why, "not the controller's token; that one was made on ") {
 		t.Fatalf("wrong token: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestAnotherBuildSwitchesOrSaysWhyNot(t *testing.T) {
 	var got strings.Builder
 	h := &Host{Config: hc, Version: "old", Arch: "amd64"}
 	h.Upgrade = func(ctx context.Context, w string) (string, error) {
-		if err := hc.Download(ctx, "amd64", &got); err != nil {
+		if err := hc.Download(ctx, "linux", "amd64", &got); err != nil {
 			return "", err
 		}
 		return w, nil
@@ -298,7 +298,7 @@ func TestAnotherBuildSwitchesOrSaysWhyNot(t *testing.T) {
 		t.Fatalf("link %+v", ln)
 	}
 	// A host of an arch the controller has no build for is left alone.
-	if s.wanted("arm64") != "" {
+	if s.wanted("linux", "arm64") != "" {
 		t.Fatal("no arm64 build, yet a version is wanted")
 	}
 }
@@ -327,10 +327,104 @@ func TestScriptAndDownloads(t *testing.T) {
 	if code, body := fetch("/dl/pumasi-linux-arm64.sha256"); code != 200 || strings.TrimSpace(body) != FileVersion(filepath.Join(s.Dist, "pumasi-linux-arm64")) {
 		t.Fatalf("%d %q", code, body)
 	}
-	for _, p := range []string{"/dl/pumasi-linux-amd64", "/dl/join.key", "/dl/..%2fjoin.key", "/dl/hosts.json"} {
+	for _, p := range []string{"/dl/pumasi-linux-amd64", "/dl/join.key", "/dl/..%2fjoin.key", "/dl/hosts.json",
+		"/dl/pumasi-windows-amd64", "/dl/pumasi-linux-arm64.exe", "/dl/pumasi-plan9-amd64"} {
 		if code, _ := fetch(p); code != 404 {
 			t.Fatalf("%s: %d", p, code)
 		}
+	}
+
+	// Every system asks for its own build under its own name.
+	for _, name := range []string{"pumasi-darwin-arm64", "pumasi-windows-amd64.exe"} {
+		if err := os.WriteFile(filepath.Join(s.Dist, name), []byte(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if code, body := fetch("/dl/" + name); code != 200 || body != name {
+			t.Fatalf("%s: %d %q", name, code, body)
+		}
+		if code, body := fetch("/dl/" + name + ".sha256"); code != 200 || strings.TrimSpace(body) != FileVersion(filepath.Join(s.Dist, name)) {
+			t.Fatalf("%s.sha256: %d %q", name, code, body)
+		}
+	}
+	code, ps := fetch("/join.ps1")
+	if code != 200 || !strings.Contains(ps, "$controller = '"+hc.Controller+"'") || !strings.Contains(ps, "$pin = '"+hc.Pin+"'") ||
+		!strings.Contains(ps, "pumasi-windows-amd64.exe") {
+		t.Fatalf("ps1 %d:\n%s", code, ps)
+	}
+	for _, build := range []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"} {
+		if !strings.Contains(script, "build="+build+" ;;") {
+			t.Fatalf("join.sh does not know %s", build)
+		}
+	}
+}
+
+func TestDistName(t *testing.T) {
+	for in, want := range map[[2]string]string{
+		{"linux", "amd64"}: "pumasi-linux-amd64", {"darwin", "arm64"}: "pumasi-darwin-arm64",
+		{"windows", "amd64"}: "pumasi-windows-amd64.exe", {"plan9", "amd64"}: "", {"linux", "../x"}: "", {"", "amd64"}: "",
+	} {
+		if got := DistName(in[0], in[1]); got != want {
+			t.Errorf("DistName(%q, %q) = %q, want %q", in[0], in[1], got, want)
+		}
+	}
+}
+
+// A darwin host must not be handed the linux build of the same arch.
+func TestBuildIsMatchedPerSystem(t *testing.T) {
+	s, hc, token := controller(t)
+	ctx := context.Background()
+	for _, name := range []string{"pumasi-linux-arm64", "pumasi-darwin-arm64"} {
+		if err := os.WriteFile(filepath.Join(s.Dist, name), []byte(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hc.Register(ctx, token, false); err != nil {
+		t.Fatal(err)
+	}
+	mac := FileVersion(filepath.Join(s.Dist, "pumasi-darwin-arm64"))
+	var asked string
+	h := &Host{Config: hc, Version: mac, OS: "darwin", Arch: "arm64"}
+	h.Upgrade = func(_ context.Context, w string) (string, error) { asked = w; return w, nil }
+	stop := run(t, h)
+	waitUp(t, s.Peer(hc.ID))
+	if asked != "" {
+		t.Fatalf("a host on the controller's darwin build was told to switch to %s", asked)
+	}
+	stop()
+	eventually(t, "drop", func() bool { return !s.Peer(hc.ID).Link().Connected })
+
+	// The same host without the header is a linux host, as before other systems could join.
+	h = &Host{Config: hc, Version: mac, Arch: "arm64"}
+	h.Upgrade = func(_ context.Context, w string) (string, error) { asked = w; return w, nil }
+	run(t, h)
+	waitUp(t, s.Peer(hc.ID))
+	if asked != FileVersion(filepath.Join(s.Dist, "pumasi-linux-arm64")) {
+		t.Fatalf("asked to switch to %q", asked)
+	}
+}
+
+// The controller reads a connection the host closed as "agent exited"; the
+// host that closed it for another reason says so when it is back.
+func TestHostSaysWhyItDialedAgain(t *testing.T) {
+	p := &Peer{up: make(chan struct{})}
+	p.why = WhyExited
+	p.attach(nil, "v", "", WhyKeepalive)
+	if got := p.Link().Why; got != WhyKeepalive {
+		t.Fatalf("why = %q", got)
+	}
+	// A new agent process has nothing to say: the controller's reading stands.
+	p = &Peer{up: make(chan struct{})}
+	p.why = WhyExited
+	p.attach(nil, "v", "", "")
+	if got := p.Link().Why; got != WhyExited {
+		t.Fatalf("why = %q", got)
+	}
+	// What the controller saw itself is not overwritten.
+	p = &Peer{up: make(chan struct{})}
+	p.why = WhyKeepalive
+	p.attach(nil, "v", "", "the controller closed the connection")
+	if got := p.Link().Why; got != WhyKeepalive {
+		t.Fatalf("why = %q", got)
 	}
 }
 

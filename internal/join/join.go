@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,6 +40,8 @@ const (
 	hdrSecret  = "Pumasi-Secret"
 	hdrVersion = "Pumasi-Version" // also on the answer: the build the controller serves
 	hdrArch    = "Pumasi-Arch"
+	hdrOS      = "Pumasi-Os"   // linux when absent (hosts from before other systems could join)
+	hdrWhy     = "Pumasi-Why"  // why the host's previous session ended, as the host saw it
 	hdrStay    = "Pumasi-Stay" // why the host could not switch to the controller's build
 )
 
@@ -47,7 +50,25 @@ const (
 	WhyKeepalive = "keepalive timeout"
 	WhyReset     = "connection reset"
 	WhyReplaced  = "replaced by a new connection"
+	// WhyExited is the controller's reading of a connection the host closed:
+	// the agent ended. A host that closed it for another reason says so when it returns.
+	WhyExited = "agent exited"
 )
+
+var distRE = regexp.MustCompile(`^pumasi-(linux|darwin|windows)-(amd64|arm64)$`)
+
+// DistName is the file name of the build for a system, as `make` leaves it in
+// dist and as hosts ask for it ("" = no such build).
+func DistName(goos, arch string) string {
+	name := "pumasi-" + goos + "-" + arch
+	if !distRE.MatchString(name) {
+		return ""
+	}
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return name
+}
 
 // Registration is what a host says about itself when it joins.
 type Registration struct {

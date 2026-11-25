@@ -9,14 +9,13 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/midagedev/pumasi/internal/cgroup"
+	"github.com/midagedev/pumasi/internal/agent"
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/join"
 )
@@ -51,13 +50,29 @@ func runInvite(args []string) error {
 		return err
 	}
 	addr, others := advertised(cfg.Listen)
-	fmt.Printf("Run this on the host that should join:\n\n  curl -fsSk --pinnedpubkey '%s' https://%s/join.sh | sh -s -- %s\n\n", id.Pin, addr, token)
-	fmt.Println("The host lends half of its cpus and memory under its hostname; to say otherwise, add")
-	fmt.Println("--name NAME, --cpus N, --mem 6G or --desktop (someone works on it) after the token.")
+	fmt.Print(inviteText(id.Pin, addr, token))
 	if len(others) > 0 {
 		fmt.Printf("This machine also has %s; use the address the host can reach.\n", strings.Join(others, ", "))
 	}
 	return nil
+}
+
+// inviteText is what `pumasi invite` prints: one line per kind of shell.
+func inviteText(pin, addr, token string) string {
+	return fmt.Sprintf(`Run this on the host that should join.
+
+Linux, macOS:
+
+  curl -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.sh | sh -s -- %[3]s
+
+Windows (PowerShell, in a window on that machine's desktop):
+
+  & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.ps1 | Out-String))) %[3]s
+
+The host lends half of its cpus and memory under its hostname; to say otherwise, add
+--name NAME, --cpus N, --mem 6G or --desktop (someone works on it) after the token.
+On macOS and Windows runners are processes of the user who ran the line, not containers.
+`, pin, addr, token)
 }
 
 // advertised is the address hosts should dial for a listen address, and this
@@ -103,13 +118,40 @@ type hostPaths struct {
 	dir   string // ~/.cache/pumasi
 	conf  string // join.json: controller, pin, this host's id and secret
 	state string // join.state: connected or not, written by the agent
-	pid   string // join.pid: the restart loop, on hosts without a usable systemd
+	pid   string // join.pid: the process that restarts the agent, where no service manager does
 	log   string
 }
 
+// cacheDir is ~/.cache on every OS (not ~/Library/Caches or %LocalAppData%),
+// or what XDG_CACHE_HOME says on Linux.
+func cacheDir() string {
+	if runtime.GOOS == "linux" {
+		if d, err := os.UserCacheDir(); err == nil {
+			return d
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache")
+}
+
+// installedBin is where the join script puts the binary.
+func installedBin() string {
+	home, _ := os.UserHomeDir()
+	name := "pumasi"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(home, ".local", "bin", name)
+}
+
+// runningInstalled reports whether this process is the installed binary.
+func runningInstalled() bool {
+	exe, err := os.Executable()
+	return err == nil && filepath.Clean(exe) == installedBin()
+}
+
 func paths() hostPaths {
-	cache, _ := os.UserCacheDir()
-	d := filepath.Join(cache, "pumasi")
+	d := filepath.Join(cacheDir(), "pumasi")
 	return hostPaths{dir: d, conf: filepath.Join(d, "join.json"), state: filepath.Join(d, "join.state"),
 		pid: filepath.Join(d, "join.pid"), log: filepath.Join(d, "agent.log")}
 }
@@ -144,8 +186,9 @@ func runJoin(args []string) error {
 	}
 	p := paths()
 	hc, err := join.LoadHostConfig(p.conf)
-	if err != nil || hc.ID == "" {
-		hc.ID, hc.Secret = join.NewHostID() // first time; a host that joins again keeps who it is
+	first := err != nil || hc.ID == ""
+	if first {
+		hc.ID, hc.Secret = join.NewHostID() // a host that joins again keeps who it is
 	}
 	hc.Controller, hc.Pin = fs.Arg(0), fs.Arg(1)
 	token := fs.Arg(2)
@@ -160,16 +203,20 @@ func runJoin(args []string) error {
 		hc.CPUs = max(1, float64(runtime.NumCPU()/2))
 	}
 	if hc.Mem == 0 {
-		mi, err := cgroup.DefaultReader().Meminfo()
-		if err != nil {
-			return fmt.Errorf("cannot read this machine's memory (%w); pass --mem", err)
+		_, meter := agent.Platform("pumasi", p.dir)
+		hu, err := meter.Host()
+		if err != nil || hu.MemBytes <= 0 {
+			return fmt.Errorf("cannot read this machine's memory (%v); pass --mem", err)
 		}
-		hc.Mem = int64(mi.Total) / 2
+		hc.Mem = hu.MemBytes / 2
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if !preflight(ctx, os.Stdout, hc, token) {
+		if first && runningInstalled() {
+			removeBinary() // the line fetches it again; a host that did not join keeps nothing
+		}
 		return errors.New("not joined: fix the FAIL lines and run the invite line again")
 	}
 	if err := hc.Register(ctx, token, false); err != nil {
@@ -272,40 +319,37 @@ func preflight(ctx context.Context, w io.Writer, hc join.HostConfig, token strin
 		}
 	}
 	network()
-
-	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
-	text := strings.TrimSpace(string(out))
-	switch {
-	case errors.Is(err, exec.ErrNotFound):
-		say(false, "docker: not installed (no docker in PATH) — runners are Docker containers")
-	case err != nil && strings.Contains(text, "permission denied"):
-		say(false, "docker: this user may not use it — add the user to the docker group and log in again")
-	case err != nil:
-		say(false, "docker: the daemon does not answer (%s)", lastLineOf(text))
-	default:
-		say(true, "docker %s reachable as this user", text)
-	}
-
-	ctrl, err := os.ReadFile("/sys/fs/cgroup/cgroup.controllers")
-	have := strings.Fields(string(ctrl))
-	switch {
-	case err != nil:
-		say(false, "cgroup v2: /sys/fs/cgroup is not a cgroup v2 mount — pumasi measures and limits runners through cgroup v2")
-	case !contains(have, "memory") || !contains(have, "cpu"):
-		say(false, "cgroup v2: the memory and cpu controllers are not both enabled (have: %s)", strings.Join(have, " "))
-	default:
-		say(true, "cgroup v2 with memory and cpu controllers")
-	}
+	note := func(format string, a ...any) { fmt.Fprintf(w, "note  %s\n", fmt.Sprintf(format, a...)) }
+	preflightHost(ctx, say, note)
 	return all
 }
 
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
+// runners lists pumasi's runners on this host (containers on Linux,
+// processes elsewhere): all of them, or only those that are up.
+func runners(ctx context.Context, p hostPaths, all bool) []string {
+	drv, _ := agent.Platform("pumasi", p.dir)
+	cs, _ := drv.List(ctx)
+	var names []string
+	for _, c := range cs {
+		if all || c.State == "running" {
+			names = append(names, c.Name)
 		}
 	}
-	return false
+	return names
+}
+
+func removeRunners(ctx context.Context, p hostPaths) (int, error) {
+	drv, _ := agent.Platform("pumasi", p.dir)
+	cs, err := drv.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range cs {
+		if err := drv.Remove(ctx, c.Name); err != nil {
+			return 0, fmt.Errorf("remove runner %s: %w", c.Name, err)
+		}
+	}
+	return len(cs), nil
 }
 
 func tcpWhy(err error) string {
@@ -382,7 +426,7 @@ func runLeave(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if !*force {
-		if up := pumasiContainers(ctx, false); len(up) > 0 {
+		if up := runners(ctx, p, false); len(up) > 0 {
 			return fmt.Errorf("%d runners are still up and may be running jobs:\n  %s\nnothing was removed; `pumasi leave --force` stops them too",
 				len(up), strings.Join(up, "\n  "))
 		}
@@ -396,11 +440,10 @@ func runLeave(args []string) error {
 		}
 	}
 	stopService(p, true)
-	n, err := removeContainers(ctx)
+	n, err := removeRunners(ctx, p)
 	if err != nil {
 		return err
 	}
-	removeFiles(p)
-	fmt.Printf("left: agent stopped, %d containers removed, %s and the binary removed; %s\n", n, p.dir, told)
+	fmt.Printf("left: agent stopped, %d runners removed, %s; %s\n", n, removeFiles(p), told)
 	return nil
 }

@@ -31,11 +31,12 @@ import (
 )
 
 type Controller struct {
-	cfg    *config.Config
-	gh     *scaleset.Client
-	token  string
-	ledger *ledger.Ledger
-	log    *slog.Logger
+	noMarker map[string]time.Time // runners warned about in markerCheck, by GitHub's job start; Evaluate's goroutine only
+	cfg      *config.Config
+	gh       *scaleset.Client
+	token    string
+	ledger   *ledger.Ledger
+	log      *slog.Logger
 	// ListenerLog receives the scale set listener's own lines (one per long poll).
 	ListenerLog *slog.Logger
 	ev          *EventLog
@@ -557,6 +558,7 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 					c.log.Info(fmt.Sprintf("busy %s", ar.Name))
 					c.ev.Write("runner-busy", map[string]any{"runner": ar.Name, "runningJobAt": ar.JobStartedAt})
 				}
+				c.markerCheck(h, lr, ar)
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
 				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost, JobStartedAt: lr.StartedAt}
@@ -582,6 +584,37 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 		}
 	}
 	return out
+}
+
+// markerCheck names a runner that has a job according to GitHub while its own
+// output, as the agent reads it, has not shown "Running job" for a minute: the
+// agent's reading of the runner's log is late or failing (a host too busy to
+// run it, a log that cannot be read), and until it shows, that runner's job is
+// known from GitHub alone. Once per runner, and once more when the line shows.
+func (c *Controller) markerCheck(h *host, lr ledger.Runner, ar api.Runner) {
+	const late = time.Minute
+	since, warned := c.noMarker[ar.Name]
+	switch {
+	case ar.JobStartedAt != nil:
+		if warned {
+			c.log.Info(fmt.Sprintf("runner %s: the agent on %s now sees the job in the runner's output, %s after GitHub assigned it",
+				ar.Name, h.cfg.Name, time.Since(since).Round(time.Second)))
+			delete(c.noMarker, ar.Name)
+		}
+	case warned || lr.JobID == "" || lr.StartedAt.IsZero() || ar.State != "running" || time.Since(lr.StartedAt) < late:
+	default:
+		if c.noMarker == nil {
+			c.noMarker = map[string]time.Time{}
+		}
+		c.noMarker[ar.Name] = lr.StartedAt
+		age := "never"
+		if h.snap != nil && !h.snap.SampledAt.IsZero() {
+			age = time.Since(h.snap.SampledAt).Round(time.Second).String() + " ago"
+		}
+		c.log.Warn(fmt.Sprintf("runner %s has run %s for %s according to GitHub, but the agent on %s has not seen \"Running job\" in the runner's output (agent sampled %s; its log on the host says why if reading failed)",
+			ar.Name, lr.Job, time.Since(lr.StartedAt).Round(time.Second), h.cfg.Name, age))
+		c.ev.Write("runner-marker-late", map[string]any{"runner": ar.Name, "host": h.cfg.Name, "jobAssignedAt": lr.StartedAt, "agentSampledAt": h.snap.SampledAt})
+	}
 }
 
 func (c *Controller) recordUsage(r api.Runner) {

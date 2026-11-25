@@ -1,6 +1,7 @@
 package join
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	_ "embed"
@@ -23,6 +24,9 @@ import (
 
 //go:embed join.sh
 var joinScript string
+
+//go:embed join.ps1
+var joinScriptWindows string
 
 // Member is a host that joined, as the controller remembers it across restarts.
 type Member struct {
@@ -50,7 +54,7 @@ func ReadMembers(dir string) []Member {
 // Server is the controller's side: the listener hosts connect to.
 type Server struct {
 	Dir  string // the controller's state directory: key pair, token, members
-	Dist string // holds pumasi-linux-<arch>, handed to hosts
+	Dist string // holds pumasi-<os>-<arch>[.exe], handed to hosts
 	// Reserved reports a name a joining host may not take (a host of the config).
 	Reserved func(name string) bool
 	// Changed is called after a host joined, left, connected or dropped.
@@ -93,7 +97,8 @@ func (s *Server) Listen(addr string) (net.Addr, error) {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /join.sh", s.script)
+	mux.HandleFunc("GET /join.sh", s.script(joinScript, "text/x-shellscript"))
+	mux.HandleFunc("GET /join.ps1", s.script(joinScriptWindows, "text/plain; charset=utf-8"))
 	mux.HandleFunc("GET /dl/{file}", s.download)
 	mux.HandleFunc("POST /v1/join", s.register)
 	mux.HandleFunc("POST /v1/leave", s.leave)
@@ -189,26 +194,27 @@ func (s *Server) member(id string) (Member, bool) {
 	return s.members[i], true
 }
 
-func (s *Server) script(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/x-shellscript")
-	// r.Host is the address this host reached the controller at; it keeps using it.
-	_, _ = strings.NewReplacer("{{controller}}", r.Host, "{{pin}}", s.id.Pin).WriteString(w, joinScript)
+func (s *Server) script(text, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		// r.Host is the address this host reached the controller at; it keeps using it.
+		_, _ = strings.NewReplacer("{{controller}}", r.Host, "{{pin}}", s.id.Pin).WriteString(w, text)
+	}
 }
 
-var distFile = regexp.MustCompile(`^pumasi-linux-(amd64|arm64)(\.sha256)?$`)
-
+// download serves /dl/pumasi-<os>-<arch>[.exe] and the same name with .sha256.
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	m := distFile.FindStringSubmatch(r.PathValue("file"))
-	if m == nil {
+	file, sum := strings.CutSuffix(r.PathValue("file"), ".sha256")
+	goos, arch, ok := splitDist(file)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(s.Dist, "pumasi-linux-"+m[1])
-	if m[2] == "" {
-		http.ServeFile(w, r, path)
+	if !sum {
+		http.ServeFile(w, r, filepath.Join(s.Dist, file))
 		return
 	}
-	v := s.wanted(m[1])
+	v := s.wanted(goos, arch)
 	if v == "" {
 		http.NotFound(w, r)
 		return
@@ -216,12 +222,22 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, v)
 }
 
-// wanted is the build the controller hands to hosts of arch ("" = it has none).
-func (s *Server) wanted(arch string) string {
-	if !slices.Contains([]string{"amd64", "arm64"}, arch) {
+// splitDist reads the system out of a dist file name.
+func splitDist(file string) (goos, arch string, ok bool) {
+	m := distRE.FindStringSubmatch(strings.TrimSuffix(file, ".exe"))
+	if m == nil || DistName(m[1], m[2]) != file {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+// wanted is the build the controller hands to hosts of a system ("" = it has none).
+func (s *Server) wanted(goos, arch string) string {
+	name := DistName(goos, arch)
+	if name == "" {
 		return ""
 	}
-	path := filepath.Join(s.Dist, "pumasi-linux-"+arch)
+	path := filepath.Join(s.Dist, name)
 	fi, err := os.Stat(path)
 	if err != nil {
 		return ""
@@ -270,9 +286,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !byToken && !bySecret {
 		why := "this host is not known to the controller"
 		if reg.Token != "" {
-			why = "wrong token"
+			why = "not the controller's token"
 			if fi, err := os.Stat(tokenPath(s.Dir)); err == nil {
-				why = "rotated on " + fi.ModTime().Format("01-02 15:04")
+				why += "; that one was made on " + fi.ModTime().Format("01-02 15:04")
 			}
 		}
 		http.Error(w, why, http.StatusUnauthorized)
@@ -335,7 +351,11 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	version, stay := r.Header.Get(hdrVersion), r.Header.Get(hdrStay)
-	if want := s.wanted(r.Header.Get(hdrArch)); want != "" && want != version && stay == "" {
+	goos := r.Header.Get(hdrOS)
+	if goos == "" {
+		goos = "linux"
+	}
+	if want := s.wanted(goos, r.Header.Get(hdrArch)); want != "" && want != version && stay == "" {
 		w.Header().Set(hdrVersion, want)
 		http.Error(w, "the controller serves another build", http.StatusUpgradeRequired)
 		return
@@ -362,11 +382,11 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := s.Peer(id)
-	p.attach(sess, version, stay)
+	p.attach(sess, version, stay, r.Header.Get(hdrWhy))
 	s.Changed()
 	go func() {
 		<-sess.CloseChan()
-		if p.drop(sess, wc.why("agent exited")) {
+		if p.drop(sess, wc.why(WhyExited)) {
 			s.Changed()
 		}
 	}()
@@ -384,10 +404,20 @@ type Peer struct {
 	droppedAt time.Time
 }
 
-func (p *Peer) attach(sess *yamux.Session, version, stay string) {
+// attach makes sess the peer's session. hostWhy is why the host says its
+// previous one ended ("" = it does not know: a new process).
+func (p *Peer) attach(sess *yamux.Session, version, stay, hostWhy string) {
 	p.mu.Lock()
 	old := p.sess
 	p.sess, p.version, p.stay, p.since = sess, version, stay, time.Now()
+	switch {
+	case old != nil:
+		// This side had not noticed yet; only the host knows why it dialed again.
+		p.why, p.droppedAt = cmp.Or(hostWhy, WhyReplaced), time.Now()
+	case hostWhy != "" && p.why == WhyExited:
+		// The host closed the connection, but not because its agent ended.
+		p.why = hostWhy
+	}
 	if old == nil {
 		close(p.up)
 	}

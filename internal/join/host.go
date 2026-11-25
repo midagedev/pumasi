@@ -135,9 +135,13 @@ func (c HostConfig) Leave(ctx context.Context) error {
 	return c.post(ctx, "/v1/leave", Registration{ID: c.ID, Secret: c.Secret})
 }
 
-// Download fetches the controller's build for arch into w.
-func (c HostConfig) Download(ctx context.Context, arch string, w io.Writer) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+c.Controller+"/dl/pumasi-linux-"+arch, nil)
+// Download fetches the controller's build for a system into w.
+func (c HostConfig) Download(ctx context.Context, goos, arch string, w io.Writer) error {
+	name := DistName(goos, arch)
+	if name == "" {
+		return fmt.Errorf("download: there is no pumasi build for %s/%s", goos, arch)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+c.Controller+"/dl/"+name, nil)
 	if err != nil {
 		return err
 	}
@@ -158,6 +162,7 @@ func (c HostConfig) Download(ctx context.Context, arch string, w io.Writer) erro
 type Host struct {
 	Config  HostConfig
 	Version string // this build
+	OS      string // GOOS
 	Arch    string
 	Handler http.Handler
 	// Upgrade replaces this process with the controller's build want. It only
@@ -168,6 +173,7 @@ type Host struct {
 	Log   *slog.Logger
 
 	stay string
+	last string // why the previous session of this process ended
 }
 
 const (
@@ -189,6 +195,7 @@ func (h *Host) Run(ctx context.Context) {
 		}
 		h.State(false, why)
 		if connected {
+			h.last = why
 			h.Log.Warn("disconnected from the controller; dialing again", "why", why, "after", time.Since(began).Round(time.Second))
 			if time.Since(began) > backoffMax {
 				wait = backoffMin
@@ -217,6 +224,12 @@ func (h *Host) connect(ctx context.Context) (bool, string) {
 	req.Header.Set(hdrSecret, h.Config.Secret)
 	req.Header.Set(hdrVersion, h.Version)
 	req.Header.Set(hdrArch, h.Arch)
+	if h.OS != "" {
+		req.Header.Set(hdrOS, h.OS)
+	}
+	if h.last != "" {
+		req.Header.Set(hdrWhy, h.last)
+	}
 	if h.stay != "" {
 		req.Header.Set(hdrStay, h.stay)
 	}

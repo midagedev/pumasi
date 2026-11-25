@@ -1,18 +1,15 @@
-//go:build !windows
-
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
-	"syscall"
-	"time"
 )
 
 const unitName = "pumasi.service"
@@ -70,46 +67,19 @@ WantedBy=default.target
 		}
 		return "the systemd user unit " + unitName, "", nil
 	}
-	logf, err := os.OpenFile(p.log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
+	if err := startLoop(p, exe); err != nil {
 		return "", "", err
 	}
-	defer logf.Close()
-	// The agent ends with 0 only when it was told to leave.
-	cmd := exec.Command("sh", "-c", `until "$0" agent -join; do sleep 2; done`, exe)
-	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return "", "", err
-	}
-	if err := os.WriteFile(p.pid, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600); err != nil {
-		return "", "", err
-	}
-	_ = cmd.Process.Release()
-	return "a background process that restarts itself",
+	return loopHow,
 		"note: it does not come back after a reboot. This user's systemd units do not outlive the login here;\n" +
 			"after `loginctl enable-linger`, running the invite line again makes it a service.", nil
-}
-
-// loopPid is the restart loop's pid, if the pid file still names one.
-func loopPid(p hostPaths) int {
-	b, err := os.ReadFile(p.pid)
-	if err != nil {
-		return 0
-	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if pid <= 1 || !strings.Contains(string(cmdline), "agent -join") {
-		return 0
-	}
-	return pid
 }
 
 func serviceRunning(p hostPaths) (bool, string) {
 	if _, err := os.Stat(unitPath()); err == nil {
 		return systemctl("is-active", "--quiet", unitName) == nil, "the systemd user unit " + unitName
 	}
-	return loopPid(p) != 0, "a background process that restarts itself"
+	return loopPid(p) != 0, loopHow
 }
 
 // stopService stops the agent however it runs and removes the unit. With
@@ -125,42 +95,32 @@ func stopService(p hostPaths, kill bool) {
 		_ = systemctl("daemon-reload")
 		_ = systemctl("reset-failed", unitName) // stopping the agent by signal counts as a failure there
 	}
-	if pid := loopPid(p); pid != 0 && kill {
-		// The loop leads its own session: the group is the loop and its agent.
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-		for i := 0; i < 50 && syscall.Kill(-pid, 0) == nil; i++ {
-			time.Sleep(100 * time.Millisecond)
-		}
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-	}
-	_ = os.Remove(p.pid)
+	stopLoop(p, kill)
 }
 
-// pumasiContainers lists the containers labelled pumasi: all of them, or only those that are up.
-func pumasiContainers(ctx context.Context, all bool) []string {
-	args := []string{"ps", "--filter", "label=pumasi", "--format", "{{.Names}}"}
-	if all {
-		args = append(args, "-a")
+// preflightHost checks what runners need here: docker and cgroup v2.
+func preflightHost(ctx context.Context, say func(bool, string, ...any) bool, _ func(string, ...any)) {
+	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		say(false, "docker: not installed (no docker in PATH) — runners are Docker containers")
+	case err != nil && strings.Contains(text, "permission denied"):
+		say(false, "docker: this user may not use it — add the user to the docker group and log in again")
+	case err != nil:
+		say(false, "docker: the daemon does not answer (%s)", lastLineOf(text))
+	default:
+		say(true, "docker %s reachable as this user", text)
 	}
-	out, _ := exec.CommandContext(ctx, "docker", args...).Output()
-	return strings.Fields(string(out))
-}
 
-func removeContainers(ctx context.Context) (int, error) {
-	names := pumasiContainers(ctx, true)
-	if len(names) == 0 {
-		return 0, nil
-	}
-	if out, err := exec.CommandContext(ctx, "docker", append([]string{"rm", "-f"}, names...)...).CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("docker rm: %w: %s", err, lastLineOf(strings.TrimSpace(string(out))))
-	}
-	return len(names), nil
-}
-
-// removeFiles deletes pumasi's directory and, when it is the installed one, the binary.
-func removeFiles(p hostPaths) {
-	_ = os.RemoveAll(p.dir)
-	if exe, err := os.Executable(); err == nil && strings.HasSuffix(exe, "/.local/bin/pumasi") {
-		_ = os.Remove(exe)
+	ctrl, err := os.ReadFile("/sys/fs/cgroup/cgroup.controllers")
+	have := strings.Fields(string(ctrl))
+	switch {
+	case err != nil:
+		say(false, "cgroup v2: /sys/fs/cgroup is not a cgroup v2 mount — pumasi measures and limits runners through cgroup v2")
+	case !slices.Contains(have, "memory") || !slices.Contains(have, "cpu"):
+		say(false, "cgroup v2: the memory and cpu controllers are not both enabled (have: %s)", strings.Join(have, " "))
+	default:
+		say(true, "cgroup v2 with memory and cpu controllers")
 	}
 }

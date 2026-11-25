@@ -37,11 +37,8 @@ func runAgent(args []string) error {
 	interval := fs.Duration("interval", 5*time.Second, "sampling interval")
 	pidfile := fs.String("pidfile", "", "write the agent's pid here")
 	joined := fs.Bool("join", false, "dial the controller this host joined (see `pumasi join`) instead of listening")
-	cache, _ := os.UserCacheDir()
-	if home, err := os.UserHomeDir(); err == nil && runtime.GOOS != "linux" {
-		cache = filepath.Join(home, ".cache") // one place on every OS, not ~/Library/Caches or %LocalAppData%
-	}
-	state := fs.String("state", filepath.Join(cache, "pumasi", "runners.json"),
+	supervise := fs.Bool("supervise", false, "with -join: stay in the background and start the agent again whenever it ends (how Windows runs it at logon)")
+	state := fs.String("state", filepath.Join(cacheDir(), "pumasi", "runners.json"),
 		"runner records kept across agent restarts (macOS, Windows: the runners themselves live beside it)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,6 +46,9 @@ func runAgent(args []string) error {
 	mem, err := config.ParseBytes(*budgetMem)
 	if err != nil {
 		return fmt.Errorf("-budget-mem: %w", err)
+	}
+	if *supervise {
+		return superviseAgent(paths())
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	exe, _ := os.Executable()
@@ -106,7 +106,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 	mux.Handle("/", agentAPI)
 	// The controller's `down`: remove everything pumasi put here, then end.
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, r *http.Request) {
-		n, err := removeContainers(r.Context())
+		n, err := removeRunners(r.Context(), p)
 		out := map[string]any{"containers": n}
 		if err != nil {
 			out["problem"] = err.Error()
@@ -121,7 +121,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 			close(left)
 		}
 	})
-	h := &join.Host{Config: hc, Version: version, Arch: runtime.GOARCH, Handler: mux, Log: log,
+	h := &join.Host{Config: hc, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Handler: mux, Log: log,
 		State: func(connected bool, why string) {
 			b, _ := json.Marshal(linkState{Connected: connected, At: time.Now(), Why: why})
 			_ = os.WriteFile(p.state, b, 0o600)
@@ -149,7 +149,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 }
 
 // switchBuild replaces this binary with the controller's build and runs it in
-// place of this process. Runner containers are not children of the agent and
+// place of this process. Runners are not children the agent takes with it and
 // their records are on disk, so they do not notice. It returns only on failure.
 func switchBuild(ctx context.Context, hc join.HostConfig, exe, want string) error {
 	tmp := exe + ".new"
@@ -157,7 +157,7 @@ func switchBuild(ctx context.Context, hc join.HostConfig, exe, want string) erro
 	if err != nil {
 		return err
 	}
-	err = hc.Download(ctx, runtime.GOARCH, f)
+	err = hc.Download(ctx, runtime.GOOS, runtime.GOARCH, f)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -165,11 +165,8 @@ func switchBuild(ctx context.Context, hc join.HostConfig, exe, want string) erro
 		err = errors.New("the download does not match the build the controller named")
 	}
 	if err == nil {
-		err = os.Rename(tmp, exe)
+		err = replaceSelf(exe, tmp)
 	}
-	if err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return syscall.Exec(exe, os.Args, os.Environ())
+	_ = os.Remove(tmp)
+	return err
 }
