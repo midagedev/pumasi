@@ -38,7 +38,7 @@ type Controller struct {
 	classes []*class
 	kick    chan struct{}
 
-	mu        sync.Mutex // guards class.stats and inflight
+	mu        sync.Mutex      // guards class.stats and inflight
 	inflight  map[string]bool // runners whose start request has not returned yet
 	starts    sync.WaitGroup
 	lastDefer map[string]deferRec
@@ -223,9 +223,13 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 	}
 	for _, j := range msg.JobCompletedMessages {
 		if j.RunnerName == "" {
-			// GitHub withdrew the assignment (no runner came) or the job was canceled while
-			// queued. Both look the same here; keep the demand and let the run check decide.
+			// No runner took it within 5 minutes: GitHub cancels this assignment and, up to
+			// three times, assigns the job again under a new job id (M0, M1). A job canceled
+			// by a person looks the same and is simply not assigned again.
 			c.log.Info("job completed without a runner", "class", cls, "job", j.JobDisplayName, "result", j.Result)
+			if err := c.ledger.CloseDemand(j.JobID, "unassigned-"+j.Result, orNow(j.FinishTime, now)); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := c.ledger.JobCompleted(j.RunnerName, job(cls, j.JobMessageBase), j.Result, orNow(j.FinishTime, now)); err != nil {

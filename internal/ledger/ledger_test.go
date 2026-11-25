@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,14 +22,26 @@ func TestLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Assigned three times (GitHub reassigns every 5 minutes), still one open demand.
+	// GitHub cancels an assignment nobody took after 5 minutes and assigns the job
+	// again under a new id, three times; one open demand remains, as old as the first.
 	for i := range 3 {
-		must(l.UpsertDemand(j, t0.Add(time.Duration(i)*5*time.Minute)))
+		at := t0.Add(time.Duration(i) * 5 * time.Minute)
+		if i > 0 {
+			must(l.CloseDemand(j.ID, "unassigned-canceled", at))
+			j.ID = fmt.Sprintf("job-%d", i+1)
+		}
+		must(l.UpsertDemand(j, at))
 	}
+	must(l.UpsertDemand(j, t0.Add(11*time.Minute))) // a redelivered message changes nothing but last_seen
 	ds, err := l.OpenDemand()
 	must(err)
-	if len(ds) != 1 || !ds[0].FirstSeen.Equal(t0) || !ds[0].LastSeen.Equal(t0.Add(10*time.Minute)) {
+	if len(ds) != 1 || ds[0].JobID != "job-3" || !ds[0].FirstSeen.Equal(t0) || !ds[0].LastSeen.Equal(t0.Add(11*time.Minute)) {
 		t.Fatalf("demand %+v", ds)
+	}
+	var n int
+	must(l.db.QueryRow(`SELECT assigned_count FROM demand WHERE job_id='job-3'`).Scan(&n))
+	if n != 3 {
+		t.Fatalf("assigned_count %d", n)
 	}
 
 	must(l.InsertRunner("r1", "linux-s", "h1", t0.Add(11*time.Minute)))
