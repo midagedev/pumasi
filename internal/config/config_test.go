@@ -90,3 +90,19 @@ func TestClassDriverAndMounts(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkDirSitsInTheFirstWritableMount(t *testing.T) {
+	for _, c := range []struct {
+		cl   Class
+		want string
+	}{
+		{Class{Driver: "docker", Mounts: []string{"/srv/keys:ro", "/srv/cache", "/srv/other"}}, "/srv/cache/.pumasi-work/r1"},
+		{Class{Driver: "docker", Mounts: []string{"/srv/keys:ro"}}, ""},
+		{Class{Driver: "docker"}, ""},
+		{Class{Driver: "native", Mounts: []string{"/srv/cache"}}, ""},
+	} {
+		if got := c.cl.WorkDir("r1"); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.cl, got, c.want)
+		}
+	}
+}

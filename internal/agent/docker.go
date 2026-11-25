@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,9 @@ type Spec struct {
 	// Mounts are host paths a container runner sees at the same path
 	// ("/srv/cache", "/srv/keys:ro"). Process runners see the host anyway.
 	Mounts []string
+	// WorkDir: a directory inside one of Mounts for the runner's work
+	// directory, made before the runner starts and removed with it.
+	WorkDir string
 }
 
 // Container is a runner container as the driver sees it.
@@ -67,6 +72,7 @@ const (
 	labelClass = "pumasi.class"
 	labelCPUs  = "pumasi.cpus"
 	labelMem   = "pumasi.mem"
+	labelWork  = "pumasi.workdir"
 )
 
 func (d Docker) Start(ctx context.Context, s Spec) error {
@@ -90,11 +96,51 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 		}
 		args = append(args, "--mount", arg)
 	}
+	if s.WorkDir != "" {
+		ok := filepath.Base(s.WorkDir) == s.Name && filepath.Clean(s.WorkDir) == s.WorkDir
+		inMount := false
+		for _, m := range s.Mounts {
+			if p, ro := strings.CutSuffix(m, ":ro"); !ro && strings.HasPrefix(s.WorkDir, p+"/") {
+				inMount = true
+			}
+		}
+		if !ok || !inMount {
+			return fmt.Errorf("bad work directory %q", s.WorkDir)
+		}
+		// The runner inside the container is another user than the agent.
+		if err := os.MkdirAll(s.WorkDir, 0o777); err != nil {
+			return fmt.Errorf("work directory: %w", err)
+		}
+		if err := os.Chmod(s.WorkDir, 0o777); err != nil {
+			return fmt.Errorf("work directory: %w", err)
+		}
+		args = append(args, "--label", labelWork+"="+s.WorkDir)
+	}
 	cmd := exec.CommandContext(ctx, "docker", append(args, s.Image, "/home/runner/run.sh")...)
 	cmd.Stdin = strings.NewReader("ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if s.WorkDir != "" {
+			_ = os.Remove(s.WorkDir)
+		}
 		return fmt.Errorf("docker run: %w: %s", err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// removeWorkDir deletes a runner's work directory on the host. What the job
+// wrote belongs to the container's user (or to root, when the job ran
+// containers of its own), so where the agent's user may not delete it a
+// container does, as root.
+func removeWorkDir(ctx context.Context, dir, image string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	parent, name := filepath.Split(dir)
+	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "-u", "0", "--mount", "type=bind,source="+filepath.Clean(parent)+",target=/w",
+		"--entrypoint", "rm", image, "-rf", "/w/"+name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("work directory %s not removed: %s", dir, lastLine(out))
 	}
 	return nil
 }
@@ -113,6 +159,9 @@ func (d Docker) Remove(ctx context.Context, name string) error {
 	out, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "No such container") {
 		return fmt.Errorf("docker rm: %w: %s", err, bytes.TrimSpace(out))
+	}
+	if dir := c[0].labels[labelWork]; dir != "" && filepath.Base(dir) == name {
+		return removeWorkDir(ctx, dir, c[0].Config.Image)
 	}
 	return nil
 }
@@ -235,6 +284,7 @@ type inspected struct {
 	} `json:"State"`
 	Config struct {
 		Labels map[string]string `json:"Labels"`
+		Image  string            `json:"Image"`
 	} `json:"Config"`
 	labels map[string]string
 }

@@ -219,6 +219,22 @@ func (c *Config) defaults() {
 // MountPath is the path of a mounts entry, without its ":ro".
 func MountPath(m string) string { return strings.TrimSuffix(m, ":ro") }
 
+// WorkDir is where a container runner of the class keeps its work directory:
+// inside the class's first writable mount, so that the job's checkout and the
+// caches in that mount are one filesystem behind one mount and tools can
+// hard-link between them (pnpm's store, ccache). "" = inside the container.
+func (cl Class) WorkDir(runner string) string {
+	if cl.Driver != "docker" {
+		return ""
+	}
+	for _, m := range cl.Mounts {
+		if !strings.HasSuffix(m, ":ro") {
+			return m + "/.pumasi-work/" + runner
+		}
+	}
+	return ""
+}
+
 // MountPaths is every host path some class asks for.
 func (c *Config) MountPaths() []string {
 	var out []string

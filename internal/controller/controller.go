@@ -811,7 +811,8 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 		_ = c.ledger.SetState(name, "failed", reason)
 		_ = c.ledger.MarkRemoved(name, c.now())
 	}
-	jit, err := c.gh.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name}, cl.setID)
+	workDir := cl.cfg.WorkDir(name)
+	jit, err := c.gh.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name, WorkFolder: workDir}, cl.setID)
 	if err != nil {
 		fail("jit: " + err.Error())
 		return
@@ -824,7 +825,7 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	defer cancel()
 	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
 		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
-		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts})
+		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir})
 	if err != nil {
 		// The registration stays until unregister removes it.
 		fail("agent start: " + err.Error())

@@ -92,6 +92,9 @@ type StartRequest struct {
 	Driver string `json:"driver,omitempty"`
 	// Host paths a container runner gets at the same path; ":ro" = read only.
 	Mounts []string `json:"mounts,omitempty"`
+	// WorkDir: a host directory inside one of Mounts, named after the runner,
+	// that the host makes for the runner's work directory and removes with it.
+	WorkDir string `json:"workDir,omitempty"`
 }
 
 // Client talks to one agent. BaseURL is resolved per call so a transport can

@@ -307,7 +307,7 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	a.dataMu.Unlock()
 
 	err := a.drv.Start(ctx, Spec{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
-		Driver: req.Driver, Mounts: req.Mounts})
+		Driver: req.Driver, Mounts: req.Mounts, WorkDir: req.WorkDir})
 
 	a.dataMu.Lock()
 	if err != nil {

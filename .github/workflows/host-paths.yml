@@ -76,6 +76,10 @@ jobs:
           cat "$d/rw/from-container"
           if touch "$d/ro/x" 2>/dev/null; then echo "the read-only mount took a write"; exit 1; fi
           echo "read-only mount refused the write"
+          # The work directory sits inside the first writable mount: one
+          # filesystem behind one mount, so a cache there can be hard-linked.
+          echo "workspace: $GITHUB_WORKSPACE"
+          ln "$d/rw/from-container" "$GITHUB_WORKSPACE/linked" && echo "hard link from the mount into the workspace: ok ($(stat -c %h "$GITHUB_WORKSPACE/linked") links)"
   plain:
     if: inputs.test == 'plain'
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
