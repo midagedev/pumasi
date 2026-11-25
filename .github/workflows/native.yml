@@ -39,10 +39,14 @@ jobs:
           "runner=$env:RUNNER_NAME os=$env:RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
           # Left behind on purpose: only the end of the runner's Job Object ends it.
           Start-Process ping -ArgumentList '-n','600','127.0.0.1' -WindowStyle Hidden
-          $held = New-Object byte[] (${{ inputs.megabytes }}MB)
-          for ($i = 0; $i -lt $held.Length; $i += 4096) { $held[$i] = 1 }
+          $held = @(); $left = ${{ inputs.megabytes }}
+          while ($left -gt 0) {
+            $n = [Math]::Min($left, 256); $b = New-Object byte[] ($n * 1MB)
+            for ($i = 0; $i -lt $b.Length; $i += 4096) { $b[$i] = 1 }
+            $held += , $b; $left -= $n
+          }
           $end = (Get-Date).AddSeconds(${{ inputs.seconds }}); while ((Get-Date) -lt $end) { }
-          "done runner=$env:RUNNER_NAME held=$($held.Length)"
+          "done runner=$env:RUNNER_NAME held=$($held.Count) blocks"
       - name: burn one cpu, hold memory, leave children behind
         if: runner.os != 'Windows'
         shell: bash
