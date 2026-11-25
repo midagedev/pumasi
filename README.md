@@ -102,6 +102,7 @@ hosts:
 | 키 | 뜻 | 기본 |
 |---|---|---|
 | `name` | `runs-on: [self-hosted, pumasi-<name>]` | 필수 |
+| `labels` | scale set 의 라벨을 직접 정한다. 잡의 `runs-on` 라벨이 전부 이 안에 있으면 그 잡을 받는다 — 기존 고정 러너의 라벨을 그대로 적으면 워크플로우를 안 고치고 옮긴다(아래) | `[self-hosted, pumasi-<name>]` |
 | `cpus`, `memory` | 러너 하나의 크기. 배치할 때 호스트 예산에서 빼고, Linux·Windows 에서는 한도로 강제한다 | 필수 |
 | `os` | `linux` · `macos` · `windows`. 같은 OS 의 호스트에만 놓인다 | `linux` |
 | `driver` | `docker`(컨테이너) 또는 `native`(호스트 사용자의 프로세스 — 호스트의 경로·자격·docker 가 그대로 보인다) | linux 는 `docker`, macos·windows 는 `native` 만 |
@@ -126,7 +127,23 @@ classes:
 - `driver: native`(Linux) 는 systemd user 세션과 cpu·memory 위임, linger 가 필요하다. 없으면 한도 없이 띄우지 않고 대기 사유에 호스트가 이유를 말한다.
 - **native 러너는 격리가 약하다**(Mac·Windows 는 늘 native). 잡은 호스트 사용자의 홈·자격·전역 도구를 읽고 바꿀 수 있다. 믿는 레포의 잡에만 쓴다.
 - 러너 판은 `image:` 의 태그를 따른다(기본 `ghcr.io/actions/actions-runner:2.338.2`). Mac·Windows 는 그 태그에서 판 번호만 읽으므로 **`:latest` 로 적으면 Mac·Windows 러너가 뜨지 못한다.** 판은 사람이 올린다.
-- 기존 고정 러너에서 옮길 때는 라벨 하나를 `driver: native` + `hosts:` 클래스 하나로 시작해, 잡 사이에 넘기는 것이 없는 클래스부터 `hosts:` 를 풀고 컨테이너로 옮긴다([설계](docs/design.md#러너)).
+
+## 기존 고정 러너에서 옮기기
+
+워크플로우를 고치지 않고 옮길 수 있다. 클래스에 고정 러너의 라벨을 그대로 적는다:
+
+```yaml
+classes:   # 워크플로우는 runs-on: [self-hosted, Linux, X64, ci-pool] 그대로
+  - {name: shared, cpus: 4, memory: 8G, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}
+```
+
+- 잡의 `runs-on` 이 그 라벨의 부분집합이면(`[self-hosted, ci-pool]`) 온다. 대소문자는 가리지 않는다. `self-hosted`·OS·아키텍처 라벨도 그냥 적으면 된다.
+- **섞여 돌지 않는다.** 그 라벨에 맞는 scale set 이 생기는 순간부터 그 잡은 전부 scale set 으로 오고, 같은 라벨의 고정 러너는 idle 이어도 잡을 받지 못한다.
+  `pumasi up` 이 꺼져 있거나 자리가 없으면 잡은 고정 러너로 넘어가지 않고 기다린다. 그러니 옛 러너를 하나씩 멈추며 옮기는 것이 아니라 **라벨 단위로 한 번에 넘어온다.**
+- **되돌리기는 `pumasi down`**(scale set 삭제)이다. 그 뒤의 잡은 고정 러너가 바로 받고, 지우는 순간 기다리던 잡은 3 ~ 4분 뒤에 고정 러너로 간다. 넘어오는 동안 고정 러너는 켜 둔 채로 둔다.
+- 라벨은 scale set 을 만들 때 정해진다. 바꾸려면 `pumasi down` 뒤 다시 `up` 하거나 클래스 이름을 바꾼다(`up` 이 그렇게 말한다).
+- 고정 러너처럼 호스트의 경로·자격·docker 를 쓰는 잡은 `driver: native` 로 시작하고, 잡끼리 호스트 디렉터리로 넘기는 것이 있으면 `hosts:` 로 한 머신에 묶는다.
+  넘기는 것이 없는 클래스부터 `hosts:` 를 풀고, 호스트를 안 쓰는 잡은 컨테이너 클래스로 옮긴다. 일회용 러너라서 달라지는 것은 [설계](docs/design.md#고정-러너에서-옮길-때-달라지는-것).
 
 ## 호스트 종류와 사람 우선
 

@@ -8,6 +8,7 @@ classes:                                   # a class is a runner size: runs-on: 
 # - {name: cache, cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}           # a host path, only on hosts that have it
 # - {name: build, cpus: 4, memory: 8G, driver: native, hosts: [server1]}  # a process of the host's user, on that host only
 # - {name: deploy, cpus: 2, memory: 4G, reserve: 1}                       # room other classes may not take
+# - {name: shared, cpus: 4, memory: 8G, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
 # - {name: macos, cpus: 4, memory: 8G, os: macos}                         # os: macos | windows, on hosts of that OS
 
 # hosts:                                   # optional: `up` runs the invite line there over ssh for you

@@ -140,3 +140,13 @@ func TestExampleLoads(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClassLabels(t *testing.T) {
+	if got := strings.Join((Class{Name: "small"}).RunsOn(), ","); got != "self-hosted,pumasi-small" {
+		t.Fatalf("default labels %s", got)
+	}
+	cl := Class{Name: "shared", Labels: []string{"self-hosted", "Linux", "X64", "ci-pool"}}
+	if got := strings.Join(cl.RunsOn(), ","); got != "self-hosted,Linux,X64,ci-pool" || cl.ScaleSet() != "pumasi-shared" {
+		t.Fatalf("labels %s, scale set %s", got, cl.ScaleSet())
+	}
+}
