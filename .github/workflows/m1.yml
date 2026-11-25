@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         i: [1, 2, 3, 4]
-    runs-on: pumasi-linux-l
+    runs-on: [self-hosted, pumasi-linux-l]
     timeout-minutes: 20
     steps:
       - name: burn 2 cpus and ~2G
@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         i: [1, 2, 3, 4, 5, 6]
-    runs-on: pumasi-linux-s
+    runs-on: [self-hosted, pumasi-linux-s]
     timeout-minutes: 20
     steps:
       - name: burn 1 cpu and ~600M
