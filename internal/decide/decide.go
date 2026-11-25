@@ -166,11 +166,11 @@ func Decide(s Snapshot) Plan {
 	for _, d := range open {
 		c, ok := classes[d.Class]
 		if !ok {
-			deferred(d.Class, d.Class+": unknown class")
+			deferred(d.Class, "unknown class")
 			continue
 		}
 		if c.MaxRunners > 0 && live[c.Name] >= c.MaxRunners {
-			deferred(c.Name, fmt.Sprintf("%s: at maxRunners %d", c.Name, c.MaxRunners))
+			deferred(c.Name, fmt.Sprintf("at maxRunners %d", c.MaxRunners))
 			continue
 		}
 		best, bestSlots := "", -1.0
@@ -182,13 +182,13 @@ func Decide(s Snapshot) Plan {
 			case len(c.Hosts) > 0 && !slices.Contains(c.Hosts, hn):
 				continue
 			case !h.Up:
-				why = append(why, hn+": down")
+				why = append(why, hn+" down")
 				continue
 			case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
-				why = append(why, fmt.Sprintf("%s: psi cpu %.1f>=%.0f", hn, h.PSICPU, s.PSICPUThreshold))
+				why = append(why, fmt.Sprintf("%s cpu pressure %.0f", hn, h.PSICPU))
 				continue
 			case freeCPU+1e-9 < c.CPUs || freeMem < float64(c.MemBytes):
-				why = append(why, fmt.Sprintf("%s: free %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
+				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				continue
 			}
 			slots := math.Min(freeCPU/c.CPUs, freeMem/float64(c.MemBytes))
@@ -200,14 +200,13 @@ func Decide(s Snapshot) Plan {
 			if len(why) == 0 {
 				why = append(why, "no allowed host")
 			}
-			deferred(c.Name, fmt.Sprintf("%s: no host with %.1fcpu/%s free [%s]", c.Name, c.CPUs, gib(float64(c.MemBytes)), strings.Join(why, "; ")))
+			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", c.CPUs, gib(float64(c.MemBytes)), strings.Join(why, ", ")))
 			continue
 		}
 		h := hosts[best]
 		freeCPU, freeMem := free(h, alloc[best])
 		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: fmt.Sprintf(
-			"%s on %s (%s): free %.1fcpu/%s, %.1f slots, job waiting since %s",
-			c.Name, best, h.Kind, freeCPU, gib(freeMem), bestSlots, d.FirstSeen.UTC().Format(time.TimeOnly))})
+			"free %.1fcpu/%s, job waiting since %s", freeCPU, gib(freeMem), d.FirstSeen.UTC().Format(time.TimeOnly))})
 		a := alloc[best]
 		alloc[best] = [2]float64{a[0] + c.CPUs, a[1] + float64(c.MemBytes)}
 		live[c.Name]++

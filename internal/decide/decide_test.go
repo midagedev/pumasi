@@ -219,7 +219,7 @@ func TestDeferReasonNamesEachHost(t *testing.T) {
 	if len(p.Defer) != 1 {
 		t.Fatalf("defers %+v", p.Defer)
 	}
-	for _, want := range []string{"linux-l: no host with 2.0cpu/3.0G free", "server1: free 1.0cpu/", "desk1: free 0.0cpu/"} {
+	for _, want := range []string{"no host with 2.0cpu/3.0G free", "server1 1.0cpu/", "desk1 0.0cpu/"} {
 		if !strings.Contains(p.Defer[0].Reason, want) {
 			t.Errorf("reason %q lacks %q", p.Defer[0].Reason, want)
 		}

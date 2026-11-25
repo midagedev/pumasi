@@ -4,6 +4,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -40,10 +42,14 @@ type Class struct {
 }
 
 type Host struct {
-	Name      string `yaml:"name"`
-	SSH       string `yaml:"ssh"` // ssh destination (alias from ~/.ssh/config)
+	Name string `yaml:"name"` // default: the ssh destination
+	SSH  string `yaml:"ssh"`  // ssh destination (alias from ~/.ssh/config)
+	// Shell is the remote command that reads a script on stdin. Default "sh -s";
+	// a Windows host running WSL uses "wsl -e sh -s".
+	Shell     string `yaml:"shell"`
 	AgentPort int    `yaml:"agentPort"`
-	Kind      string `yaml:"kind"` // server | desktop
+	Desktop   bool   `yaml:"desktop"` // someone works on it: filled after servers
+	Kind      string `yaml:"kind"`    // server | desktop (same as desktop: true)
 	Budget    struct {
 		CPUs   float64 `yaml:"cpus"`
 		Memory Bytes   `yaml:"memory"`
@@ -85,7 +91,7 @@ func ParseBytes(s string) (int64, error) {
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (copy pumasi.example.yaml to %s, or pass -config)", err, path)
 	}
 	c := &Config{}
 	if err := yaml.Unmarshal(b, c); err != nil {
@@ -113,8 +119,13 @@ func (c *Config) defaults() {
 		c.Image = "ghcr.io/actions/actions-runner:2.338.2"
 	}
 	if c.Ledger == "" {
-		c.Ledger = "pumasi.db"
+		c.Ledger = "~/.local/state/pumasi/pumasi.db"
 	}
+	c.Ledger = expandHome(c.Ledger)
+	if c.EventLog == "" {
+		c.EventLog = filepath.Join(c.StateDir(), "events.jsonl")
+	}
+	c.EventLog = expandHome(c.EventLog)
 	if c.PSICPUThreshold == 0 {
 		c.PSICPUThreshold = 40
 	}
@@ -124,21 +135,46 @@ func (c *Config) defaults() {
 			cl.ScaleSet = "pumasi-" + cl.Name
 		}
 		if len(cl.Labels) == 0 {
-			cl.Labels = []string{cl.ScaleSet}
+			cl.Labels = []string{cl.ScaleSet, "self-hosted"}
 		}
 		if cl.MaxRunners == 0 {
 			cl.MaxRunners = 10
 		}
 	}
 	for i := range c.Hosts {
-		if c.Hosts[i].AgentPort == 0 {
-			c.Hosts[i].AgentPort = 7391
+		h := &c.Hosts[i]
+		if h.Name == "" {
+			h.Name = h.SSH
 		}
-		if c.Hosts[i].Kind == "" {
-			c.Hosts[i].Kind = "server"
+		if h.Shell == "" {
+			h.Shell = "sh -s"
+		}
+		if h.AgentPort == 0 {
+			h.AgentPort = 7391
+		}
+		if h.Kind == "" {
+			h.Kind = "server"
+			if h.Desktop {
+				h.Kind = "desktop"
+			}
 		}
 	}
 }
+
+// StateDir holds the ledger, the event log and the running controller's address.
+func (c *Config) StateDir() string { return filepath.Dir(c.Ledger) }
+
+func expandHome(p string) string {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, rest)
+		}
+	}
+	return p
+}
+
+// Names end up in runner names, container names and remote scripts.
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func (c *Config) validate() error {
 	if c.URL == "" {
@@ -149,8 +185,14 @@ func (c *Config) validate() error {
 	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {
-		if h.Name == "" || h.SSH == "" {
-			return fmt.Errorf("host needs name and ssh: %+v", h)
+		if h.SSH == "" {
+			return fmt.Errorf("every host needs ssh (an ssh destination)")
+		}
+		if !nameRE.MatchString(h.Name) {
+			return fmt.Errorf("host %q: set name to letters, digits, '.', '_' or '-'", h.Name)
+		}
+		if h.Budget.CPUs <= 0 || h.Budget.Memory <= 0 {
+			return fmt.Errorf("host %s: budget needs cpus and memory, e.g. budget: {cpus: 4, memory: 6G}", h.Name)
 		}
 		if h.Kind != "server" && h.Kind != "desktop" {
 			return fmt.Errorf("host %s: kind must be server or desktop", h.Name)
@@ -161,7 +203,7 @@ func (c *Config) validate() error {
 		hosts[h.Name] = true
 	}
 	for _, cl := range c.Classes {
-		if cl.Name == "" || cl.CPUs <= 0 || cl.Memory <= 0 {
+		if !nameRE.MatchString(cl.Name) || cl.CPUs <= 0 || cl.Memory <= 0 {
 			return fmt.Errorf("class needs name, cpus and memory: %+v", cl)
 		}
 		for _, h := range cl.Hosts {
