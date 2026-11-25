@@ -1,0 +1,29 @@
+name: long
+# One long job (docs/robustness.md): it must outlive a controller restart and a
+# host whose connection is cut while it runs.
+on:
+  workflow_dispatch:
+    inputs:
+      class:
+        description: "class (scale set pumasi-<class>)"
+        default: "linux-s"
+      minutes:
+        description: "how long the job runs"
+        default: "45"
+
+jobs:
+  long:
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 120
+    steps:
+      - name: one line a minute
+        shell: sh
+        run: |
+          echo "runner=$RUNNER_NAME start=$(date +%T)"
+          i=0
+          while [ "$i" -lt "${{ inputs.minutes }}" ]; do
+            sleep 60
+            i=$((i + 1))
+            echo "minute $i $(date +%T)"
+          done
+          echo "done runner=$RUNNER_NAME"
