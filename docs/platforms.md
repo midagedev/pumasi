@@ -87,7 +87,7 @@ docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전�
 | controller 를 내렸다 올림 | `adopted 3 runners (3 running jobs)` |
 | 도는 러너를 죽임 | `runner … died while running … (exit code -1)` — Linux 와 같은 사건 |
 
-### 실측 (Windows 11, x64 데스크톱, 드라이버와 에이전트 수준 — GitHub 잡은 아직)
+### 실측 (Windows 11, x64 데스크톱, 드라이버와 에이전트 수준)
 
 러너 자리에 스크립트를 넣은 가짜 배포판과 진짜 배포판(등록 없이)을 에이전트 API 로 띄웠다.
 
@@ -103,6 +103,28 @@ docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전�
 
 실물에서 나온 결함: Job 을 이름으로 다시 여는 것이 에이전트가 정말 죽은 뒤에는 안 됐다(위의 핸들 이야기). 고쳤다.
 몇 초 만에 끝난 러너는 한 번도 못 잰 채 끝날 수 있다(Mac 과 같다).
+
+### 실측 (Windows 11, join 으로 붙여 GitHub 잡을 끝까지)
+
+ssh 세션에서 초대 줄을 실행해 붙였다(창이 없는 세션 0). 클래스는 `{ name: windows, cpus: 2, memory: 2G, os: windows }`.
+
+| | 결과 |
+|---|---|
+| 붙이기 | 초대 줄 한 번에 exe 를 받고(pinned 인증서), `doctor` ok, status 에 `VIA join` |
+| 잡 둘(1코어 20초 + 300M) | 둘 다 성공. 요청 → Listening 2.7 ~ 3.2초, cpu 23.5초, peak 514 ~ 516M |
+| 잡이 남긴 `ping -t` | 잡이 끝나면 없다. 러너 디렉터리 0 |
+| 2G 클래스에서 3000M 요청 | `OutOfMemoryException` 으로 step 실패, `Windows refused the job more memory` 사건, 거절 1, peak 2048M |
+| 잡 도중 에이전트를 `taskkill` | supervisor 가 5초 안에 다시 띄우고 Job 을 이어받아 잡은 성공. cpu 초가 이어진다(43.6초) |
+| `leave` | Run 값·`%USERPROFILE%\.cache\pumasi`·exe·프로세스 0 |
+
+워크플로우를 쓸 때 걸리는 것(pumasi 가 아니라 Windows 러너의 성질이다):
+
+- `shell: bash` 는 WSL 이 깔린 머신에서 `C:\Windows\System32\bash.exe`(WSL)로 풀려 실패한다. Git Bash 를 쓰려면 PATH 앞에 두거나 `shell:` 에 전체 경로를 적는다.
+- `shell: powershell` 은 실행 정책이 `Restricted` 인 머신에서 스크립트를 못 돌린다. 머신 설정을 바꾸지 않으려면
+  `shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}`.
+
+확인하지 못한 것: 책상에 로그온한 세션에서의 동작(입력 감지, 로그온 때 시작, 콘솔 창), 버전 바꾸기, CPU 상한의 강제.
+ssh 세션에서 붙이면 그 세션이 끝날 때 supervisor 와 에이전트도 같이 죽는다 — 붙이는 것은 그 머신의 창에서 한다.
 
 ## 컨테이너와 다른 점 (감추지 않는다)
 
@@ -123,9 +145,9 @@ join 으로 붙은 Mac 의 에이전트는 LaunchAgent, Windows 는 로그온 �
 ## 순서
 
 1. ~~`Driver` 뒤에 native 드라이버(Mac) — 이 노트북을 호스트로 붙여 잡을 끝까지. 프로세스 정리, 수치, 사건.~~ 됐다.
-2. Windows — Job Object 로 같은 것. 한도 강제 확인. **드라이버·에이전트 수준 실물까지. GitHub 잡은 join 뒤.**
+2. ~~Windows — Job Object 로 같은 것. 한도 강제 확인.~~ 됐다(세션 0 에서. 책상 세션은 아직).
 3. ~~클래스 `os` 와 배치, status·대시보드의 OS 열.~~ 됐다.
-4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작. **Mac 은 됐다(실물). Windows 는 코드까지.**
+4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작. **Mac 은 됐다(실물). Windows 는 ssh 세션에서 붙여 잡까지(책상 세션의 로그온 시작은 아직).**
 5. ~~사람이 쓰는 중이면 새 러너를 받지 않는다.~~ 됐다 — `people-first.md`.
 
 ## 수용

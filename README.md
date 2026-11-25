@@ -149,7 +149,7 @@ Mac·Windows 호스트에서는 러너가 컨테이너가 아니라 **그 OS 의
 - **Mac 은 메모리·CPU 를 강제로 막지 못한다.** 클래스 크기는 배치할 때의 약속일 뿐이다. 넘은 러너는 `ran over its class` 사건으로 알리고 잡은 계속 돈다. 그래서 Mac 호스트의 예산은 넉넉히 남겨 잡는다.
 - **잴 수 있는 것만 남긴다.** Mac 은 cpu 초와 메모리 peak 를 재고 디스크 I/O·압박(PSI)은 비워 둔다.
 - 러너 배포판은 `image` 의 태그(`:2.338.2`)와 같은 판을 호스트가 처음 한 번 내려받는다(`~/.cache/pumasi/dist`).
-- Windows 는 Job Object 로 메모리·CPU 를 강제한다(넘는 할당은 실패한다). 드라이버는 Windows 11 실물에서 확인했다. join 은 Mac 까지 실물로 확인했고 Windows 쪽은 코드와 크로스 빌드까지라, Windows 의 GitHub 잡은 아직이다.
+- Windows 는 Job Object 로 메모리·CPU 를 강제한다(넘는 할당은 실패한다). Windows 11 실물에 join 으로 붙여 GitHub 잡·메모리 초과·에이전트 재시작까지 확인했다(창 없는 ssh 세션에서. 책상에 로그온한 세션의 동작은 아직). `shell: bash` 는 WSL 의 bash 로 풀릴 수 있고 `shell: powershell` 은 실행 정책에 막힐 수 있다 — [문서](docs/platforms.md).
 
 자세한 것은 [Mac 과 Windows 호스트](docs/platforms.md).
 

@@ -38,6 +38,12 @@ classes:
 controller 는 **모든 경로가 있는 호스트에만** 그 클래스를 놓는다. 없어서 못 놓으면 대기 사유에 경로가 나온다:
 `no host has /srv/ci-cache`. native 클래스에 적으면 마운트는 하지 않고 배치 조건으로만 쓴다.
 
+**작업 디렉터리는 첫 쓰기 가능 mount 안에 둔다**(`<mount>/.pumasi-work/<러너>`, 러너가 끝나면 지운다).
+컨테이너의 작업 디렉터리(overlay)와 mount 는 다른 파일시스템이라, pnpm·uv·ccache 처럼 캐시에서 hard link 로
+가져오는 도구가 조용히 복사로 바뀐다. 같은 디스크의 디렉터리 둘을 따로 붙여도 mount 가 다르면 `link()` 는 `EXDEV` 다 —
+한 mount 안에 둘 다 있어야 한다. 그래서 mount 를 하나 더 만들지 않고 캐시 mount 안에 작업 디렉터리를 넣는다.
+mount 가 모두 `:ro` 면 지금처럼 컨테이너 안에 둔다.
+
 ## 3. 클래스를 호스트에 묶기 — `hosts`
 
 ```yaml
@@ -114,6 +120,20 @@ GitHub 은 "앞 잡과 같은 머신" 을 지정하게 해 주지 않으므로, 
 | 붙지 않은 호스트에 묶인 클래스 | `(nohost has not joined)` 로 대기 — 다른 호스트가 비어 있어도 |
 | 설정을 안 바꾼 컨테이너 클래스 | 그대로 성공. cpu·peak·I/O·압박이 장부에 찬다(Linux 경로의 Meter 정리도 이것으로 확인) |
 | systemd user 세션이 없는 조건 | 러너를 만들지 않고 `no systemd user session for …` 를 말한다(드라이버 테스트, 세션 주소를 지워서) |
+
+### 실측 — 작업 디렉터리와 캐시가 같은 파일시스템인가 (같은 WSL2, NVMe ext4, node 22 + pnpm)
+
+node_modules 파일 23,648개 · 633M 인 프로젝트를, 스토어가 채워진 뒤 `pnpm install --offline` 으로 쟀다.
+
+| 작업 디렉터리 | 스토어 | hard link | 설치 | node_modules 가 쓰는 디스크 |
+|---|---|---|---|---|
+| 컨테이너 안(overlay) | bind mount | `EXDEV` → 복사 | 1.45초 | 633M (링크 수 1) |
+| bind mount A | bind mount B (같은 디스크) | `EXDEV` → 복사 | 1.28 ~ 1.38초 | 633M |
+| 한 bind mount 안 | 같은 mount 안 | 된다 | 0.84 ~ 0.90초 | 0 (링크 수 2) |
+
+여기서는 1.6배다. 페이지 캐시가 따뜻하고 디스크가 빠른 조건이라 차이가 작게 나온 쪽이고, 러너마다 633M 을 쓰지 않는 것이 더 크다.
+GitHub 잡으로도 확인했다: `mnt` 클래스의 잡이 mount 의 파일을 `$GITHUB_WORKSPACE` 로 `ln` 해 링크 수 2 를 봤고,
+끝난 뒤 `.pumasi-work/` 는 비었다(잡이 root 로 남긴 파일은 컨테이너로 지운다).
 
 호스트가 둘 이상일 때 "묶인 호스트가 차면 빈 다른 호스트로 가지 않는다"는 단위 테스트(`TestClassBoundToHosts`)로만 확인했다 — 실물 호스트는 한 대였다.
 native 잡의 로그에는 러너 디렉터리 경로(호스트 사용자의 홈)가 나온다.
