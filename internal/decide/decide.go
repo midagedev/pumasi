@@ -206,7 +206,7 @@ func Decide(s Snapshot) Plan {
 		h := hosts[best]
 		freeCPU, freeMem := free(h, alloc[best])
 		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: fmt.Sprintf(
-			"free %.1fcpu/%s, job waiting since %s", freeCPU, gib(freeMem), d.FirstSeen.UTC().Format(time.TimeOnly))})
+			"free %.1fcpu/%s", freeCPU, gib(freeMem))})
 		a := alloc[best]
 		alloc[best] = [2]float64{a[0] + c.CPUs, a[1] + float64(c.MemBytes)}
 		live[c.Name]++

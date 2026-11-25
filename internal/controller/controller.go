@@ -365,15 +365,6 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 			lr, ok := byName[ar.Name]
 			if ok {
 				c.recordUsage(ar)
-				if ar.JobStartedAt != nil && (lr.State == "starting" || lr.State == "idle") {
-					if err := c.ledger.MarkBusy(ar.Name, *ar.JobStartedAt); err != nil {
-						c.log.Error("ledger busy", "err", err)
-					}
-					lr.State = "busy"
-					// Seen in the runner's own output; GitHub's JobStarted message comes later.
-					c.log.Info(fmt.Sprintf("busy %s", ar.Name))
-					c.ev.Write("runner-busy", map[string]any{"runner": ar.Name, "runningJobAt": ar.JobStartedAt})
-				}
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
 					if !lr.PostedAt.IsZero() {
@@ -387,6 +378,15 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 					if lr.State == "starting" {
 						lr.State = "idle"
 					}
+				}
+				if ar.JobStartedAt != nil && (lr.State == "starting" || lr.State == "idle") {
+					if err := c.ledger.MarkBusy(ar.Name, *ar.JobStartedAt); err != nil {
+						c.log.Error("ledger busy", "err", err)
+					}
+					lr.State = "busy"
+					// Seen in the runner's own output; GitHub's JobStarted message comes later.
+					c.log.Info(fmt.Sprintf("busy %s", ar.Name))
+					c.ev.Write("runner-busy", map[string]any{"runner": ar.Name, "runningJobAt": ar.JobStartedAt})
 				}
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,

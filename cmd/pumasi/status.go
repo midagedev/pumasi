@@ -94,7 +94,7 @@ func collectStatus(cfg *config.Config, l *ledger.Ledger, now time.Time) (statusO
 	for _, c := range cfg.Classes {
 		size[c.Name] = c
 	}
-	hosts := map[string]*hostStatus{}
+	hosts := map[string]int{} // name -> index in out.Hosts
 	for _, h := range cfg.Hosts {
 		hs := hostStatus{Name: h.Name, Kind: h.Kind, BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory)}
 		if ok {
@@ -107,12 +107,13 @@ func collectStatus(cfg *config.Config, l *ledger.Ledger, now time.Time) (statusO
 			}
 		}
 		out.Hosts = append(out.Hosts, hs)
-		hosts[h.Name] = &out.Hosts[len(out.Hosts)-1]
+		hosts[h.Name] = len(out.Hosts) - 1
 	}
 	for _, r := range runners {
 		out.Runners = append(out.Runners, runnerStatus{Name: r.Name, Class: r.Class, Host: r.Host, State: r.State,
 			Job: r.Job, AgeSeconds: int64(now.Sub(r.CreatedAt).Seconds())})
-		if h := hosts[r.Host]; h != nil {
+		if i, ok := hosts[r.Host]; ok {
+			h := &out.Hosts[i]
 			h.Runners++
 			h.UsedCPUs += size[r.Class].CPUs
 			h.UsedMem += int64(size[r.Class].Memory)
