@@ -31,9 +31,8 @@ func (f *fakeDriver) List(context.Context) ([]Container, error) {
 	}
 	return out, nil
 }
-func (f *fakeDriver) ListeningAt(_ context.Context, name string, _ time.Time) (time.Time, bool, error) {
-	t, ok := f.listening[name]
-	return t, ok, nil
+func (f *fakeDriver) LogEvents(_ context.Context, name string, _ time.Time) (LogEvents, error) {
+	return LogEvents{Listening: f.listening[name]}, nil
 }
 
 func testAgent(drv Driver) *Agent {
@@ -92,15 +91,18 @@ func TestStartSampleExitDelete(t *testing.T) {
 	}
 }
 
-func TestParseListening(t *testing.T) {
+func TestParseLogEvents(t *testing.T) {
 	logs := "2026-11-25T01:00:01.5Z √ Connected to GitHub\n" +
-		"2026-11-25T01:00:09.25Z 2026-11-25 01:00:09Z: Listening for Jobs\n"
-	at, ok, err := parseListening(logs)
-	if err != nil || !ok || !at.Equal(time.Date(2026, 11, 25, 1, 0, 9, 250e6, time.UTC)) {
-		t.Fatalf("%v %v %v", at, ok, err)
+		"2026-11-25T01:00:09.25Z 2026-11-25 01:00:09Z: Listening for Jobs\n" +
+		"2026-11-25T01:00:09.3Z [RUNNER 2026-11-25 01:00:09Z INFO Terminal] WRITE LINE: Listening for Jobs\n" +
+		"2026-11-25T01:00:12Z 2026-11-25 01:00:12Z: Running job: large (4)\n"
+	ev, err := parseLogEvents(logs)
+	if err != nil || !ev.Listening.Equal(time.Date(2026, 11, 25, 1, 0, 9, 250e6, time.UTC)) ||
+		!ev.JobStarted.Equal(time.Date(2026, 11, 25, 1, 0, 12, 0, time.UTC)) {
+		t.Fatalf("%+v %v", ev, err)
 	}
-	if _, ok, _ := parseListening("2026-11-25T01:00:01Z Connected\n"); ok {
-		t.Fatal("no listening line: want false")
+	if ev, _ := parseLogEvents("2026-11-25T01:00:01Z Connected\n"); !ev.Listening.IsZero() || !ev.JobStarted.IsZero() {
+		t.Fatalf("no events expected: %+v", ev)
 	}
 }
 

@@ -340,6 +340,12 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 			lr, ok := byName[ar.Name]
 			if ok {
 				c.recordUsage(ar)
+				if ar.JobStartedAt != nil && (lr.State == "starting" || lr.State == "idle") {
+					if err := c.ledger.MarkBusy(ar.Name, *ar.JobStartedAt); err != nil {
+						c.log.Error("ledger busy", "err", err)
+					}
+					lr.State = "busy"
+				}
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
 					if !lr.PostedAt.IsZero() {
@@ -355,7 +361,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 				}
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
-				State: lr.State, CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State}
+				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State}
 			if ar.ExitCode != nil {
 				dr.ExitCode = *ar.ExitCode
 			}
@@ -366,7 +372,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 	defer c.mu.Unlock()
 	for _, lr := range live {
 		if !seen[lr.Name] {
-			dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State,
+			dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State, JobKnown: lr.JobID != "",
 				CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt}
 			if c.inflight[lr.Name] {
 				dr.Container = "starting" // not at the agent yet

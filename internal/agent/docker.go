@@ -40,9 +40,9 @@ type Driver interface {
 	Start(ctx context.Context, s Spec) error
 	Remove(ctx context.Context, name string) error
 	List(ctx context.Context) ([]Container, error)
-	// ListeningAt reports when the runner printed "Listening for Jobs", looking
-	// only at output after since (the runner image traces verbosely to stdout).
-	ListeningAt(ctx context.Context, name string, since time.Time) (time.Time, bool, error)
+	// LogEvents reports when the runner printed "Listening for Jobs" and "Running job",
+	// looking only at output after since (the runner image traces verbosely to stdout).
+	LogEvents(ctx context.Context, name string, since time.Time) (LogEvents, error)
 }
 
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
@@ -114,33 +114,46 @@ func (d Docker) List(ctx context.Context) ([]Container, error) {
 	return cs, nil
 }
 
-func (d Docker) ListeningAt(ctx context.Context, name string, since time.Time) (time.Time, bool, error) {
+// LogEvents are times read from a runner's output; zero when not seen.
+type LogEvents struct {
+	Listening, JobStarted time.Time
+}
+
+func (d Docker) LogEvents(ctx context.Context, name string, since time.Time) (LogEvents, error) {
 	args := []string{"logs", "-t"}
 	if !since.IsZero() {
 		args = append(args, "--since", since.UTC().Format(time.RFC3339Nano))
 	}
 	out, err := exec.CommandContext(ctx, "docker", append(args, name)...).CombinedOutput()
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("docker logs: %w", err)
+		return LogEvents{}, fmt.Errorf("docker logs: %w", err)
 	}
-	return parseListening(string(out))
+	return parseLogEvents(string(out))
 }
 
-// parseListening finds the "Listening for Jobs" line in `docker logs -t` output
-// and returns docker's timestamp for it.
-func parseListening(logs string) (time.Time, bool, error) {
+// parseLogEvents finds the first "Listening for Jobs" and "Running job" lines in
+// `docker logs -t` output and returns docker's timestamps for them. The runner
+// prints "Running job" well before GitHub's JobStarted message arrives.
+func parseLogEvents(logs string) (LogEvents, error) {
+	var ev LogEvents
 	for _, line := range strings.Split(logs, "\n") {
-		if !strings.Contains(line, "Listening for Jobs") {
+		var dst *time.Time
+		switch {
+		case ev.Listening.IsZero() && strings.Contains(line, "Listening for Jobs"):
+			dst = &ev.Listening
+		case ev.JobStarted.IsZero() && strings.Contains(line, "Running job"):
+			dst = &ev.JobStarted
+		default:
 			continue
 		}
 		ts, _, _ := strings.Cut(line, " ")
 		t, err := time.Parse(time.RFC3339Nano, ts)
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("log timestamp %q: %w", ts, err)
+			return ev, fmt.Errorf("log timestamp %q: %w", ts, err)
 		}
-		return t, true, nil
+		*dst = t
 	}
-	return time.Time{}, false, nil
+	return ev, nil
 }
 
 type inspected struct {

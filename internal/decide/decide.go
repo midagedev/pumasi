@@ -43,7 +43,11 @@ type Runner struct {
 	CPUs     float64
 	MemBytes int64
 	// Ledger state: starting | idle | busy | done. Empty = not in the ledger (orphan).
-	State       string
+	State string
+	// JobKnown: GitHub's JobStarted message has named this runner's job. Until then
+	// the runner counts against a waiting job even when it already runs one, because
+	// that job's demand closes only with the message.
+	JobKnown    bool
 	CreatedAt   time.Time
 	ListeningAt time.Time // zero until the runner listens for jobs
 	// Agent view: "" when the agent (up) does not report it, else starting | created | running | exited.
@@ -109,7 +113,7 @@ func Decide(s Snapshot) Plan {
 	// 1. Runners to remove, and what the rest occupy.
 	alloc := map[string][2]float64{} // host -> cpus, mem
 	live := map[string]int{}         // class -> runners holding capacity
-	covering := map[string]int{}     // class -> runners without a job yet
+	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
 	for _, r := range runners {
 		if st, ok := stopRule(s, hosts[r.Host], r); ok {
 			p.Stop = append(p.Stop, st)
@@ -125,7 +129,7 @@ func Decide(s Snapshot) Plan {
 		a := alloc[r.Host]
 		alloc[r.Host] = [2]float64{a[0] + cpus, a[1] + mem}
 		live[r.Class]++
-		if r.State == "starting" || r.State == "idle" {
+		if !r.JobKnown {
 			covering[r.Class]++
 		}
 	}

@@ -38,15 +38,17 @@ type Runner struct {
 	State       string     `json:"state"` // created | running | exited
 	ListeningAt *time.Time `json:"listeningAt,omitempty"`
 	// Agent clock: from POST /v1/runners received to "Listening for Jobs".
-	ProvisionMs int64              `json:"provisionMs,omitempty"`
-	CPUSec      float64            `json:"cpuSec"`
-	MemPeak     int64              `json:"memPeak"`
-	MemCurrent  int64              `json:"memCurrent"`
-	IOBytes     int64              `json:"ioBytes"`
-	PressureSec map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
-	StartedAt   *time.Time         `json:"startedAt,omitempty"`
-	ExitedAt    *time.Time         `json:"exitedAt,omitempty"`
-	ExitCode    *int               `json:"exitCode,omitempty"`
+	ProvisionMs int64 `json:"provisionMs,omitempty"`
+	// From the runner's "Running job" line: earlier than GitHub's JobStarted message.
+	JobStartedAt *time.Time         `json:"jobStartedAt,omitempty"`
+	CPUSec       float64            `json:"cpuSec"`
+	MemPeak      int64              `json:"memPeak"`
+	MemCurrent   int64              `json:"memCurrent"`
+	IOBytes      int64              `json:"ioBytes"`
+	PressureSec  map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
+	StartedAt    *time.Time         `json:"startedAt,omitempty"`
+	ExitedAt     *time.Time         `json:"exitedAt,omitempty"`
+	ExitCode     *int               `json:"exitCode,omitempty"`
 }
 
 // StartRequest is POST /v1/runners.

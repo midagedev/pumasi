@@ -2,7 +2,7 @@
 
 목적: 이기종 플릿(상시 Linux 서버, 낮에 사람이 쓰는 Linux/Windows 데스크톱, Apple Silicon Mac)에 ephemeral GitHub Actions self-hosted runner 를 배치할 때, 호스트의 여유 CPU/메모리 · job 크기 · 사람 활동(HTCondor 식 yield)을 보고 머신을 고르는 컨트롤러가 이미 있는지 확인한다.
 
-조사 방법: 아래 레포를 `.research/` 에 `git clone --depth 1` 로 받아 README/docs/코드를 직접 읽었다. 클론 경로는 `~/repo-mid/pumasi/.research/<name>`. 스타·마지막 push 는 `gh api repos/<owner>/<repo>` 값(2026-11-24 기준). 직접 읽지 못한 항목은 "미확인"으로 표기했다.
+조사 방법: 아래 레포를 `.research/` 에 `git clone --depth 1` 로 받아 README/docs/코드를 직접 읽었다. 스타·마지막 push 는 `gh api repos/<owner>/<repo>` 값(2026-11-24 기준). 직접 읽지 못한 항목은 "미확인"으로 표기했다.
 
 ## 1. 비교표
 

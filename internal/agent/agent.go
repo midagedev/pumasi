@@ -125,11 +125,10 @@ func (a *Agent) Sample(ctx context.Context) {
 				}
 			}
 		}
-		var listening time.Time
-		var gotListening bool
-		if c.State == "running" && r.ListeningAt == nil {
+		var ev LogEvents
+		if c.State == "running" && (r.ListeningAt == nil || r.JobStartedAt == nil) {
 			checked := a.now().Add(-time.Second) // overlap: docker log timestamps vs. our clock
-			if listening, gotListening, err = a.drv.ListeningAt(ctx, c.Name, r.logsSince); err != nil {
+			if ev, err = a.drv.LogEvents(ctx, c.Name, r.logsSince); err != nil {
 				a.log.Warn("runner logs", "runner", c.Name, "err", err)
 			} else {
 				r.logsSince = checked
@@ -149,11 +148,14 @@ func (a *Agent) Sample(ctx context.Context) {
 		if st != nil {
 			applyStats(r, *st)
 		}
-		if gotListening {
-			r.ListeningAt = ptr(listening)
+		if !ev.Listening.IsZero() && r.ListeningAt == nil {
+			r.ListeningAt = ptr(ev.Listening)
 			if !r.receivedAt.IsZero() {
-				r.ProvisionMs = listening.Sub(r.receivedAt).Milliseconds()
+				r.ProvisionMs = ev.Listening.Sub(r.receivedAt).Milliseconds()
 			}
+		}
+		if !ev.JobStarted.IsZero() && r.JobStartedAt == nil {
+			r.JobStartedAt = ptr(ev.JobStarted)
 		}
 		a.dataMu.Unlock()
 	}

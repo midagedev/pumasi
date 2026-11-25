@@ -81,8 +81,8 @@ func TestDecidePlacement(t *testing.T) {
 		{"server before desktop", snap([]Host{server(), desktop()}, demand("linux-s", 1), nil),
 			[]string{"linux-s@server1"}, nil},
 		{"server budget full goes to desktop", snap([]Host{server(), desktop()}, demand("linux-l", 1), []Runner{
-			{Name: "a", Class: "linux-l", Host: "server1", State: "busy", Container: "running"},
-			{Name: "b", Class: "linux-l", Host: "server1", State: "busy", Container: "running"},
+			{Name: "a", Class: "linux-l", Host: "server1", State: "busy", Container: "running", JobKnown: true},
+			{Name: "b", Class: "linux-l", Host: "server1", State: "busy", Container: "running", JobKnown: true},
 		}), []string{"linux-l@desk1"}, nil},
 		// Acceptance mix: 4 linux-l + 6 linux-s against server 4cpu/6G and desktop 6cpu/9G.
 		{"acceptance mix", snap([]Host{server(), desktop()}, append(demand("linux-l", 4), demand("linux-s", 6)...), nil),
@@ -98,12 +98,16 @@ func TestDecidePlacement(t *testing.T) {
 		{"starting runner covers demand", snap([]Host{server()}, demand("linux-s", 2), []Runner{
 			{Name: "a", Class: "linux-s", Host: "server1", State: "starting", Container: "running", CreatedAt: t0},
 		}), []string{"linux-s@server1"}, nil},
-		{"busy runner does not cover", snap([]Host{server()}, demand("linux-s", 1), []Runner{
-			{Name: "a", Class: "linux-s", Host: "server1", State: "busy", Container: "running"},
+		{"busy runner with a known job does not cover", snap([]Host{server()}, demand("linux-s", 1), []Runner{
+			{Name: "a", Class: "linux-s", Host: "server1", State: "busy", Container: "running", JobKnown: true},
 		}), []string{"linux-s@server1"}, nil},
+		// The runner printed "Running job" but GitHub's JobStarted (30-50s late) has not closed the demand.
+		{"busy runner awaiting JobStarted still covers", snap([]Host{server()}, demand("linux-s", 1), []Runner{
+			{Name: "a", Class: "linux-s", Host: "server1", State: "busy", Container: "running"},
+		}), nil, nil},
 		{"exited runner frees capacity", snap([]Host{server()}, demand("linux-l", 1), []Runner{
-			{Name: "a", Class: "linux-l", Host: "server1", State: "busy", Container: "exited"},
-			{Name: "b", Class: "linux-l", Host: "server1", State: "busy", Container: "running"},
+			{Name: "a", Class: "linux-l", Host: "server1", State: "busy", Container: "exited", JobKnown: true},
+			{Name: "b", Class: "linux-l", Host: "server1", State: "busy", Container: "running", JobKnown: true},
 		}), []string{"linux-l@server1"}, nil},
 		{"class host allow list", Snapshot{Now: t0, Hosts: []Host{desktop()}, Classes: []Class{onlyServerL}, Demand: demand("linux-l", 1)},
 			nil, []string{"linux-l x1"}},

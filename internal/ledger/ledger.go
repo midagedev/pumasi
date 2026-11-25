@@ -122,6 +122,11 @@ func (l *Ledger) MarkListening(name string, at time.Time, provisionMs int64) err
 	return l.exec(`UPDATE runners SET state='idle' WHERE name=? AND state='starting'`, name)
 }
 
+// MarkBusy records a job start seen in the runner's output, before GitHub's JobStarted message.
+func (l *Ledger) MarkBusy(name string, at time.Time) error {
+	return l.exec(`UPDATE runners SET state='busy', started_at=COALESCE(started_at, ?) WHERE name=? AND state IN ('starting','idle')`, ts(at), name)
+}
+
 // Usage is the last sampled cgroup values of a runner.
 type Usage struct {
 	CPUSec                         float64
