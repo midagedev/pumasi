@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,7 @@ func (m *CgroupMeter) Runner(c Container) (Usage, error) {
 		if dir, err = m.R.PathOfPid(c.Pid); err != nil {
 			return Usage{}, err
 		}
+		dir = strings.TrimSuffix(dir, "/"+innerLeaf)
 		m.mu.Lock()
 		if m.dirs == nil {
 			m.dirs = map[string]string{}

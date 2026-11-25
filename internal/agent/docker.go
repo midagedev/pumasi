@@ -149,13 +149,18 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 // the container's processes move to a leaf first, so the daemon can give its
 // containers cgroups of their own.
 const innerDockerScript = `sudo -n sh -c '
-cd /sys/fs/cgroup && mkdir -p init &&
-for p in $(cat cgroup.procs); do echo $p > init/cgroup.procs 2>/dev/null; done
+cd /sys/fs/cgroup && mkdir -p ` + innerLeaf + ` &&
+for p in $(cat cgroup.procs); do echo $p > ` + innerLeaf + `/cgroup.procs 2>/dev/null; done
 sed -e "s/ / +/g" -e "s/^/+/" cgroup.controllers > cgroup.subtree_control
 exec dockerd >/var/log/dockerd.log 2>&1' &
 i=0; until docker info >/dev/null 2>&1 || [ $i -ge 300 ]; do i=$((i+1)); sleep 0.1; done
 docker info >/dev/null 2>&1 || { echo "pumasi: the docker daemon did not start in this runner:"; tail -n 5 /var/log/dockerd.log; }
 exec /home/runner/run.sh`
+
+// innerLeaf is the cgroup, inside the container's, that the runner's own
+// processes sit in when the container has a docker daemon. The container is
+// measured at its own cgroup, one above.
+const innerLeaf = "pumasi-runner"
 
 var innerImageMu sync.Mutex
 
