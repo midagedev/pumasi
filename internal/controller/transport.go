@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -87,7 +86,7 @@ func (t *SSHTunnel) start(ctx context.Context) error {
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-L", fwd, t.Dest)
 	// Own process group: a terminal Ctrl-C must not take the tunnel down before
 	// the controller has removed its runners through it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("ssh %s: %w", t.Dest, err)
 	}

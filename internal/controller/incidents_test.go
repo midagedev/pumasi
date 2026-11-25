@@ -179,7 +179,7 @@ func TestDiskBelowThresholdClosesHost(t *testing.T) {
 		t.Fatalf("closed %q with unknown disk", got)
 	}
 	got := sent()
-	if len(got) != 2 || !strings.Contains(got[0], "4.0G free on docker's disk") || !strings.Contains(got[1], "resolved") {
+	if len(got) != 2 || !strings.Contains(got[0], "4.0G free on the disk that holds its runners") || !strings.Contains(got[1], "resolved") {
 		t.Fatalf("notices %q", got)
 	}
 }

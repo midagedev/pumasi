@@ -55,9 +55,9 @@ jobs:
 다른 터미널에서 `pumasi status` (`--json` 도 있다):
 
 ```
-HOST     KIND     CPUS  MEMORY     CPU PRESSURE  RUNNERS  STATE
-server1  server   4/4   5.0G/6.0G  11.4%         3        ok
-desk1    desktop  6/6   8.0G/9.0G  6.3%          4        ok
+HOST     KIND     OS     CPUS  MEMORY     CPU PRESSURE  RUNNERS  STATE
+server1  server   linux  4/4   5.0G/6.0G  11.4%         3        ok
+desk1    desktop  linux  6/6   8.0G/9.0G  6.3%          4        ok
 
 RUNNER                    CLASS    HOST     STATE  JOB        AGE
 linux-l-server1-f60e92c8  linux-l  server1  busy   large (1)  1m41s
@@ -122,6 +122,29 @@ joined as desk1 (server): lends 6 cpus and 9.0G, runs as the systemd user unit p
 - 호스트에서 `pumasi doctor` 는 같은 확인에 에이전트·연결 상태를 더해 보여 주고, `pumasi leave` 는 그 호스트에서 pumasi 를 전부 지운다. `pumasi down` 은 붙어 있는 호스트에 같은 일을 시킨다.
 - `pumasi status` 와 대시보드의 Hosts 표에 붙은 방식(`VIA`)·마지막 응답(`SEEN`)·왕복 시간(`RTT`)·에이전트 판(`AGENT`)·마지막으로 끊긴 이유(`LAST DROP`)가 나오고, 호스트 유실 알림에도 이유가 붙는다: `desk1 unreachable for 30s (keepalive timeout) — …`.
 
+## Mac 과 Windows 호스트
+
+그 OS 여야 하는 잡(서명, 네이티브 빌드)은 클래스에 `os` 를 적는다. 그 클래스는 같은 OS 의 호스트에만 놓인다.
+
+```yaml
+classes:
+  - {name: linux-s, cpus: 1, memory: 1G}
+  - {name: macos, cpus: 4, memory: 8G, os: macos}     # runs-on: [self-hosted, pumasi-macos]
+hosts:
+  - {ssh: mac1, desktop: true, budget: {cpus: 8, memory: 16G}}
+```
+
+Mac·Windows 호스트에서는 러너가 컨테이너가 아니라 **그 OS 의 프로세스**로 돈다(Docker 가 필요 없다). 컨테이너와 다른 점:
+
+- **격리가 약하다.** 러너는 에이전트를 띄운 사용자로 돈다. 잡은 그 사용자의 홈·키체인·전역 도구를 읽고 바꿀 수 있고, 남긴 것은 남는다.
+  러너 디렉터리(`~/.cache/pumasi/runners/<이름>`)와 잡이 남긴 프로세스만 pumasi 가 지운다. **믿는 레포의 잡에만 쓴다.**
+- **Mac 은 메모리·CPU 를 강제로 막지 못한다.** 클래스 크기는 배치할 때의 약속일 뿐이다. 넘은 러너는 `ran over its class` 사건으로 알리고 잡은 계속 돈다. 그래서 Mac 호스트의 예산은 넉넉히 남겨 잡는다.
+- **잴 수 있는 것만 남긴다.** Mac 은 cpu 초와 메모리 peak 를 재고 디스크 I/O·압박(PSI)은 비워 둔다.
+- 러너 배포판은 `image` 의 태그(`:2.338.2`)와 같은 판을 호스트가 처음 한 번 내려받는다(`~/.cache/pumasi/dist`).
+- Windows 는 Job Object 로 메모리·CPU 를 강제하지만 **아직 실물에서 확인하지 않았고**, 호스트를 붙이는 길(join)도 Linux 만 된다.
+
+자세한 것은 [Mac 과 Windows 호스트](docs/platforms.md).
+
 ## 대시보드와 알림
 
 `pumasi up` 이 loopback 에 대시보드를 같이 띄운다(`pumasi open`). 문제·호스트·러너·대기·최근 잡 50개·24시간 추이를 한 화면에 보여 주고, 같은 주소의 `/metrics` 는 Prometheus 용이다. 따로 설치하거나 빌드할 것은 없다.
@@ -145,8 +168,8 @@ notify:
 - GitHub 토큰은 노트북의 `PUMASI_GITHUB_TOKEN` 에만 있다. 호스트로는 러너 하나짜리 JIT 설정만 간다.
 - ssh 호스트의 에이전트는 loopback 에서만 듣고 노트북이 `ssh -L` 로 붙는다. join 호스트의 에이전트는 어디서도 듣지 않고 노트북의 `listen` 포트로 TLS 연결 하나를 연다. 대시보드와 status 는 어느 쪽이든 loopback 에만 열린다.
 - 장부(SQLite)와 이벤트 로그는 `~/.local/state/pumasi/` 에 쌓인다. 잡마다 cpu 초·메모리 peak·기동 시간이 남는다.
-- 지금은 Linux 호스트(WSL2 포함)와 Docker 러너만 된다. 사람 우선·Mac·VM 은 [설계](docs/design.md)의 다음 단계.
+- Linux 호스트(WSL2 포함)는 Docker 러너, Mac 호스트는 프로세스 러너다. 사람 우선·VM 은 [설계](docs/design.md)의 다음 단계.
 
 ## 문서
 
-[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)
+[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [Mac·Windows](docs/platforms.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)

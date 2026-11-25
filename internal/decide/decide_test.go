@@ -290,3 +290,47 @@ func TestClosedHostTakesNoRunners(t *testing.T) {
 		t.Fatalf("plan with an open host %+v", p)
 	}
 }
+
+func TestClassRunsOnlyOnItsOS(t *testing.T) {
+	mac := Host{Name: "mac1", Kind: "desktop", OS: "macos", Up: true, CPUs: 14, MemBytes: 48 * gb, BudgetCPUs: 8, BudgetMem: 16 * gb}
+	win := Host{Name: "win1", Kind: "desktop", OS: "windows", Up: true, CPUs: 20, MemBytes: 32 * gb, BudgetCPUs: 8, BudgetMem: 16 * gb}
+	old := server() // an agent from before hosts said their OS: linux
+	classMac := Class{Name: "macos", OS: "macos", CPUs: 4, MemBytes: 8 * gb, MaxRunners: 10}
+	classWin := Class{Name: "windows", OS: "windows", CPUs: 4, MemBytes: 8 * gb, MaxRunners: 10}
+	s := Snapshot{Now: t0, Hosts: []Host{mac, win, old}, Classes: []Class{classS, classMac, classWin},
+		Demand: append(append(demand("linux-s", 6), demand("macos", 3)...), demand("windows", 1)...)}
+	p := Decide(s)
+	got := map[string][]string{}
+	for _, st := range p.Start {
+		got[st.Class] = append(got[st.Class], st.Host)
+	}
+	want := map[string][]string{
+		"linux-s": {"server1", "server1", "server1", "server1"}, // the server's budget; never the idle mac or windows host
+		"macos":   {"mac1", "mac1"},
+		"windows": {"win1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("starts %v, want %v", got, want)
+	}
+	for _, d := range p.Defer {
+		if d.Class == "linux-s" && (strings.Contains(d.Reason, "mac1") || strings.Contains(d.Reason, "win1")) {
+			t.Errorf("a linux class does not wait for a host of another OS: %s", d.Reason)
+		}
+		if d.Class == "macos" && strings.Contains(d.Reason, "server1") {
+			t.Errorf("a macos class does not wait for a linux host: %s", d.Reason)
+		}
+	}
+
+	// A mac that is down is still a mac: the linux class does not name it, the macos class does.
+	mac.Up, mac.DownFor = false, time.Minute
+	p = Decide(Snapshot{Now: t0, Hosts: []Host{mac}, Classes: []Class{classS, classMac}, Demand: append(demand("linux-s", 1), demand("macos", 1)...)})
+	for _, d := range p.Defer {
+		if named := strings.Contains(d.Reason, "mac1 down"); named != (d.Class == "macos") {
+			t.Errorf("%s: %s", d.Class, d.Reason)
+		}
+	}
+	// A host that has never answered has no known OS and counts as down for every class.
+	if len(p.Start) != 0 || len(p.Defer) != 2 {
+		t.Errorf("plan %+v", p)
+	}
+}

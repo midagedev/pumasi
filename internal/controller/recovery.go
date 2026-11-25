@@ -88,7 +88,7 @@ func (c *Controller) closedReason(h *host) string {
 		if pct := 100 * float64(s.DiskFree) / float64(max(s.DiskTotal, 1)); s.DiskTotal > 0 && pct < c.cfg.DiskMinFree {
 			disk = fmt.Sprintf("disk %.0f%% free", pct)
 			c.book.open(key, "disk-low", h.cfg.Name, fmt.Sprintf(
-				"%s has %s free on docker's disk (%.0f%%, below %.0f%%); no new runners placed there",
+				"%s has %s free on the disk that holds its runners (%.0f%%, below %.0f%%); no new runners placed there",
 				h.cfg.Name, gib(s.DiskFree), pct, c.cfg.DiskMinFree))
 		} else if s.DiskTotal > 0 {
 			c.book.resolve(key)
@@ -97,9 +97,12 @@ func (c *Controller) closedReason(h *host) string {
 	switch {
 	case quarantined:
 		return "quarantined"
-	default:
+	case disk != "":
 		return disk
+	case h.snap != nil:
+		return h.snap.Closed // the host's own word: macOS memory pressure, Windows commit charge
 	}
+	return ""
 }
 
 // How a runner's end is told and whether its job may be rerun.
@@ -142,6 +145,23 @@ func (c *Controller) reportOOM(lr ledger.Runner, ar api.Runner) {
 	c.book.report("problem", "oom/"+lr.Name, "out-of-memory", lr.Name, fmt.Sprintf(
 		"%s hit the %s %s memory limit on %s (peak %s); the kernel killed a process of the job",
 		jobName(lr), lr.Class, gib(limit), lr.Host, gib(ar.MemPeak)), "none: raise the class's memory or fix the job; not rerun")
+}
+
+// reportOverClass tells once per runner that it used more memory than its
+// class. macOS cannot hold a process tree to a limit, so there the class size
+// is only what placement counted on; the job is not stopped.
+func (c *Controller) reportOverClass(h *host, lr ledger.Runner, ar api.Runner) {
+	cl := c.classByName(lr.Class)
+	if h.snap == nil || h.snap.OS != "macos" || cl == nil {
+		return
+	}
+	limit := int64(cl.cfg.Memory)
+	if ar.MemPeak <= limit || lr.MemPeak > limit {
+		return
+	}
+	c.book.report("problem", "over-class/"+lr.Name, "ran-over-class", lr.Name, fmt.Sprintf(
+		"%s ran over its class: %s is %s, it used %s on %s (macOS cannot enforce the limit, so the job went on)",
+		jobName(lr), lr.Class, gib(limit), gib(ar.MemPeak), lr.Host), "none: raise the class's memory or fix the job")
 }
 
 // requestRerun queues the run of a job lost to an infrastructure failure.

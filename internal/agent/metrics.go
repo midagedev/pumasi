@@ -57,7 +57,12 @@ func WriteMetrics(w io.Writer, snaps ...api.Snapshot) {
 	})
 	runner("pumasi_runner_cpu_seconds", "_total", "counter", "CPU time of the runner cgroup.", func(r api.Runner) (float64, bool) { return r.CPUSec, true })
 	runner("pumasi_runner_memory_peak_bytes", "", "gauge", "memory.peak of the runner cgroup.", func(r api.Runner) (float64, bool) { return float64(r.MemPeak), true })
-	runner("pumasi_runner_io_bytes", "_total", "counter", "Bytes read and written by the runner cgroup.", func(r api.Runner) (float64, bool) { return float64(r.IOBytes), true })
+	runner("pumasi_runner_io_bytes", "_total", "counter", "Bytes read and written by the runner cgroup.", func(r api.Runner) (float64, bool) {
+		if r.IOBytes == nil {
+			return 0, false
+		}
+		return float64(*r.IOBytes), true
+	})
 	family("pumasi_runner_pressure_seconds", "counter", "PSI some stall time of the runner cgroup.")
 	for _, s := range snaps {
 		for _, r := range s.Runners {

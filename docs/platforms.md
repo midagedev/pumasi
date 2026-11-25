@@ -8,9 +8,9 @@ Linux 호스트는 러너를 docker 컨테이너로 띄운다. Mac 과 Windows �
 
 ```yaml
 classes:
-  - { name: linux-s, cpus: 1, mem: 1G }
-  - { name: macos,   cpus: 4, mem: 8G, os: macos }
-  - { name: windows, cpus: 4, mem: 8G, os: windows }
+  - { name: linux-s, cpus: 1, memory: 1G }
+  - { name: macos,   cpus: 4, memory: 8G, os: macos }
+  - { name: windows, cpus: 4, memory: 8G, os: windows }
 ```
 
 워크플로우는 `runs-on: [self-hosted, pumasi-macos]`. 호스트는 자기 OS 를 스스로 말하고,
@@ -40,6 +40,45 @@ controller 는 클래스의 `os` 와 같은 호스트에만 그 클래스를 놓
 docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전트의 HTTP 계약·장부·사건은 같다.
 `Runner` 의 수치 중 그 OS 에서 못 재는 것은 비워 둔다(0 으로 채우지 않는다).
 
+## 만든 모양 (2026-11-25)
+
+```
+~/.cache/pumasi/dist/actions-runner-<os>-<arch>-<판>/   러너 배포판, 처음 한 번 내려받는다
+~/.cache/pumasi/runners/<이름>/runner/                  그 복제 (러너마다)
+~/.cache/pumasi/runners/<이름>/{pumasi.json,log,exit}   pumasi 가 그 러너에 대해 적어 두는 것
+```
+
+- **드라이버는 호스트 OS 가 고른다.** 플래그도 설정도 없다. Linux 는 docker, Mac·Windows 는 native.
+- **러너 판은 `image` 의 태그에서 온다**(`ghcr.io/actions/actions-runner:2.338.2` → 2.338.2). 컨테이너와 프로세스 러너가 설정 하나를 따른다.
+- **JIT 설정은 환경 변수로 넘긴다**(`ACTIONS_RUNNER_INPUT_JITCONFIG`). `--jitconfig` 인자는 `ps` 에 보이므로 docker 드라이버와 같은 길을 쓴다.
+- **에이전트의 환경에서 자격처럼 보이는 것은 러너에 넘기지 않는다**(`*TOKEN*`, `*SECRET*`, `PUMASI_*` …). 토큰을 쥔 셸에서 띄운 에이전트가 그것을 잡에 건네지 않게.
+- **Mac 의 러너는 에이전트가 죽어도 산다.** 자기 세션으로 띄우고, 출력은 파일로, exit code 는 러너를 감싼 셸이 파일에 남긴다.
+  새 에이전트는 디렉터리와 프로세스 표로 러너를 다시 찾는다. 장부의 수치(cpu 초는 이어서 센다)와 "Listening"·"Running job" 시각도 그대로다.
+- **Mac 의 프로세스 묶음** = 러너의 프로세스 그룹 + 아는 구성원의 자손 + 이미 아는 구성원. `setsid`·`nohup` 으로 그룹을 벗어난 자식도
+  부모가 살아 있을 때 한 번 보였으면 끝까지 따라간다(벗어난 것은 `pids` 파일에 적어 에이전트 재시작을 넘긴다).
+- **Mac 의 수치**: `proc_pid_rusage` 를 cgo 없이 부른다(libSystem 을 x/sys 와 같은 trampoline 으로; `CGO_ENABLED=0` 그대로).
+  cpu 초 = 살아 있는 구성원의 자기 시간 + 이미 거둔 자식의 시간(샘플 사이에 왔다 간 컴파일러도 센다). 메모리 = `phys_footprint` 합, peak 는 샘플(5초)의 최댓값.
+  디스크 I/O 는 살아 있는 프로세스 것만 나와서 비워 둔다. 러너가 뜨자마자 죽으면 한 번도 못 잰다.
+- **Mac 호스트의 여유**: 남이 쓰는 CPU 는 Mach `host_statistics`, 메모리는 `kern.memorystatus_level`(`memory_pressure` 가 보이는 값).
+  커널의 memory pressure 가 warning 이상이면 호스트가 스스로 닫는다(status 의 STATE 에 그 말이 나온다).
+- **Windows 의 러너는 에이전트와 같이 죽는다**(`KILL_ON_JOB_CLOSE`). 에이전트가 내려가면 그 러너는 "died" 사건이 된다 —
+  Linux·Mac 과 다른 점이다. 이름 붙인 Job 을 다시 여는 방식으로 바꿀 수 있지만, 고아가 남지 않는 쪽을 먼저 골랐다.
+- **Windows 의 메모리 한도**: 넘는 할당은 실패한다(죽이지 않는다). Job 이 completion port 로 알려 오는 횟수를 세어 Linux 의 OOM 과 같은 사건으로 낸다.
+
+### 실측 (Mac, Apple silicon 노트북, ssh 로 붙임)
+
+| | 결과 |
+|---|---|
+| 잡 5개 동시 / 5개 순서대로 | 모두 성공. 끝난 뒤 러너 디렉터리 0, 남은 프로세스 0 |
+| 러너 기동(요청 → Listening) | 3.4 ~ 4.4초. 배포판 내려받기는 처음 한 번 약 9초(440M), 복제는 APFS clone |
+| 잡이 남긴 자식 | `sleep 600 &` 와, 러너의 정리를 피하고 그룹도 벗어난 `setsid` 자식 둘 다 잡이 끝나면 죽는다 |
+| cpu 초 | 1코어를 40초 태운 잡 = 42.3 ~ 43.4초(러너 자신 약 3초 포함). `ps` 의 합과 일치 |
+| 메모리 peak | 1000M 을 쥔 잡 = 1186M(러너 약 190M 포함). `top` 의 MEM 과 일치 |
+| 클래스(1G)를 넘은 잡 | `ran over its class: macos is 1.0G, it used 1.2G` 사건 한 번, 잡은 성공 |
+| 에이전트를 죽임 | controller 가 다시 올리고, 러너 3개는 그대로 돌며 시각·cpu 초가 이어진다 |
+| controller 를 내렸다 올림 | `adopted 3 runners (3 running jobs)` |
+| 도는 러너를 죽임 | `runner … died while running … (exit code -1)` — Linux 와 같은 사건 |
+
 ## 컨테이너와 다른 점 (감추지 않는다)
 
 - **격리가 약하다.** 러너는 호스트 사용자로 돈다. 잡이 `~` 에 쓰거나 전역 도구를 바꾸면 남는다.
@@ -53,13 +92,13 @@ docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전�
 
 Mac·Windows 는 `join` 으로 붙는 것을 기본으로 한다(`docs/join.md`). Windows 에 ssh 로 들어가
 PowerShell 따옴표와 싸우지 않는다. 초대 줄은 OS 별로 하나씩 나온다(sh, PowerShell).
-Mac 은 ssh `hosts:` 로도 붙는다.
+Mac 은 ssh `hosts:` 로도 붙는다(지금 되는 것은 이쪽이다. ssh 세션에서 뜬 에이전트는 로그인 세션의 키체인을 못 쓸 수 있다).
 
 ## 순서
 
-1. `Driver` 뒤에 native 드라이버(Mac) — 이 노트북을 호스트로 붙여 잡을 끝까지. 프로세스 정리, 수치, 사건.
-2. Windows — Job Object 로 같은 것. 한도 강제 확인.
-3. 클래스 `os` 와 배치, status·대시보드의 OS 열.
+1. ~~`Driver` 뒤에 native 드라이버(Mac) — 이 노트북을 호스트로 붙여 잡을 끝까지. 프로세스 정리, 수치, 사건.~~ 됐다.
+2. Windows — Job Object 로 같은 것. 한도 강제 확인. **코드와 크로스 빌드까지. 실물 미확인.**
+3. ~~클래스 `os` 와 배치, status·대시보드의 OS 열.~~ 됐다.
 4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작.
 5. 사람이 쓰는 중이면 새 러너를 받지 않는다(M2 의 사람 우선과 합친다).
 

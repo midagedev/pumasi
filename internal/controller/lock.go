@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // Lock makes sure one pumasi process works on a state directory at a time. Two
@@ -18,7 +17,7 @@ func Lock(stateDir string) (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockFile(f); err != nil {
 		b, _ := os.ReadFile(path)
 		f.Close()
 		return nil, fmt.Errorf("another pumasi up or down is already running (pid %s); stop it first", strings.TrimSpace(string(b)))

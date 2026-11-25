@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -50,6 +49,13 @@ func (l *sshLink) Revive(ctx context.Context, distDir string) (string, error) {
 func (l *sshLink) Running(ctx context.Context) ([]string, error) { return runningContainers(ctx, l.h) }
 
 func (l *sshLink) Clean(ctx context.Context) (string, error) {
+	// A runner that is a process tree is best ended by its agent, which knows
+	// the processes that left the runner's group. The script below gets the rest.
+	if snap, err := l.api.Snapshot(ctx); err == nil && snap.OS != "" && snap.OS != "linux" {
+		for _, r := range snap.Runners {
+			_, _ = l.api.Delete(ctx, r.Name)
+		}
+	}
 	out, err := cleanHost(ctx, l.h)
 	return lastLine(out), err
 }
@@ -65,7 +71,7 @@ func runRemote(ctx context.Context, h config.Host, script string) (string, error
 		strings.Fields(h.Shell)...)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	// Own process group: a terminal Ctrl-C must not kill the cleanup ssh.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	detach(cmd)
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	// A Windows hop reports its own errors in UTF-16; dropping NULs keeps them readable.
@@ -84,11 +90,12 @@ func lastLine(s string) string {
 }
 
 // stopAgentScript stops the agent named by the pid file, after checking that
-// the pid really runs a binary from pumasi's directory.
+// the pid really runs a binary from pumasi's directory (macOS has no /proc: ps
+// names the executable there).
 const stopAgentScript = `
 d=` + remoteDir + `
 p=$(cat "$d/agent.pid" 2>/dev/null || true)
-if [ -n "$p" ] && readlink "/proc/$p/exe" 2>/dev/null | grep -q "/.cache/pumasi/"; then
+if [ -n "$p" ] && { readlink "/proc/$p/exe" 2>/dev/null || ps -o comm= -p "$p" 2>/dev/null; } | grep -q "/.cache/pumasi/"; then
   kill "$p" 2>/dev/null || true
   i=0
   while kill -0 "$p" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
@@ -100,11 +107,12 @@ rm -f "$d/agent.pid"
 // host does not have it, then (re)start the agent with the host's budget.
 // It returns what it did, for the log.
 func ensureAgent(ctx context.Context, h config.Host, distDir string) (string, error) {
-	// Line 1: machine. Line 2: command line of the agent the pid file names, if alive. Rest: cache listing.
-	out, err := runRemote(ctx, h, `uname -m
+	// Line 1: OS and machine. Line 2: command line of the agent the pid file names, if alive. Rest: cache listing.
+	out, err := runRemote(ctx, h, `uname -sm
 d=`+remoteDir+`
 p=$(cat "$d/agent.pid" 2>/dev/null || true)
-if [ -n "$p" ] && [ -r "/proc/$p/cmdline" ]; then tr '\0' ' ' < "/proc/$p/cmdline"; fi
+if [ -n "$p" ] && [ -r "/proc/$p/cmdline" ]; then tr '\0' ' ' < "/proc/$p/cmdline"
+elif [ -n "$p" ]; then ps -o args= -p "$p" 2>/dev/null | tr '\n' ' '; fi
 echo
 ls "$d" 2>/dev/null || true`)
 	if err != nil {
@@ -112,14 +120,16 @@ ls "$d" 2>/dev/null || true`)
 	}
 	machine, rest, _ := strings.Cut(out, "\n")
 	running, have, _ := strings.Cut(rest, "\n")
-	arch := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[strings.TrimSpace(machine)]
-	if arch == "" {
-		return "", fmt.Errorf("%s: unsupported machine %q (uname -m)", h.Name, machine)
+	kernel, machine, _ := strings.Cut(strings.TrimSpace(machine), " ")
+	goos := map[string]string{"Linux": "linux", "Darwin": "darwin"}[kernel]
+	arch := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[machine]
+	if goos == "" || arch == "" {
+		return "", fmt.Errorf("%s: unsupported machine %q (uname -sm)", h.Name, kernel+" "+machine)
 	}
-	local := filepath.Join(distDir, "pumasi-linux-"+arch)
+	local := filepath.Join(distDir, "pumasi-"+goos+"-"+arch)
 	bin, err := os.ReadFile(local)
 	if err != nil {
-		return "", fmt.Errorf("%s runs linux/%s but %s is missing: run `make` in the pumasi source tree", h.Name, arch, local)
+		return "", fmt.Errorf("%s runs %s/%s but %s is missing: run `make` in the pumasi source tree", h.Name, goos, arch, local)
 	}
 	sum := sha256.Sum256(bin)
 	sha := hex.EncodeToString(sum[:])
@@ -143,7 +153,8 @@ ls "$d" 2>/dev/null || true`)
 	start := fmt.Sprintf(`set -e
 %s
 find "$d" -maxdepth 1 -name 'pumasi-*' ! -name %s -delete
-setsid nohup "$d/%s" %s "$d/agent.pid" > "$d/agent.log" 2>&1 < /dev/null &
+own=; command -v setsid >/dev/null 2>&1 && own=setsid
+$own nohup "$d/%s" %s "$d/agent.pid" > "$d/agent.log" 2>&1 < /dev/null &
 i=0
 while [ ! -s "$d/agent.pid" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
 sleep 0.3
@@ -169,7 +180,7 @@ func uploadScript(bin []byte, sha, name string) string {
 	_, _ = zw.Write(bin)
 	_ = zw.Close()
 	_ = enc.Close()
-	fmt.Fprintf(&b, "\nPUMASI_EOF\necho \"%s  $d/upload.tmp\" | sha256sum -c - >/dev/null\nchmod +x \"$d/upload.tmp\"\nmv \"$d/upload.tmp\" \"$d/%s\"\n", sha, name)
+	fmt.Fprintf(&b, "\nPUMASI_EOF\nsum=sha256sum; command -v sha256sum >/dev/null 2>&1 || sum=\"shasum -a 256\"\necho \"%s  $d/upload.tmp\" | $sum -c - >/dev/null\nchmod +x \"$d/upload.tmp\"\nmv \"$d/upload.tmp\" \"$d/%s\"\n", sha, name)
 	return b.String()
 }
 
@@ -191,22 +202,44 @@ func (l *lineWrapper) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// runningContainers lists the pumasi containers that are up on a host.
+// nativeRunners is sh for hosts without containers (macOS): it sets $up to
+// the pids of the runners whose process still lives. Each is the leader of its
+// runner's process group.
+const nativeRunners = `
+d=` + remoteDir + `
+up=
+for m in "$d"/runners/*/pumasi.json; do
+  [ -f "$m" ] || continue
+  p=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$m")
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then up="$up $p:$(basename "$(dirname "$m")")"; fi
+done
+`
+
+// runningContainers lists the pumasi runners that are up on a host.
 func runningContainers(ctx context.Context, h config.Host) ([]string, error) {
-	out, err := runRemote(ctx, h, `docker ps --filter label=pumasi --format '{{.Names}}'`)
+	out, err := runRemote(ctx, h, `if [ "$(uname -s)" = Linux ]; then docker ps --filter label=pumasi --format '{{.Names}}'; exit; fi`+nativeRunners+`
+for r in $up; do echo "${r#*:}"; done`)
 	if err != nil {
 		return nil, err
 	}
 	return strings.Fields(out), nil
 }
 
-// cleanHost removes everything pumasi left on a host: the agent, every
-// container labelled pumasi, and the cache directory.
+// cleanHost removes everything pumasi left on a host: the agent, every runner
+// (containers labelled pumasi on Linux, the runners' process groups elsewhere)
+// and the cache directory. Docker is touched on Linux only: a Mac's docker is
+// its user's, not pumasi's.
 func cleanHost(ctx context.Context, h config.Host) (string, error) {
 	return runRemote(ctx, h, stopAgentScript+`
-ids=$(docker ps -aq --filter label=pumasi 2>/dev/null || true)
 n=0
-if [ -n "$ids" ]; then n=$(echo "$ids" | wc -l | tr -d ' '); docker rm -f $ids >/dev/null; fi
+if [ "$(uname -s)" = Linux ]; then
+  ids=$(docker ps -aq --filter label=pumasi 2>/dev/null || true)
+  if [ -n "$ids" ]; then n=$(echo "$ids" | wc -l | tr -d ' '); docker rm -f $ids >/dev/null; fi
+else`+nativeRunners+`
+  for r in $up; do kill -TERM -- "-${r%%:*}" 2>/dev/null || true; n=$((n+1)); done
+  [ -z "$up" ] || sleep 2
+  for r in $up; do kill -KILL -- "-${r%%:*}" 2>/dev/null || true; done
+fi
 rm -rf `+remoteDir+`
 echo "$n"
 `)

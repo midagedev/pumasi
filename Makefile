@@ -1,5 +1,5 @@
-# `make` builds ./dist/pumasi for this machine and the linux builds that
-# `pumasi up` copies to the hosts. All static (CGO off).
+# `make` builds ./dist/pumasi for this machine and the builds that `pumasi up`
+# copies to the hosts or hosts fetch when they join. All static (CGO off).
 GO      ?= go
 FLAGS   := -trimpath -ldflags "-s -w"
 export CGO_ENABLED = 0
@@ -9,6 +9,9 @@ all:
 	$(GO) build $(FLAGS) -o dist/pumasi ./cmd/pumasi
 	GOOS=linux GOARCH=amd64 $(GO) build $(FLAGS) -o dist/pumasi-linux-amd64 ./cmd/pumasi
 	GOOS=linux GOARCH=arm64 $(GO) build $(FLAGS) -o dist/pumasi-linux-arm64 ./cmd/pumasi
+	GOOS=darwin GOARCH=arm64 $(GO) build $(FLAGS) -o dist/pumasi-darwin-arm64 ./cmd/pumasi
+	GOOS=darwin GOARCH=amd64 $(GO) build $(FLAGS) -o dist/pumasi-darwin-amd64 ./cmd/pumasi
+	GOOS=windows GOARCH=amd64 $(GO) build $(FLAGS) -o dist/pumasi-windows-amd64.exe ./cmd/pumasi
 
 test:
 	$(GO) vet ./...

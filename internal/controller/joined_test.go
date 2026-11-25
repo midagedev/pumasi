@@ -72,7 +72,7 @@ func joinedHost(t *testing.T, c *Controller, addr, name string) (stop func()) {
 	cg := cgroup.Reader{CgroupRoot: filepath.Join("..", "cgroup", "testdata", "cg"),
 		ProcRoot: filepath.Join("..", "cgroup", "testdata", "proc"), SysRoot: filepath.Join("..", "cgroup", "testdata", "sys")}
 	a := agent.New(agent.Config{Host: name, Kind: hc.Kind, Version: "abc123", BudgetCPUs: hc.CPUs, BudgetMem: hc.Mem},
-		&memDriver{cs: map[string]agent.Container{}}, cg, log)
+		&memDriver{cs: map[string]agent.Container{}}, &agent.CgroupMeter{R: cg}, log)
 	a.Sample(context.Background())
 	mux := http.NewServeMux()
 	mux.Handle("/", a.Handler())

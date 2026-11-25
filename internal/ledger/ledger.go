@@ -235,6 +235,7 @@ type Runner struct {
 	Repo, Result             string
 	RunID                    int64
 	OOMKills                 int       // processes killed at the class's memory limit
+	MemPeak                  int64     // the most memory the runner has been seen using
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
 }
@@ -265,18 +266,20 @@ func (l *Ledger) MarkBusy(name string, at time.Time) error {
 	return l.exec(`UPDATE runners SET state='busy', started_at=COALESCE(started_at, ?) WHERE name=? AND state IN ('starting','idle')`, ts(at), name)
 }
 
-// Usage is the last sampled cgroup values of a runner.
+// Usage is the last sampled values of a runner. Nil = the host's OS does not
+// measure it; the column stays NULL.
 type Usage struct {
 	CPUSec                         float64
-	MemPeak, IOBytes               int64
-	PSICPUSec, PSIMemSec, PSIIOSec float64
+	MemPeak                        int64
+	IOBytes                        *int64
+	PSICPUSec, PSIMemSec, PSIIOSec *float64
 	ExitCode                       *int
 	OOMKills                       int
 }
 
 func (l *Ledger) SetUsage(name string, u Usage) error {
 	return l.exec(`UPDATE runners SET cpu_sec=MAX(COALESCE(cpu_sec,0),?), mem_peak=MAX(COALESCE(mem_peak,0),?),
-	  io_bytes=MAX(COALESCE(io_bytes,0),?), psi_cpu_sec=?, psi_mem_sec=?, psi_io_sec=?, exit_code=COALESCE(?, exit_code),
+	  io_bytes=MAX(COALESCE(io_bytes,0),?), psi_cpu_sec=COALESCE(?, psi_cpu_sec), psi_mem_sec=COALESCE(?, psi_mem_sec), psi_io_sec=COALESCE(?, psi_io_sec), exit_code=COALESCE(?, exit_code),
 	  oom_kills=MAX(COALESCE(oom_kills,0),?) WHERE name=?`,
 		u.CPUSec, u.MemPeak, u.IOBytes, u.PSICPUSec, u.PSIMemSec, u.PSIIOSec, u.ExitCode, u.OOMKills, name)
 }
@@ -366,7 +369,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 }
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
-  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0)`
+  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0)`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -379,7 +382,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var r Runner
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
-			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills); err != nil {
+			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)

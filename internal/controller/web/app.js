@@ -49,7 +49,7 @@ function renderState(s) {
   fill("hosts", s.hosts.map((h) => {
     const state = h.reachable === null ? "unknown" : h.reachable ? (h.closed || "ok") : "unreachable";
     return el("tr", {},
-      td(h.name), td(h.kind, "muted opt"),
+      td(h.name), td(h.kind, "muted opt"), td(h.os || "-", "muted opt"),
       bar(h.usedCpus, h.budgetCpus, h.usedCpus + "/" + h.budgetCpus),
       bar(h.usedMem, h.budgetMem, gib(h.usedMem) + "/" + gib(h.budgetMem)),
       td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"),

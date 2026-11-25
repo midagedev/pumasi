@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -19,6 +20,7 @@ type State struct {
 type HostState struct {
 	Name       string  `json:"name"`
 	Kind       string  `json:"kind"`
+	OS         string  `json:"os"`       // linux | macos | windows; "" until the agent has answered
 	UsedCPUs   float64 `json:"usedCpus"` // sum of the sizes of the runners placed here
 	BudgetCPUs float64 `json:"budgetCpus"`
 	UsedMem    int64   `json:"usedMem"`
@@ -29,7 +31,7 @@ type HostState struct {
 	Reachable   *bool    `json:"reachable"` // nil = unknown, no controller running
 	// Closed: why the host, though reachable, gets no new runners ("quarantined", "disk 4% free").
 	Closed string `json:"closed"`
-	// Free share of docker's disk in percent; nil when unknown.
+	// Free share of the disk that holds the runners, in percent; nil when unknown.
 	DiskFreePct *float64 `json:"diskFreePct"`
 	// The connection: who opened it (ssh | join), seconds since the last answer
 	// (nil = none yet), how long that answer took, the agent's build and why the
@@ -98,8 +100,10 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 				}
 			}
 			if up {
-				p := snap.PSI["cpu"]
-				hs.CPUPressure = &p
+				hs.OS = cmp.Or(snap.OS, "linux")
+				if p, ok := snap.PSI["cpu"]; ok {
+					hs.CPUPressure = &p
+				}
 				hs.Closed = live.Closed[h.Name]
 				if snap.DiskTotal > 0 {
 					d := 100 * float64(snap.DiskFree) / float64(snap.DiskTotal)

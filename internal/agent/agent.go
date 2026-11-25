@@ -1,5 +1,6 @@
-// Package agent is the per-host side of pumasi: it starts and removes runner
-// containers, samples their cgroups and reports host capacity over HTTP.
+// Package agent is the per-host side of pumasi: it starts and removes runners
+// (docker containers on Linux, processes on macOS and Windows), samples what
+// they use and reports host capacity over HTTP.
 package agent
 
 import (
@@ -12,11 +13,9 @@ import (
 	"runtime"
 	"sort"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
-	"github.com/midagedev/pumasi/internal/cgroup"
 )
 
 type Config struct {
@@ -33,7 +32,7 @@ type Config struct {
 type Agent struct {
 	cfg Config
 	drv Driver
-	cg  cgroup.Reader
+	met Meter
 	log *slog.Logger
 	now func() time.Time
 
@@ -44,15 +43,15 @@ type Agent struct {
 	recs   map[string]*rec
 	host   hostState
 
-	prevRootUsec uint64
+	prevHostUsec uint64
 	prevAt       time.Time
-	dataDir      string // docker's data directory, asked once
+	dataDir      string // the driver's data directory, asked once
 }
 
 type rec struct {
 	api.Runner
 	receivedAt time.Time
-	cgDir      string
+	pid        int
 	lastUsec   uint64
 	logsSince  time.Time // container output before this was already searched
 	rebooted   bool      // loaded from a state file written before the last reboot
@@ -67,13 +66,14 @@ type hostState struct {
 	sampledAt    time.Time
 	diskFree     int64
 	diskTotal    int64
+	closed       string
 }
 
-func New(cfg Config, drv Driver, cg cgroup.Reader, log *slog.Logger) *Agent {
+func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
 	if cfg.Interval == 0 {
 		cfg.Interval = 5 * time.Second
 	}
-	a := &Agent{cfg: cfg, drv: drv, cg: cg, log: log, now: time.Now, recs: map[string]*rec{}}
+	a := &Agent{cfg: cfg, drv: drv, met: met, log: log, now: time.Now, recs: map[string]*rec{}}
 	a.load()
 	return a
 }
@@ -92,7 +92,7 @@ func (a *Agent) Run(ctx context.Context) {
 	}
 }
 
-// Sample refreshes containers, their cgroup counters and host state.
+// Sample refreshes runners, what they have used and host state.
 func (a *Agent) Sample(ctx context.Context) {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
@@ -117,23 +117,14 @@ func (a *Agent) Sample(ctx context.Context) {
 		}
 		a.dataMu.Unlock()
 
-		var st *cgroup.Stats
-		if c.State == "running" && c.Pid > 0 {
-			if r.cgDir == "" {
-				r.cgDir, err = a.cg.PathOfPid(c.Pid)
-				if err != nil {
-					a.log.Warn("cgroup path", "runner", c.Name, "err", err)
-				}
-			}
-			if r.cgDir != "" {
-				s, err := a.cg.Read(r.cgDir)
-				if err != nil {
-					a.log.Warn("cgroup read", "runner", c.Name, "err", err)
-				} else {
-					st = &s
-					runnerUsecDelta += s.CPUUsec - min(r.lastUsec, s.CPUUsec)
-					runnerMem += int64(s.MemCurrent)
-				}
+		var st *Usage
+		if c.State == "running" {
+			if u, err := a.met.Runner(c); err != nil {
+				a.log.Warn("runner usage", "runner", c.Name, "err", err)
+			} else {
+				st = &u
+				runnerUsecDelta += u.CPUUsec - min(r.lastUsec, u.CPUUsec)
+				runnerMem += u.MemCurrent
 			}
 		}
 		var ev LogEvents
@@ -147,7 +138,7 @@ func (a *Agent) Sample(ctx context.Context) {
 		}
 
 		a.dataMu.Lock()
-		r.Class, r.CPUs, r.MemBytes, r.State = c.Class, c.CPUs, c.MemBytes, c.State
+		r.Class, r.CPUs, r.MemBytes, r.State, r.pid = c.Class, c.CPUs, c.MemBytes, c.State, c.Pid
 		if !c.StartedAt.IsZero() {
 			r.StartedAt = ptr(c.StartedAt)
 		}
@@ -198,16 +189,21 @@ func (a *Agent) Sample(ctx context.Context) {
 	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem)
 }
 
-func applyStats(r *rec, s cgroup.Stats) {
-	r.lastUsec = s.CPUUsec
-	r.CPUSec = float64(s.CPUUsec) / 1e6
-	r.MemCurrent = int64(s.MemCurrent)
-	r.MemPeak = max(r.MemPeak, int64(s.MemPeak))
-	r.IOBytes = int64(s.IOBytes)
-	r.OOMKills = max(r.OOMKills, int(s.OOMKills))
-	r.PressureSec = map[string]float64{}
-	for k, v := range s.Pressure {
-		r.PressureSec[k] = float64(v) / 1e6
+func applyStats(r *rec, u Usage) {
+	r.lastUsec = u.CPUUsec
+	r.CPUSec = float64(u.CPUUsec) / 1e6
+	r.MemCurrent = u.MemCurrent
+	r.MemPeak = max(r.MemPeak, u.MemPeak)
+	r.OOMKills = max(r.OOMKills, u.OOMKills)
+	// What this OS cannot measure stays empty rather than zero.
+	if u.IOBytes != nil {
+		r.IOBytes = u.IOBytes
+	}
+	if u.Pressure != nil {
+		r.PressureSec = map[string]float64{}
+		for k, v := range u.Pressure {
+			r.PressureSec[k] = float64(v) / 1e6
+		}
 	}
 }
 
@@ -219,41 +215,26 @@ func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta u
 	if a.dataDir != "" {
 		h.diskFree, h.diskTotal = diskSpace(a.dataDir)
 	}
-	if psi, err := a.cg.HostPressure(); err == nil {
-		h.psi = psi
-	} else {
-		a.log.Warn("host pressure", "err", err)
-	}
-	if mi, err := a.cg.Meminfo(); err == nil {
-		h.memBytes = int64(mi.Total)
-		h.nonRunnerMem = max(0, int64(mi.Total)-int64(mi.Available)-runnerMem)
-	} else {
-		a.log.Warn("meminfo", "err", err)
-	}
-	root, err := a.cg.RootCPUUsec()
+	hu, err := a.met.Host()
 	if err != nil {
-		a.log.Warn("root cpu.stat", "err", err)
+		a.log.Warn("host usage", "err", err)
+	}
+	h.psi, h.closed = hu.PSI, hu.Closed
+	if hu.MemBytes > 0 {
+		h.memBytes = hu.MemBytes
+		h.nonRunnerMem = max(0, hu.MemBytes-hu.MemAvailable-runnerMem)
 	}
 
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
 	h.nonRunnerCPU = a.host.nonRunnerCPU
-	if err == nil && a.prevRootUsec > 0 && root > a.prevRootUsec {
+	if hu.CPUUsec > 0 && a.prevHostUsec > 0 && hu.CPUUsec > a.prevHostUsec {
 		dt := now.Sub(a.prevAt).Seconds()
-		other := float64(root-a.prevRootUsec) - float64(runnerUsecDelta)
+		other := float64(hu.CPUUsec-a.prevHostUsec) - float64(runnerUsecDelta)
 		h.nonRunnerCPU = max(0, other/1e6/dt)
 	}
-	a.prevRootUsec, a.prevAt = root, now
+	a.prevHostUsec, a.prevAt = hu.CPUUsec, now
 	a.host = h
-}
-
-// diskSpace is the free and total bytes of the filesystem holding dir (0, 0 = unknown).
-func diskSpace(dir string) (free, total int64) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, 0
-	}
-	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -263,7 +244,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
 	s := api.Snapshot{
-		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
+		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Closed: a.host.closed, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
 		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
@@ -322,8 +303,8 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	return out, nil
 }
 
-// Delete removes a runner container and returns its last values. A running
-// container is sampled once more first.
+// Delete removes a runner and returns its last values. A running one is
+// sampled once more first.
 func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
@@ -331,10 +312,10 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 	a.dataMu.Lock()
 	r, ok := a.recs[name]
 	a.dataMu.Unlock()
-	if ok && r.State == "running" && r.cgDir != "" {
-		if st, err := a.cg.Read(r.cgDir); err == nil {
+	if ok && r.State == "running" {
+		if u, err := a.met.Runner(Container{Name: name, State: r.State, Pid: r.pid}); err == nil {
 			a.dataMu.Lock()
-			applyStats(r, st)
+			applyStats(r, u)
 			a.dataMu.Unlock()
 		}
 	}
@@ -411,4 +392,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// hostOS is the name classes use for this machine's OS (config: os).
+func hostOS() string {
+	if runtime.GOOS == "darwin" {
+		return "macos"
+	}
+	return runtime.GOOS
 }

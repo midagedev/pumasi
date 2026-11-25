@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -88,6 +89,7 @@ type host struct {
 	seenAt      time.Time     // the last snapshot that arrived
 	rtt         time.Duration // how long that snapshot took, there and back
 	version     string        // the agent's build, as that snapshot named it
+	os          string        // as the agent last said ("" = not heard yet)
 }
 
 type class struct {
@@ -530,6 +532,7 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 				if ar.OOMKills > 0 && lr.OOMKills == 0 {
 					c.reportOOM(lr, ar)
 				}
+				c.reportOverClass(h, lr, ar)
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
 					if !lr.PostedAt.IsZero() {
@@ -582,8 +585,14 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 }
 
 func (c *Controller) recordUsage(r api.Runner) {
+	psi := func(res string) *float64 {
+		if v, ok := r.PressureSec[res]; ok {
+			return &v
+		}
+		return nil
+	}
 	u := ledger.Usage{CPUSec: r.CPUSec, MemPeak: r.MemPeak, IOBytes: r.IOBytes, ExitCode: r.ExitCode,
-		PSICPUSec: r.PressureSec["cpu"], PSIMemSec: r.PressureSec["memory"], PSIIOSec: r.PressureSec["io"], OOMKills: r.OOMKills}
+		PSICPUSec: psi("cpu"), PSIMemSec: psi("memory"), PSIIOSec: psi("io"), OOMKills: r.OOMKills}
 	if err := c.ledger.SetUsage(r.Name, u); err != nil {
 		c.log.Error("ledger usage", "runner", r.Name, "err", err)
 	}
@@ -593,7 +602,10 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
-		dh := decide.Host{Name: h.cfg.Name, Kind: h.cfg.Kind, Up: h.snap != nil,
+		if h.snap != nil {
+			h.os = cmp.Or(h.snap.OS, "linux")
+		}
+		dh := decide.Host{Name: h.cfg.Name, Kind: h.cfg.Kind, OS: h.os, Up: h.snap != nil,
 			BudgetCPUs: h.cfg.Budget.CPUs, BudgetMem: int64(h.cfg.Budget.Memory)}
 		if h.snap == nil {
 			dh.DownFor = now.Sub(h.downSince)
@@ -623,7 +635,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, cl := range c.classes {
-		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
+		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration})
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
@@ -676,6 +688,9 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			if f.State != "unknown" {
 				final = &f
 				c.recordUsage(f)
+				if before.Name != "" {
+					c.reportOverClass(h, before, f)
+				}
 				if f.OOMKills > 0 && before.OOMKills == 0 && before.Name != "" {
 					c.reportOOM(before, f)
 				}

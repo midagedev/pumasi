@@ -12,7 +12,9 @@ import (
 )
 
 type Class struct {
-	Name       string
+	Name string
+	// OS the class's jobs need: linux | macos | windows. Empty = linux.
+	OS         string
 	CPUs       float64
 	MemBytes   int64
 	MaxRunners int
@@ -24,7 +26,9 @@ type Class struct {
 type Host struct {
 	Name string
 	Kind string // server | desktop
-	Up   bool
+	// OS as the host's agent reports it. Empty = linux, or not known yet while the host is down.
+	OS string
+	Up bool
 	// How long the agent has been unreachable (0 while Up).
 	DownFor  time.Duration
 	CPUs     float64
@@ -192,6 +196,8 @@ func Decide(s Snapshot) Plan {
 			switch {
 			case len(c.Hosts) > 0 && !slices.Contains(c.Hosts, hn):
 				continue
+			case (h.Up || h.OS != "") && osOf(h.OS) != osOf(c.OS):
+				continue // a job that asks for an OS never runs on another one
 			case !h.Up:
 				why = append(why, hn+" down")
 				continue
@@ -309,6 +315,13 @@ func less(a, b Demand) bool {
 		return a.Class < b.Class
 	}
 	return a.ID < b.ID
+}
+
+func osOf(os string) string {
+	if os == "" {
+		return "linux"
+	}
+	return os
 }
 
 func gib(b float64) string { return fmt.Sprintf("%.1fG", b/(1<<30)) }

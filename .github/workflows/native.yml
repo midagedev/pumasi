@@ -15,7 +15,7 @@ on:
         description: "burn duration per job"
         default: "30"
       megabytes:
-        description: "memory each job holds (the process uses about twice that)"
+        description: "megabytes each job holds"
         default: "300"
       parallel:
         description: "jobs at once"

@@ -18,13 +18,17 @@ type Snapshot struct {
 	Host string `json:"host"`
 	// What the host says of itself: server | desktop ("" = the controller's config says),
 	// and the build of its agent.
-	Kind       string  `json:"kind,omitempty"`
-	Version    string  `json:"version,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Version string `json:"version,omitempty"`
+	// linux | macos | windows. Empty (an older agent) means linux.
+	OS string `json:"os,omitempty"`
+	// The host's own reason to take no new runners right now ("memory pressure"). Empty = none.
+	Closed     string  `json:"closed,omitempty"`
 	CPUs       float64 `json:"cpus"`
 	MemBytes   int64   `json:"memBytes"`
 	BudgetCPUs float64 `json:"budgetCpus"` // 0 = no agent-side budget
 	BudgetMem  int64   `json:"budgetMem"`
-	// avg10 of /proc/pressure "some", percent.
+	// avg10 of /proc/pressure "some", percent. Linux only; absent elsewhere.
 	PSI          map[string]float64 `json:"psi"`
 	NonRunnerCPU float64            `json:"nonRunnerCpu"` // cores used by everything but runners
 	NonRunnerMem int64              `json:"nonRunnerMem"` // MemTotal - MemAvailable - runner memory.current
@@ -35,8 +39,9 @@ type Snapshot struct {
 	Runners   []Runner `json:"runners"`
 }
 
-// Runner is one runner container as the agent last sampled it. Resource values
-// survive the container's exit until the controller deletes it.
+// Runner is one runner as the agent last sampled it. Resource values survive
+// the runner's exit until the controller deletes it. Values the host's OS
+// cannot measure are absent, not zero.
 type Runner struct {
 	Name     string  `json:"name"`
 	Class    string  `json:"class"`
@@ -53,7 +58,7 @@ type Runner struct {
 	CPUSec       float64            `json:"cpuSec"`
 	MemPeak      int64              `json:"memPeak"`
 	MemCurrent   int64              `json:"memCurrent"`
-	IOBytes      int64              `json:"ioBytes"`
+	IOBytes      *int64             `json:"ioBytes,omitempty"`
 	OOMKills     int                `json:"oomKills,omitempty"`    // processes killed at the memory limit
 	PressureSec  map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
 	StartedAt    *time.Time         `json:"startedAt,omitempty"`

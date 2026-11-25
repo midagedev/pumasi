@@ -4,6 +4,8 @@ url: https://github.com/OWNER/REPO   # repo, org or enterprise
 classes:                             # a class is a runner size; jobs pick one with
   - {name: linux-s, cpus: 1, memory: 1G}   #   runs-on: [self-hosted, pumasi-linux-s]
   - {name: linux-l, cpus: 2, memory: 3G}
+#  - {name: macos, cpus: 4, memory: 8G, os: macos}   # placed only on macOS hosts, where runners are
+#                                                    #   processes of the host's user (see README)
 
 hosts:                               # ssh destinations (aliases from ~/.ssh/config) with Docker
   - ssh: server1

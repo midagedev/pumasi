@@ -13,12 +13,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/agent"
-	"github.com/midagedev/pumasi/internal/cgroup"
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/join"
 )
@@ -26,19 +24,25 @@ import (
 // runAgent is the host side. `pumasi up` starts it over ssh; then it listens on
 // loopback only and the controller reaches it through an ssh tunnel. With
 // -join (a host that joined by itself) it listens nowhere and dials the controller.
+// How runners run follows the host's OS: docker containers on Linux, processes
+// on macOS and Windows.
 func runAgent(args []string) error {
 	hostname, _ := os.Hostname()
 	fs := flag.NewFlagSet("pumasi agent", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:7391", "listen address (keep it on loopback)")
 	host := fs.String("host", hostname, "host name reported to the controller")
-	tag := fs.String("tag", "pumasi", "only containers labeled pumasi=<tag> are managed")
+	tag := fs.String("tag", "pumasi", "only containers labeled pumasi=<tag> are managed (Linux)")
 	budgetCPUs := fs.Float64("budget-cpus", 0, "CPUs pumasi may lend on this host (0 = no agent-side limit)")
 	budgetMem := fs.String("budget-mem", "", "memory pumasi may lend, e.g. 6G (empty = no agent-side limit)")
-	interval := fs.Duration("interval", 5*time.Second, "cgroup sampling interval")
+	interval := fs.Duration("interval", 5*time.Second, "sampling interval")
 	pidfile := fs.String("pidfile", "", "write the agent's pid here")
 	joined := fs.Bool("join", false, "dial the controller this host joined (see `pumasi join`) instead of listening")
 	cache, _ := os.UserCacheDir()
-	state := fs.String("state", filepath.Join(cache, "pumasi", "runners.json"), "runner records kept across agent restarts")
+	if home, err := os.UserHomeDir(); err == nil && runtime.GOOS != "linux" {
+		cache = filepath.Join(home, ".cache") // one place on every OS, not ~/Library/Caches or %LocalAppData%
+	}
+	state := fs.String("state", filepath.Join(cache, "pumasi", "runners.json"),
+		"runner records kept across agent restarts (macOS, Windows: the runners themselves live beside it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,9 +61,9 @@ func runAgent(args []string) error {
 		}
 		cfg.Host, cfg.Kind, cfg.BudgetCPUs, cfg.BudgetMem = hc.Name, hc.Kind, hc.CPUs, hc.Mem
 	}
-	bootID, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	cfg.BootID = strings.TrimSpace(string(bootID))
-	a := agent.New(cfg, agent.Docker{Tag: *tag}, cgroup.DefaultReader(), log)
+	cfg.BootID = agent.BootID()
+	drv, meter := agent.Platform(*tag, filepath.Dir(*state))
+	a := agent.New(cfg, drv, meter, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

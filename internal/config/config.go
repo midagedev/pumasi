@@ -52,8 +52,11 @@ type Notify struct {
 }
 
 type Class struct {
-	Name       string   `yaml:"name"`
-	ScaleSet   string   `yaml:"scaleSet"`
+	Name     string `yaml:"name"`
+	ScaleSet string `yaml:"scaleSet"`
+	// OS the class's jobs need: linux (default), macos or windows. A class is
+	// placed only on hosts of its OS.
+	OS         string   `yaml:"os"`
 	Labels     []string `yaml:"labels"`
 	CPUs       float64  `yaml:"cpus"`
 	Memory     Bytes    `yaml:"memory"`
@@ -169,6 +172,9 @@ func (c *Config) defaults() {
 		if cl.MaxRunners == 0 {
 			cl.MaxRunners = 10
 		}
+		if cl.OS == "" {
+			cl.OS = "linux"
+		}
 	}
 	for i := range c.Hosts {
 		h := &c.Hosts[i]
@@ -240,6 +246,9 @@ func (c *Config) validate() error {
 	for _, cl := range c.Classes {
 		if !nameRE.MatchString(cl.Name) || cl.CPUs <= 0 || cl.Memory <= 0 {
 			return fmt.Errorf("class needs name, cpus and memory: %+v", cl)
+		}
+		if cl.OS != "linux" && cl.OS != "macos" && cl.OS != "windows" {
+			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
 		}
 		for _, h := range cl.Hosts {
 			// With listen: a class may name a host that joins later.

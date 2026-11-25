@@ -44,7 +44,7 @@ func testAgent(drv Driver) *Agent {
 		ProcRoot:   filepath.Join("..", "cgroup", "testdata", "proc"),
 		SysRoot:    filepath.Join("..", "cgroup", "testdata", "sys"),
 	}
-	return New(Config{Host: "h1", BudgetCPUs: 3, BudgetMem: 4 << 30}, drv, cg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(Config{Host: "h1", BudgetCPUs: 3, BudgetMem: 4 << 30}, drv, &CgroupMeter{R: cg}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestStartSampleExitDelete(t *testing.T) {

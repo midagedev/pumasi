@@ -44,3 +44,18 @@ func TestBudgetRequired(t *testing.T) {
 		t.Errorf("err %v", err)
 	}
 }
+
+func TestClassOS(t *testing.T) {
+	load := func(classes string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: "+classes+"\nhosts: [{ssh: h, budget: {cpus: 1, memory: 1G}}]\n"), 0o600)
+		return Load(p)
+	}
+	c, err := load("[{name: a, cpus: 1, memory: 1G}, {name: m, cpus: 1, memory: 1G, os: macos}]")
+	if err != nil || c.Classes[0].OS != "linux" || c.Classes[1].OS != "macos" {
+		t.Errorf("os %+v err %v", c, err)
+	}
+	if _, err := load("[{name: a, cpus: 1, memory: 1G, os: darwin}]"); err == nil || !strings.Contains(err.Error(), "macos") {
+		t.Errorf("err %v", err)
+	}
+}
