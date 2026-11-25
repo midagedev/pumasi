@@ -236,6 +236,7 @@ var errOverBudget = errors.New("over budget")
 
 // Start launches one runner. It refuses when the agent's own budget would be exceeded.
 func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, error) {
+	received := a.now() // before waiting for other starts: queueing here is part of provisioning
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
 
@@ -257,7 +258,7 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 		return api.Runner{}, fmt.Errorf("%w: in use %.1f cpus/%d bytes, budget %.1f/%d, asked %.1f/%d",
 			errOverBudget, cpus, mem, a.cfg.BudgetCPUs, a.cfg.BudgetMem, req.CPUs, req.MemBytes)
 	}
-	r := &rec{Runner: api.Runner{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, State: "starting"}, receivedAt: a.now()}
+	r := &rec{Runner: api.Runner{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, State: "starting"}, receivedAt: received}
 	a.recs[req.Name] = r
 	a.dataMu.Unlock()
 

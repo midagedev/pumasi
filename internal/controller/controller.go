@@ -206,6 +206,20 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 			}
 		}
 	}
+	// Withdrawn assignments first: GitHub puts the cancel and the reassignment
+	// (under a new job id) in the same message.
+	for _, j := range msg.JobCompletedMessages {
+		if j.RunnerName != "" {
+			continue
+		}
+		// No runner took it within 5 minutes: GitHub cancels this assignment and, up to
+		// two more times, assigns the job again under a new job id (M0, M1). A job canceled
+		// by a person looks the same and is simply not assigned again.
+		c.log.Info("job completed without a runner", "class", cls, "job", j.JobDisplayName, "result", j.Result)
+		if err := c.ledger.CloseDemand(j.JobID, "unassigned-"+j.Result, orNow(j.FinishTime, now)); err != nil {
+			return err
+		}
+	}
 	for _, j := range msg.JobAssignedMessages {
 		if err := c.ledger.UpsertDemand(job(cls, j.JobMessageBase), now); err != nil {
 			return err
@@ -223,13 +237,6 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 	}
 	for _, j := range msg.JobCompletedMessages {
 		if j.RunnerName == "" {
-			// No runner took it within 5 minutes: GitHub cancels this assignment and, up to
-			// three times, assigns the job again under a new job id (M0, M1). A job canceled
-			// by a person looks the same and is simply not assigned again.
-			c.log.Info("job completed without a runner", "class", cls, "job", j.JobDisplayName, "result", j.Result)
-			if err := c.ledger.CloseDemand(j.JobID, "unassigned-"+j.Result, orNow(j.FinishTime, now)); err != nil {
-				return err
-			}
 			continue
 		}
 		if err := c.ledger.JobCompleted(j.RunnerName, job(cls, j.JobMessageBase), j.Result, orNow(j.FinishTime, now)); err != nil {
