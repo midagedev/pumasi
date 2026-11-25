@@ -12,81 +12,47 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/agent"
-	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/join"
 )
 
-// runAgent is the host side. `pumasi up` starts it over ssh; then it listens on
-// loopback only and the controller reaches it through an ssh tunnel. With
-// -join (a host that joined by itself) it listens nowhere and dials the controller.
-// How runners run follows the host's OS: docker containers on Linux, processes
-// on macOS and Windows.
+// runAgent is the host side: the process `pumasi join` leaves running. It
+// listens nowhere; it dials the controller the host joined and serves the
+// agent API over that connection. How runners run follows the host's OS:
+// docker containers on Linux, processes on macOS and Windows.
 func runAgent(args []string) error {
-	hostname, _ := os.Hostname()
 	fs := flag.NewFlagSet("pumasi agent", flag.ContinueOnError)
-	listen := fs.String("listen", "127.0.0.1:7391", "listen address (keep it on loopback)")
-	host := fs.String("host", hostname, "host name reported to the controller")
 	tag := fs.String("tag", "pumasi", "only containers labeled pumasi=<tag> are managed (Linux)")
-	budgetCPUs := fs.Float64("budget-cpus", 0, "CPUs pumasi may lend on this host (0 = no agent-side limit)")
-	budgetMem := fs.String("budget-mem", "", "memory pumasi may lend, e.g. 6G (empty = no agent-side limit)")
 	interval := fs.Duration("interval", 5*time.Second, "sampling interval")
-	pidfile := fs.String("pidfile", "", "write the agent's pid here")
-	joined := fs.Bool("join", false, "dial the controller this host joined (see `pumasi join`) instead of listening")
-	supervise := fs.Bool("supervise", false, "with -join: stay in the background and start the agent again whenever it ends (how Windows runs it at logon)")
+	fs.Bool("join", true, "dial the controller this host joined (the only way; kept for the services of earlier builds)")
+	supervise := fs.Bool("supervise", false, "stay in the background and start the agent again whenever it ends (how Windows runs it at logon)")
 	state := fs.String("state", filepath.Join(cacheDir(), "pumasi", "runners.json"),
 		"runner records kept across agent restarts (macOS, Windows: the runners themselves live beside it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	mem, err := config.ParseBytes(*budgetMem)
-	if err != nil {
-		return fmt.Errorf("-budget-mem: %w", err)
-	}
 	if *supervise {
 		return superviseAgent(paths())
+	}
+	hc, err := join.LoadHostConfig(paths().conf)
+	if err != nil {
+		return fmt.Errorf("this host has not joined a controller (`pumasi invite` there prints the line to run here): %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	exe, _ := os.Executable()
 	version := join.FileVersion(exe)
-	cfg := agent.Config{Host: *host, BudgetCPUs: *budgetCPUs, BudgetMem: mem, Interval: *interval, StateFile: *state, Version: shortVersion(version)}
-	var hc join.HostConfig
-	if *joined {
-		if hc, err = join.LoadHostConfig(paths().conf); err != nil {
-			return fmt.Errorf("this host has not joined a controller: %w", err)
-		}
-		cfg.Host, cfg.Kind, cfg.BudgetCPUs, cfg.BudgetMem = hc.Name, hc.Kind, hc.CPUs, hc.Mem
-	}
-	cfg.BootID = agent.BootID()
+	cfg := agent.Config{Host: hc.Name, Kind: hc.Kind, BudgetCPUs: hc.CPUs, BudgetMem: hc.Mem, Interval: *interval, StateFile: *state,
+		Version: shortVersion(version), BootID: agent.BootID()}
 	drv, meter := agent.Platform(*tag, filepath.Dir(*state))
 	a := agent.New(cfg, drv, meter, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go a.Run(ctx)
-	if *joined {
-		return serveJoined(ctx, hc, a.Handler(), exe, version, log)
-	}
-
-	srv := &http.Server{Addr: *listen, Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-	}()
-	if *pidfile != "" {
-		if err := os.WriteFile(*pidfile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
-			return err
-		}
-	}
-	log.Info("pumasi agent listening", "addr", *listen, "host", *host, "tag", *tag, "budgetCpus", *budgetCPUs, "budgetMem", mem)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	return serveJoined(ctx, hc, a.Handler(), exe, version, log)
 }
 
 func shortVersion(v string) string {

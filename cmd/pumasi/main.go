@@ -1,6 +1,6 @@
 // pumasi places self-hosted GitHub Actions runners across the machines you
-// already have. One binary: `pumasi up` runs the controller on your laptop and
-// starts `pumasi agent` on every host over ssh.
+// already have. One binary: `pumasi up` runs the controller on your laptop;
+// every host runs `pumasi agent`, which dials that controller.
 package main
 
 import (
@@ -22,14 +22,14 @@ import (
 
 const usage = `pumasi places self-hosted GitHub Actions runners across your machines.
 
-  pumasi up      start agents on the hosts and serve jobs until Ctrl-C
+  pumasi up      make the hosts of the config join and serve jobs until Ctrl-C
                  (running jobs survive Ctrl-C; the next up picks them up)
   pumasi status  problems, hosts, runners and waiting jobs (--json for machines)
   pumasi open    the same in a browser, with recent jobs and the last 24 hours
   pumasi down    remove everything pumasi created on the hosts and on GitHub
                  (refuses while jobs run, unless --force)
   pumasi invite  print the line that joins a host to this controller
-                 (needs listen: in the config; --rotate makes a new token)
+                 (one host within the hour; --uses N and --ttl 24h say otherwise)
 
 On a host that joined:
   pumasi doctor  check the way to the controller, what runners need here, and the agent
@@ -139,7 +139,7 @@ func runController(args []string, down bool) error {
 	go func() {
 		<-sig
 		cancel()
-		// A second Ctrl-C skips the tidy shutdown but still takes the ssh tunnels along.
+		// A second Ctrl-C skips the tidy shutdown.
 		<-sig
 		c.Close()
 		fmt.Fprintln(os.Stderr, "pumasi: interrupted again, quitting now")
@@ -149,8 +149,8 @@ func runController(args []string, down bool) error {
 		return c.Down(ctx, *force)
 	}
 	dist := filepath.Dir(exe)
-	if m, _ := filepath.Glob(filepath.Join(dist, "pumasi-linux-*")); len(m) == 0 {
-		return fmt.Errorf("no linux build next to %s: the hosts need pumasi-linux-amd64 or pumasi-linux-arm64 there; run `make` in the pumasi source tree and use ./dist/pumasi", exe)
+	if m, _ := filepath.Glob(filepath.Join(dist, "pumasi-*-*")); len(m) == 0 {
+		return fmt.Errorf("no host builds next to %s: hosts fetch pumasi-<os>-<arch> from there when they join; run `make` in the pumasi source tree and use ./dist/pumasi", exe)
 	}
 	return c.Run(ctx, dist)
 }

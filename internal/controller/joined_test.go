@@ -63,7 +63,7 @@ func joinedHost(t *testing.T, c *Controller, addr, name string) (stop func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, _ := join.Token(c.cfg.StateDir())
+	token, _ := join.NewToken(c.cfg.StateDir(), "", 1, time.Hour)
 	hc := join.HostConfig{Controller: addr, Pin: id.Pin, Name: name, Kind: "desktop", CPUs: 2, Mem: 4 << 30}
 	hc.ID, hc.Secret = join.NewHostID()
 	if err := hc.Register(context.Background(), token, false); err != nil {
@@ -132,8 +132,8 @@ func TestJoinedHostIsAHostLikeAnyOther(t *testing.T) {
 		t.Fatalf("hosts %+v", c.hosts)
 	}
 	h := c.hosts[0]
-	if did, err := h.tr.Ensure(ctx, ""); err != nil || did != "connected" {
-		t.Fatalf("ensure: %q %v", did, err)
+	if err := h.wait(ctx); err != nil {
+		t.Fatalf("wait: %v", err)
 	}
 
 	// The agent API, unchanged, over the host's own connection.
@@ -174,14 +174,11 @@ func TestJoinedHostIsAHostLikeAnyOther(t *testing.T) {
 
 	// The host drops: the incident says why, and ends when it is back.
 	stop()
-	for end := time.Now().Add(3 * time.Second); h.tr.Why() == "" && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+	for end := time.Now().Add(3 * time.Second); h.why() == "" && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
 	}
 	c.refreshHosts(ctx, now)
 	if h.snap != nil || h.downSince.IsZero() {
 		t.Fatal("still up after the drop")
-	}
-	if did, err := h.tr.Revive(ctx, ""); did != "" || err != nil {
-		t.Fatalf("revive: %q %v", did, err)
 	}
 	c.hostIncidents(now.Add(2*time.Minute), []ledger.Runner{{Name: "r1", Host: "desk1", State: "busy"}})
 	if got := sent(); len(got) != 1 || !strings.Contains(got[0], "desk1 unreachable for 2m0s (agent exited) — 1 jobs still running there") {
@@ -195,11 +192,12 @@ func TestDownAsksAJoinedHostToRemoveItself(t *testing.T) {
 	joinedHost(t, c, addr, "desk1")
 	c.syncJoined(false)
 	h := c.hosts[0]
-	if names, err := h.tr.Running(ctx); err != nil || len(names) != 0 {
+	if names, err := h.running(ctx); err != nil || len(names) != 0 {
 		t.Fatalf("running %v %v", names, err)
 	}
-	if n, err := h.tr.Clean(ctx); err != nil || n != "3" {
-		t.Fatalf("clean %q %v", n, err)
+	c.gh = &fakeGitHub{}
+	if err := c.down(ctx, false); err != nil {
+		t.Fatalf("down: %v", err)
 	}
 	if len(join.ReadMembers(c.cfg.StateDir())) != 0 {
 		t.Fatal("still a member after down")
@@ -215,7 +213,7 @@ func TestConfigNamesAreNotGivenToJoiningHosts(t *testing.T) {
 	c, addr, _ := joinController(t)
 	c.join.Reserved = func(n string) bool { return n == "server1" }
 	id, _ := join.LoadIdentity(c.cfg.StateDir())
-	token, _ := join.Token(c.cfg.StateDir())
+	token, _ := join.NewToken(c.cfg.StateDir(), "", 1, time.Hour)
 	hc := join.HostConfig{Controller: addr, Pin: id.Pin, Name: "server1", Kind: "server", CPUs: 1, Mem: 1 << 30}
 	hc.ID, hc.Secret = join.NewHostID()
 	if err := hc.Register(context.Background(), token, false); err == nil || !strings.Contains(err.Error(), "pumasi.yaml") {

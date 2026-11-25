@@ -26,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -135,28 +134,6 @@ func newIdentity(keyPath, crtPath string) error {
 		return err
 	}
 	return os.WriteFile(crtPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
-}
-
-func tokenPath(dir string) string { return filepath.Join(dir, "join.token") }
-
-// Token is the secret a new host shows to join, created once. The file's
-// modification time is when it was last rotated.
-func Token(dir string) (string, error) {
-	b, err := os.ReadFile(tokenPath(dir))
-	if errors.Is(err, os.ErrNotExist) {
-		return RotateToken(dir)
-	}
-	return strings.TrimSpace(string(b)), err
-}
-
-// RotateToken replaces the token. Hosts that joined before keep their own secret.
-func RotateToken(dir string) (string, error) {
-	t := randomHex(16)
-	tmp := tokenPath(dir) + ".tmp"
-	if err := os.WriteFile(tmp, []byte(t+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return t, os.Rename(tmp, tokenPath(dir))
 }
 
 func randomHex(n int) string {

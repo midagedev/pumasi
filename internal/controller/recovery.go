@@ -104,7 +104,7 @@ func (c *Controller) closedReason(h *host) string {
 		return ""
 	case h.snap.Closed != "":
 		return h.snap.Closed // the host's own word: macOS memory pressure, Windows commit charge
-	case personAt(cmp.Or(h.snap.Kind, h.cfg.Kind), h.snap):
+	case personAt(cmp.Or(h.snap.Kind, h.cfg.Kind()), h.snap):
 		return "in use"
 	}
 	return ""

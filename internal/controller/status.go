@@ -27,7 +27,6 @@ type Status struct {
 
 // Link is the connection to one host, whichever side opened it.
 type Link struct {
-	Via      string    `json:"via"`                // ssh | join
 	SeenAt   time.Time `json:"seenAt"`             // the last answer (zero = none yet)
 	RTTMs    float64   `json:"rttMs"`              // how long that answer took
 	Agent    string    `json:"agent,omitempty"`    // the agent's build
@@ -44,10 +43,7 @@ func (c *Controller) setStatus(defers []decide.Defer) {
 	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{}}
 	for _, h := range c.hosts {
 		st.Hosts[h.cfg.Name] = h.snap
-		if h.tr != nil {
-			st.Links[h.cfg.Name] = Link{Via: h.tr.Via(), SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000,
-				Agent: h.version, LastDrop: h.tr.Why()}
-		}
+		st.Links[h.cfg.Name] = Link{SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000, Agent: h.version, LastDrop: h.why()}
 		if h.snap != nil && h.closed != "" {
 			st.Closed[h.cfg.Name] = h.closed
 		}

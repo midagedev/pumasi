@@ -23,7 +23,6 @@ import (
 	"github.com/midagedev/pumasi/internal/cgroup"
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
-	"github.com/midagedev/pumasi/internal/join"
 )
 
 // fakeGitHub is the scale set service as far as runners go: registrations, and
@@ -190,25 +189,13 @@ func newRig(t *testing.T) *rig {
 	c.kick = make(chan struct{}, 1)
 	c.inflight, c.lastDefer, c.runCheck = map[string]time.Time{}, map[string]deferRec{}, map[int64]time.Time{}
 	c.rebootLost, c.rerunCheck, c.rerunWanted = nil, map[int64]time.Time{}, map[string]string{}
-	c.join = join.NewServer(t.TempDir(), "", log)
 	c.classes = []*class{{cfg: c.cfg.Classes[0], setID: 1}}
-	hc := config.Host{Name: "h1", Kind: "server"}
+	hc := config.Host{Name: "h1"}
 	hc.Budget.CPUs, hc.Budget.Memory = 4, 8<<30
-	c.hosts = []*host{{cfg: hc, started: true, tr: stubLink{},
+	c.hosts = []*host{{cfg: hc,
 		agent: &api.Client{BaseURL: func(context.Context) (string, error) { return srv.URL, nil }, HTTP: srv.Client()}}}
 	return r
 }
-
-type stubLink struct{}
-
-func (stubLink) Agent() *api.Client                             { return nil }
-func (stubLink) Via() string                                    { return "ssh" }
-func (stubLink) Why() string                                    { return "" }
-func (stubLink) Ensure(context.Context, string) (string, error) { return "", nil }
-func (stubLink) Revive(context.Context, string) (string, error) { return "", nil }
-func (stubLink) Running(context.Context) ([]string, error)      { return nil, nil }
-func (stubLink) Clean(context.Context) (string, error)          { return "0", nil }
-func (stubLink) Close()                                         {}
 
 // runner places a runner the way start and launch do and lets the agent see it.
 func (r *rig) runner(name string) {

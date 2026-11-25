@@ -22,13 +22,13 @@ hosts:
 		t.Fatal(err)
 	}
 	cl, s, d := c.Classes[0], c.Hosts[0], c.Hosts[1]
-	if cl.ScaleSet != "pumasi-linux-s" || strings.Join(cl.Labels, ",") != "pumasi-linux-s,self-hosted" || cl.MaxRunners != 10 {
+	if cl.ScaleSet() != "pumasi-linux-s" || cl.OS != "linux" || cl.Driver != "docker" {
 		t.Errorf("class defaults %+v", cl)
 	}
-	if s.Name != "server1" || s.Kind != "server" || s.Shell != "sh -s" || s.AgentPort != 7391 {
+	if s.Name != "server1" || s.Kind() != "server" || s.Shell != "sh -s" || c.Listen != DefaultListen {
 		t.Errorf("server defaults %+v", s)
 	}
-	if d.Kind != "desktop" || d.Shell != "wsl -e sh -s" || d.Budget.Memory != 9<<30 {
+	if d.Kind() != "desktop" || d.Shell != "wsl -e sh -s" || d.Budget.Memory != 9<<30 {
 		t.Errorf("desktop %+v", d)
 	}
 	if !strings.HasSuffix(c.Ledger, "/.local/state/pumasi/pumasi.db") || strings.HasPrefix(c.Ledger, "~") ||
@@ -84,7 +84,7 @@ func TestClassDriverAndMounts(t *testing.T) {
 		"[{name: a, cpus: 1, memory: 1G, mounts: [cache]}]":                "absolute path",
 		`[{name: a, cpus: 1, memory: 1G, mounts: ["/srv/a:/srv/b"]}]`:      "absolute path",
 		`[{name: a, cpus: 1, memory: 1G, mounts: ["/srv/a,readonly"]}]`:    "absolute path",
-		"[{name: a, cpus: 1, memory: 1G, driver: native, hosts: [nope]}]":  "unknown host",
+		"[{name: a, cpus: 1, memory: 1G, driver: native, hosts: [no pe]}]": "bad host name",
 		"[{name: a, cpus: 1, memory: 1G, docker: host}]":                   "must be inside",
 		"[{name: a, cpus: 1, memory: 1G, driver: native, docker: inside}]": "container runners",
 	} {
@@ -120,10 +120,11 @@ func TestUnknownKeysAndDuplicateClasses(t *testing.T) {
 	}
 	const hosts = "\nhosts: [{ssh: h, budget: {cpus: 1, memory: 1G}}]\n"
 	for body, want := range map[string]string{
-		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G, maxduration: 1h}]" + hosts:                "maxduration",
-		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}]\nhosts: [{ssh: h, budget: {cpu: 1}}]\n":  "cpu",
-		"url: u\nidleTimout: 1m\nclasses: [{name: a, cpus: 1, memory: 1G}]" + hosts:                 "idleTimout",
-		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}, {name: a, cpus: 2, memory: 2G}]" + hosts: "duplicate class a",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G, maxduration: 1h}]" + hosts:                                           "maxduration",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}]\nhosts: [{ssh: h, budget: {cpu: 1}}]\n":                             "cpu",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}]\nhosts: [{ssh: h, kind: desktop, budget: {cpus: 1, memory: 1G}}]\n": "kind",
+		"url: u\nidleTimeout: 1m\nclasses: [{name: a, cpus: 1, memory: 1G}]" + hosts:                                           "idleTimeout",
+		"url: u\nclasses: [{name: a, cpus: 1, memory: 1G}, {name: a, cpus: 2, memory: 2G}]" + hosts:                            "duplicate class a",
 	} {
 		if err := load(body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err %v, want one naming %q", body, err, want)

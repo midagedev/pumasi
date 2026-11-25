@@ -7,12 +7,11 @@ set -eu
 main() {
   controller='{{controller}}'
   pin='{{pin}}'
-  if [ $# -lt 1 ]; then
-    echo "usage: ... | sh -s -- <token> [--name NAME] [--cpus N] [--mem 6G] [--desktop]" >&2
+  if [ -z "${PUMASI_TOKEN:-}" ]; then
+    echo "usage: ... | PUMASI_TOKEN=<token> sh -s -- [--name NAME] [--cpus N] [--mem 6G] [--desktop|--server]" >&2
+    echo "(\`pumasi invite\` on the controller prints the whole line)" >&2
     exit 2
   fi
-  token=$1
-  shift
   case "$(uname -s)/$(uname -m)" in
     Linux/x86_64) build=linux-amd64 ;;
     Linux/aarch64 | Linux/arm64) build=linux-arm64 ;;
@@ -40,7 +39,8 @@ main() {
   fi
   chmod +x "$bin.new"
   mv "$bin.new" "$bin"
-  exec "$bin" join "$@" "$controller" "$pin" "$token"
+  # The token stays in the environment: an argument would show in ps.
+  exec "$bin" join "$@" "$controller" "$pin"
 }
 
 main "$@"

@@ -18,19 +18,21 @@ import (
 )
 
 type Config struct {
-	URL           string `yaml:"url"` // registration URL, e.g. https://github.com/owner/repo
-	RunnerGroupID int    `yaml:"runnerGroupID"`
-	Image         string `yaml:"image"`
-	Ledger        string `yaml:"ledger"`
-	EventLog      string `yaml:"eventLog"`
+	URL      string `yaml:"url"` // registration URL, e.g. https://github.com/owner/repo
+	Image    string `yaml:"image"`
+	Ledger   string `yaml:"ledger"`
+	EventLog string `yaml:"eventLog"`
 
+	// How fast pumasi reacts. The defaults are what was measured to work; the
+	// keys exist for `make chaos`, which has to provoke each case in seconds.
 	EvaluateEvery    time.Duration `yaml:"evaluateEvery"`
 	ProvisionTimeout time.Duration `yaml:"provisionTimeout"` // created -> listening
-	IdleTimeout      time.Duration `yaml:"idleTimeout"`      // listening -> JobStarted
 	HostLostAfter    time.Duration `yaml:"hostLostAfter"`
-	DemandTTL        time.Duration `yaml:"demandTTL"`
-	PSICPUThreshold  float64       `yaml:"psiCPUThreshold"`
 	WaitAlert        time.Duration `yaml:"waitAlert"` // a job waiting this long is a problem
+	// Not settable: nobody has needed another value.
+	IdleTimeout     time.Duration `yaml:"-"` // listening -> JobStarted
+	DemandTTL       time.Duration `yaml:"-"`
+	PSICPUThreshold float64       `yaml:"-"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -39,7 +41,8 @@ type Config struct {
 
 	Notify Notify `yaml:"notify"`
 
-	// Listen: the address hosts dial to join, e.g. 0.0.0.0:7411 ("" = ssh hosts only).
+	// Listen: the address every host dials, the hosts of hosts: too. Default
+	// DefaultListen: all of this machine's addresses.
 	Listen string `yaml:"listen"`
 
 	Classes []Class `yaml:"classes"`
@@ -56,15 +59,12 @@ type Notify struct {
 }
 
 type Class struct {
-	Name     string `yaml:"name"`
-	ScaleSet string `yaml:"scaleSet"`
+	Name string `yaml:"name"`
 	// OS the class's jobs need: linux (default), macos or windows. A class is
 	// placed only on hosts of its OS.
-	OS         string   `yaml:"os"`
-	Labels     []string `yaml:"labels"`
-	CPUs       float64  `yaml:"cpus"`
-	Memory     Bytes    `yaml:"memory"`
-	MaxRunners int      `yaml:"maxRunners"`
+	OS     string  `yaml:"os"`
+	CPUs   float64 `yaml:"cpus"`
+	Memory Bytes   `yaml:"memory"`
 	// Hosts binds the class to these hosts (empty = every host). Jobs that hand
 	// each other files in a host directory need the same machine.
 	Hosts []string `yaml:"hosts"`
@@ -87,19 +87,32 @@ type Class struct {
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
 
+// Host is a machine the controller makes join by itself: it goes there over
+// ssh and runs the invite line with this name, budget and kind. From then on
+// the host is connected like one that joined on its own.
+// ScaleSet is the class's scale set on GitHub, and the label its jobs ask for:
+// runs-on: [self-hosted, pumasi-<class>].
+func (cl Class) ScaleSet() string { return "pumasi-" + cl.Name }
+
 type Host struct {
 	Name string `yaml:"name"` // default: the ssh destination
 	SSH  string `yaml:"ssh"`  // ssh destination (alias from ~/.ssh/config)
 	// Shell is the remote command that reads a script on stdin. Default "sh -s";
 	// a Windows host running WSL uses "wsl -e sh -s".
-	Shell     string `yaml:"shell"`
-	AgentPort int    `yaml:"agentPort"`
-	Desktop   bool   `yaml:"desktop"` // someone works on it: filled after servers
-	Kind      string `yaml:"kind"`    // server | desktop (same as desktop: true)
-	Budget    struct {
+	Shell   string `yaml:"shell"`
+	Desktop bool   `yaml:"desktop"` // someone works on it: filled after servers, and theirs first
+	Budget  struct {
 		CPUs   float64 `yaml:"cpus"`
 		Memory Bytes   `yaml:"memory"`
 	} `yaml:"budget"`
+}
+
+// Kind is server or desktop.
+func (h Host) Kind() string {
+	if h.Desktop {
+		return "desktop"
+	}
+	return "server"
 }
 
 // Bytes is a size written as 512M, 3G or a plain number of bytes.
@@ -151,7 +164,12 @@ func Load(path string) (*Config, error) {
 	return c, c.validate()
 }
 
+const DefaultListen = "0.0.0.0:7411"
+
 func (c *Config) defaults() {
+	if c.Listen == "" {
+		c.Listen = DefaultListen
+	}
 	def := func(d *time.Duration, v time.Duration) {
 		if *d == 0 {
 			*d = v
@@ -159,18 +177,14 @@ func (c *Config) defaults() {
 	}
 	def(&c.EvaluateEvery, 10*time.Second)
 	def(&c.ProvisionTimeout, 3*time.Minute)
-	def(&c.IdleTimeout, 5*time.Minute)
 	def(&c.HostLostAfter, 2*time.Minute)
-	def(&c.DemandTTL, 24*time.Hour)
 	def(&c.WaitAlert, 10*time.Minute)
+	c.IdleTimeout, c.DemandTTL, c.PSICPUThreshold = 5*time.Minute, 24*time.Hour, 40
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
 	}
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
-	}
-	if c.RunnerGroupID == 0 {
-		c.RunnerGroupID = 1
 	}
 	if c.Image == "" {
 		c.Image = "ghcr.io/actions/actions-runner:2.338.2"
@@ -183,20 +197,8 @@ func (c *Config) defaults() {
 		c.EventLog = filepath.Join(c.StateDir(), "events.jsonl")
 	}
 	c.EventLog = expandHome(c.EventLog)
-	if c.PSICPUThreshold == 0 {
-		c.PSICPUThreshold = 40
-	}
 	for i := range c.Classes {
 		cl := &c.Classes[i]
-		if cl.ScaleSet == "" {
-			cl.ScaleSet = "pumasi-" + cl.Name
-		}
-		if len(cl.Labels) == 0 {
-			cl.Labels = []string{cl.ScaleSet, "self-hosted"}
-		}
-		if cl.MaxRunners == 0 {
-			cl.MaxRunners = 10
-		}
 		if cl.OS == "" {
 			cl.OS = "linux"
 		}
@@ -214,15 +216,6 @@ func (c *Config) defaults() {
 		}
 		if h.Shell == "" {
 			h.Shell = "sh -s"
-		}
-		if h.AgentPort == 0 {
-			h.AgentPort = 7391
-		}
-		if h.Kind == "" {
-			h.Kind = "server"
-			if h.Desktop {
-				h.Kind = "desktop"
-			}
 		}
 	}
 }
@@ -284,9 +277,6 @@ func (c *Config) validate() error {
 	if len(c.Classes) == 0 {
 		return fmt.Errorf("at least one class is required")
 	}
-	if len(c.Hosts) == 0 && c.Listen == "" {
-		return fmt.Errorf("no hosts: list them under hosts: (reached over ssh) or set listen: so that hosts can join")
-	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {
 		if h.SSH == "" {
@@ -297,9 +287,6 @@ func (c *Config) validate() error {
 		}
 		if h.Budget.CPUs <= 0 || h.Budget.Memory <= 0 {
 			return fmt.Errorf("host %s: budget needs cpus and memory, e.g. budget: {cpus: 4, memory: 6G}", h.Name)
-		}
-		if h.Kind != "server" && h.Kind != "desktop" {
-			return fmt.Errorf("host %s: kind must be server or desktop", h.Name)
 		}
 		if hosts[h.Name] {
 			return fmt.Errorf("duplicate host %s", h.Name)
@@ -337,9 +324,9 @@ func (c *Config) validate() error {
 			}
 		}
 		for _, h := range cl.Hosts {
-			// With listen: a class may name a host that joins later.
-			if !hosts[h] && c.Listen == "" {
-				return fmt.Errorf("class %s: unknown host %s", cl.Name, h)
+			// A class may name a host that joins later.
+			if !nameRE.MatchString(h) {
+				return fmt.Errorf("class %s: bad host name %q", cl.Name, h)
 			}
 		}
 	}

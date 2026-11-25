@@ -11,16 +11,17 @@ classes:                             # a class is a runner size; jobs pick one w
 #  - {name: build, cpus: 4, memory: 8G, driver: native}            # a process of the host's user, in a cgroup
 #  - {name: release, cpus: 4, memory: 8G, driver: native, hosts: [server1]}   # only on that host
 
-hosts:                               # ssh destinations (aliases from ~/.ssh/config) with Docker
+hosts:                               # optional: ssh destinations (aliases from ~/.ssh/config) with Docker;
+                                     #   `up` runs the invite line there, the host then connects to `listen`
   - ssh: server1
     budget: {cpus: 4, memory: 6G}    # the most pumasi may use on this host
   - ssh: desk1
     desktop: true                    # someone works here: used after the servers
-    shell: wsl -e sh -s              # Windows host running WSL (default: sh -s)
+    shell: wsl -e sh -s              # Windows host running WSL
     budget: {cpus: 6, memory: 9G}
 
-# listen: 0.0.0.0:7411              # optional: hosts join by themselves instead of (or next to) hosts:
-#                                    #   `pumasi invite` prints the line to run on a host
+# listen: 0.0.0.0:7411              # where hosts connect (this is the default); every host must reach it.
+#                                    #   `pumasi invite` prints the line to run on a host that is not in hosts:
 
 # rerun: 1                           # optional: after a failure on pumasi's side (host reboot, runner killed)
 #                                    #   rerun that run's failed jobs once; default 0 = only tell

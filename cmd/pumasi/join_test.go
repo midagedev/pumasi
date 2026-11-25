@@ -6,15 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/midagedev/pumasi/internal/join"
 )
 
 func TestInviteHasALinePerShell(t *testing.T) {
-	text := inviteText("sha256//abc=", "10.0.0.5:7411", "tok")
+	text := inviteText("sha256//abc=", "10.0.0.5:7411", "tok", 1, time.Hour)
+	// The token rides in the environment of the line, never as an argument.
 	for _, want := range []string{
-		"curl -fsSk --pinnedpubkey 'sha256//abc=' https://10.0.0.5:7411/join.sh | sh -s -- tok\n",
-		"& ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey 'sha256//abc=' https://10.0.0.5:7411/join.ps1 | Out-String))) tok\n",
+		"curl -fsSk --pinnedpubkey 'sha256//abc=' https://10.0.0.5:7411/join.sh | PUMASI_TOKEN=tok sh -s --\n",
+		"$env:PUMASI_TOKEN='tok'; & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey 'sha256//abc=' https://10.0.0.5:7411/join.ps1 | Out-String)))\n",
+		"for one host, until ",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)

@@ -46,9 +46,11 @@ type Controller struct {
 	// hostsMu covers the readers on other goroutines.
 	hosts   []*host
 	hostsMu sync.Mutex
-	join    *join.Server // the hosts that dial in
-	classes []*class
-	kick    chan struct{}
+	join    *join.Server // the listener every host dials
+	// listenAddr is the address that listener bound.
+	listenAddr string
+	classes    []*class
+	kick       chan struct{}
 
 	mu sync.Mutex // guards class.stats and inflight
 	// Runners whose start request the agent has not answered yet (zero), or
@@ -83,9 +85,13 @@ type github interface {
 }
 
 type host struct {
-	cfg       config.Host
-	started   bool        // its agent was started or found running
-	ensuring  atomic.Bool // an agent restart is in flight
+	cfg config.Host
+	// The host's connection: the member it joined as ("" = it has not joined)
+	// and that member's session. id changes on the evaluating goroutine only.
+	id        string
+	peer      atomic.Pointer[join.Peer]
+	http      *http.Client // over the host's connection
+	ensuring  atomic.Bool  // a bootstrap over ssh is in flight
 	reviveBad atomic.Int32
 	quiet     bool      // unreachable only because the agent has not sampled yet
 	ensuredAt time.Time // last restart attempt
@@ -96,7 +102,6 @@ type host struct {
 	quarantined time.Time
 	probedAt    time.Time
 	probing     atomic.Bool
-	tr          link
 	agent       *api.Client
 	snap        *api.Snapshot
 	downSince   time.Time
@@ -130,8 +135,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
 		kick: make(chan struct{}, 1), inflight: map[string]time.Time{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
-		l := newSSHLink(hc, log)
-		c.hosts = append(c.hosts, &host{cfg: hc, tr: l, agent: l.Agent()})
+		c.hosts = append(c.hosts, newHost(hc))
 	}
 	for _, cc := range cfg.Classes {
 		c.classes = append(c.classes, &class{cfg: cc})
@@ -152,42 +156,39 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 }
 
 func (c *Controller) Close() {
-	c.hostsMu.Lock()
-	hosts := c.hosts
-	c.hostsMu.Unlock()
-	for _, h := range hosts {
-		h.tr.Close()
+	if c.join != nil {
+		c.join.Close()
 	}
-	c.join.Close()
 }
+
+// runnerGroup is the repository's (or organization's) default runner group.
+const runnerGroup = 1
 
 // EnsureScaleSets finds or creates the scale set of every class.
 func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 	for _, cl := range c.classes {
-		set, err := c.gh.GetRunnerScaleSet(ctx, c.cfg.RunnerGroupID, cl.cfg.ScaleSet)
+		name := cl.cfg.ScaleSet()
+		set, err := c.gh.GetRunnerScaleSet(ctx, runnerGroup, name)
 		if err != nil || set == nil {
-			labels := make([]scaleset.Label, 0, len(cl.cfg.Labels))
-			for _, n := range cl.cfg.Labels {
-				labels = append(labels, scaleset.Label{Name: n})
-			}
 			set, err = c.gh.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
-				Name: cl.cfg.ScaleSet, RunnerGroupID: c.cfg.RunnerGroupID, Labels: labels,
+				Name: name, RunnerGroupID: runnerGroup, Labels: []scaleset.Label{{Name: name}, {Name: "self-hosted"}},
 				RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 			})
 			if err != nil {
-				return fmt.Errorf("create scale set %s: %w", cl.cfg.ScaleSet, err)
+				return fmt.Errorf("create scale set %s: %w", name, err)
 			}
 			c.ev.Write("scale-set-created", set)
 		}
 		cl.setID = set.ID
-		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]", cl.cfg.Name, strings.Join(cl.cfg.Labels, ", ")))
+		c.log.Info(fmt.Sprintf("class %s  runs-on: [self-hosted, %s]", cl.cfg.Name, name))
 	}
 	return nil
 }
 
-// Run starts the agents, listens on every class and re-evaluates until ctx
-// ends. Then it removes its runners and stops the agents; scale sets stay.
-// distDir holds the linux builds of this binary (pumasi-linux-<arch>).
+// Run opens the listener the hosts dial, makes the hosts of the config join,
+// listens on every class and re-evaluates until ctx ends. Then it removes the
+// runners without a job; agents and scale sets stay.
+// distDir holds the builds of this binary that hosts fetch (pumasi-<os>-<arch>).
 func (c *Controller) Run(ctx context.Context, distDir string) error {
 	if err := c.EnsureScaleSets(ctx); err != nil {
 		return err
@@ -219,7 +220,7 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 	if err := c.listenForHosts(distDir); err != nil {
 		return err
 	}
-	if err := c.startAgents(ctx, distDir); err != nil {
+	if err := c.startAgents(ctx); err != nil {
 		return err
 	}
 	closeStatus, err := c.serveStatus()
@@ -266,7 +267,7 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 			failingSince, conflict = time.Time{}, false
 			c.book.resolve("github/" + cl.cfg.Name)
 			defer session.Close(context.WithoutCancel(ctx))
-			l, err := listener.New(session, listener.Config{ScaleSetID: cl.setID, MaxRunners: cl.cfg.MaxRunners,
+			l, err := listener.New(session, listener.Config{ScaleSetID: cl.setID, MaxRunners: math.MaxInt32, // the hosts' budgets are the limit
 				Logger: c.ListenerLog.With("class", cl.cfg.Name)})
 			if err != nil {
 				return err
@@ -292,7 +293,7 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 			// Another machine's controller, or one that died without closing its
 			// session. Keep trying quietly: a dead session expires on GitHub's side.
 			if !conflict {
-				c.log.Warn(fmt.Sprintf("class %s: GitHub already has a message session for scale set %s (another controller, or one that just died); no jobs for this class until it ends, retrying", cl.cfg.Name, cl.cfg.ScaleSet))
+				c.log.Warn(fmt.Sprintf("class %s: GitHub already has a message session for scale set %s (another controller, or one that just died); no jobs for this class until it ends, retrying", cl.cfg.Name, cl.cfg.ScaleSet()))
 			}
 			conflict = true
 		} else {
@@ -661,7 +662,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		if h.snap != nil {
 			h.os = cmp.Or(h.snap.OS, "linux")
 		}
-		dh := decide.Host{Name: h.cfg.Name, Kind: h.cfg.Kind, OS: h.os, Up: h.snap != nil,
+		dh := decide.Host{Name: h.cfg.Name, Kind: h.cfg.Kind(), OS: h.os, Up: h.snap != nil,
 			BudgetCPUs: h.cfg.Budget.CPUs, BudgetMem: int64(h.cfg.Budget.Memory)}
 		if h.snap == nil {
 			dh.DownFor = now.Sub(h.downSince)
@@ -692,7 +693,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	defer c.mu.Unlock()
 	for _, cl := range c.classes {
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
-			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
+			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
 			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve})
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
@@ -1081,30 +1082,41 @@ func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (s
 	return run.Status, run.Conclusion, err
 }
 
-// startAgents puts this build's agent on every host, in parallel. A host that
-// fails is reported and left out; the run goes on while one host works.
-func (c *Controller) startAgents(ctx context.Context, distDir string) error {
-	errs := make([]error, len(c.hosts))
+// startAgents makes every host of the config join, in parallel: one that is
+// a member already is waited for, any other is bootstrapped over ssh. A host
+// that fails is reported and left out; the run goes on while one host works
+// or others have joined by themselves.
+func (c *Controller) startAgents(ctx context.Context) error {
+	var hosts []*host
+	for _, h := range c.hosts {
+		if h.cfg.SSH != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	bad := make([]string, len(hosts))
 	var wg sync.WaitGroup
-	for i, h := range c.hosts {
+	for i, h := range hosts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 			defer cancel()
-			did, err := h.tr.Ensure(cctx, distDir)
-			for try := 0; err != nil && try < 2 && cctx.Err() == nil; try++ {
-				// ssh hops fail now and then (seen: a WSL host timing out once); the steps are idempotent.
-				c.log.Warn(fmt.Sprintf("host %s: retrying", h.cfg.Name), "err", err)
-				time.Sleep(3 * time.Second)
-				did, err = h.tr.Ensure(cctx, distDir)
+			did := "connected"
+			if h.wait(cctx) != nil || c.needsBootstrap(h) {
+				did = "joined over ssh"
+				err := c.bootstrap(cctx, h.cfg)
+				for try := 0; err != nil && try < 2 && cctx.Err() == nil && !strings.Contains(err.Error(), "cannot reach this controller"); try++ {
+					// ssh hops fail now and then (seen: a WSL host timing out once); joining again is harmless.
+					c.log.Warn(fmt.Sprintf("host %s: retrying", h.cfg.Name), "err", err)
+					time.Sleep(3 * time.Second)
+					err = c.bootstrap(cctx, h.cfg)
+				}
+				if err != nil {
+					bad[i] = h.cfg.Name
+					c.log.Error(fmt.Sprintf("host %s not usable", h.cfg.Name), "err", err)
+					return
+				}
 			}
-			if err != nil {
-				errs[i] = err
-				c.log.Error(fmt.Sprintf("host %s not usable", h.cfg.Name), "err", err)
-				return
-			}
-			h.started = true
 			c.log.Info(fmt.Sprintf("host %s  %s  budget %gcpu/%s", h.cfg.Name, did, h.cfg.Budget.CPUs, gib(int64(h.cfg.Budget.Memory))))
 		}()
 	}
@@ -1112,17 +1124,24 @@ func (c *Controller) startAgents(ctx context.Context, distDir string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := errors.Join(errs...); err != nil && !slices.ContainsFunc(c.hosts, func(h *host) bool { return h.started }) {
+	bad = slices.DeleteFunc(bad, func(n string) bool { return n == "" })
+	c.syncJoined(false)
+	if len(bad) == 0 {
+		return nil
+	}
+	if len(bad) == len(c.hosts) {
 		return errors.New("no usable host")
 	}
+	c.log.Warn(fmt.Sprintf("%d of %d hosts usable; left out for now and tried again every minute: %s", len(c.hosts)-len(bad), len(c.hosts), strings.Join(bad, ", ")))
 	return nil
 }
 
-// reviveAgent restarts the agent of a host that has not answered for a while
-// (the tunnel reconnects by itself; this covers a dead agent or a rebooted
-// host). Starting an agent never touches containers.
+// reviveAgent runs the invite line again on a host of the config that has not
+// answered for a while: its agent is dead, or the host rebooted where nothing
+// starts the agent by itself. Joining again never touches runners. A host that
+// joined by itself has to come back by itself.
 func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
-	if now.Sub(h.downSince) < 20*time.Second || now.Sub(h.ensuredAt) < time.Minute || !h.ensuring.CompareAndSwap(false, true) {
+	if h.cfg.SSH == "" || now.Sub(h.downSince) < 20*time.Second || now.Sub(h.ensuredAt) < time.Minute || !h.ensuring.CompareAndSwap(false, true) {
 		return
 	}
 	h.ensuredAt = now
@@ -1130,11 +1149,10 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 		defer h.ensuring.Store(false)
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
-		did, err := h.tr.Revive(cctx, c.distDir)
-		if did == "" && err == nil {
-			return // the host looks after its own agent
+		if h.wait(cctx) == nil {
+			return // it dialed in again meanwhile
 		}
-		if err != nil {
+		if err := c.bootstrap(cctx, h.cfg); err != nil {
 			c.log.Warn(fmt.Sprintf("host %s: agent not restarted", h.cfg.Name), "err", err)
 			if h.reviveBad.Add(1) == 3 {
 				c.book.open("agent-down/"+h.cfg.Name, "agent-down", h.cfg.Name, fmt.Sprintf(
@@ -1143,12 +1161,12 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 			return
 		}
 		h.reviveBad.Store(0)
-		if did != "agent already running" {
-			c.book.report("recovered", "agent-restarted/"+h.cfg.Name, "agent-restarted", h.cfg.Name,
-				fmt.Sprintf("the agent on %s had stopped and was started again; containers were not touched", h.cfg.Name), "agent restarted")
-			return
+		c.book.report("recovered", "agent-restarted/"+h.cfg.Name, "agent-restarted", h.cfg.Name,
+			fmt.Sprintf("the agent on %s had stopped and was started again; runners were not touched", h.cfg.Name), "agent restarted")
+		select {
+		case c.kick <- struct{}{}:
+		default:
 		}
-		c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, did))
 	}()
 }
 
@@ -1220,8 +1238,8 @@ func (c *Controller) hostIncidents(now time.Time, live []ledger.Runner) {
 			}
 		}
 		why := ""
-		if h.tr != nil && h.tr.Why() != "" {
-			why = " (" + h.tr.Why() + ")"
+		if w := h.why(); w != "" {
+			why = " (" + w + ")"
 		}
 		c.book.open("host-unreachable/"+name, "host-unreachable", name, fmt.Sprintf(
 			"%s unreachable for %s%s — %d jobs still running there, no new runners placed", name, down.Round(time.Second), why, jobs))
@@ -1268,9 +1286,6 @@ func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
 // never cost a running job: agents and busy runners stay, and the next
 // `pumasi up` adopts them. Only runners without a job are removed.
 func (c *Controller) shutdown() {
-	if !slices.ContainsFunc(c.hosts, func(h *host) bool { return h.started }) {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	defer c.Close()
@@ -1342,35 +1357,65 @@ func (c *Controller) forgetLiveRunners(reason string) {
 	}
 }
 
-// Down removes everything pumasi left behind: on every host the agent, the
-// containers labelled pumasi and the cache directory; on GitHub the remaining
-// registrations and the classes' scale sets. It needs no running agent.
-// Runner containers that are still up may be running jobs, so Down refuses
-// while there are any unless force is set.
+// Down removes everything pumasi left behind: on every host the agent, its
+// runners and its files; on GitHub the remaining registrations and the
+// classes' scale sets. A connected host is asked to remove itself; a host of
+// the config that is not connected is told the same over ssh. Runners that
+// are still up may be running jobs, so Down refuses while there are any
+// unless force is set.
 func (c *Controller) Down(ctx context.Context, force bool) error {
 	if err := c.listenForHosts(""); err != nil {
 		return err
 	}
+	return c.down(ctx, force)
+}
+
+func (c *Controller) down(ctx context.Context, force bool) error {
+	// Hosts that joined dial in again within their backoff.
+	var wg sync.WaitGroup
+	for _, h := range c.hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = h.wait(ctx)
+		}()
+	}
+	wg.Wait()
 	if !force {
 		if err := c.refuseIfRunning(ctx); err != nil {
 			return err
 		}
 	}
 	errs := make([]error, len(c.hosts))
-	var wg sync.WaitGroup
 	for i, h := range c.hosts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, time.Minute)
+			cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
-			n, err := h.tr.Clean(cctx)
+			var did string
+			var err error
+			switch {
+			case h.connected():
+				var n string
+				if n, err = h.leave(cctx); err == nil {
+					did = fmt.Sprintf("agent stopped, %s runners removed, pumasi's files removed", n)
+				}
+			case h.cfg.SSH != "":
+				did, err = leaveOverSSH(cctx, h.cfg, force)
+			default:
+				err = errors.New("the host is not connected; run `pumasi leave` on that host to remove what is there")
+			}
+			// Down forgets the host either way; what could not be removed is the host's side.
+			if h.id != "" {
+				c.join.Forget(h.id)
+			}
 			if err != nil {
-				errs[i] = err
+				errs[i] = fmt.Errorf("host %s not cleaned: %w", h.cfg.Name, err)
 				c.log.Error(fmt.Sprintf("host %s not cleaned", h.cfg.Name), "err", err)
 				return
 			}
-			c.log.Info(fmt.Sprintf("host %s  agent stopped, %s containers removed, ~/.cache/pumasi removed", h.cfg.Name, n))
+			c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, did))
 		}()
 	}
 	wg.Wait()
@@ -1381,32 +1426,36 @@ func (c *Controller) Down(ctx context.Context, force bool) error {
 		c.log.Error("ledger demand", "err", err)
 	}
 	for _, cl := range c.cfg.Classes {
-		set, err := c.gh.GetRunnerScaleSet(ctx, c.cfg.RunnerGroupID, cl.ScaleSet)
+		set, err := c.gh.GetRunnerScaleSet(ctx, runnerGroup, cl.ScaleSet())
 		if err != nil || set == nil {
 			continue
 		}
 		if err := c.gh.DeleteRunnerScaleSet(ctx, set.ID); err != nil {
-			errs = append(errs, fmt.Errorf("delete scale set %s: %w", cl.ScaleSet, err))
+			errs = append(errs, fmt.Errorf("delete scale set %s: %w", cl.ScaleSet(), err))
 			continue
 		}
 		c.ev.Write("scale-set-deleted", set.ID)
-		c.log.Info(fmt.Sprintf("class %s  scale set %s deleted", cl.Name, cl.ScaleSet))
+		c.log.Info(fmt.Sprintf("class %s  scale set %s deleted", cl.Name, cl.ScaleSet()))
 	}
 	return errors.Join(errs...)
 }
 
-// refuseIfRunning asks every host for its running pumasi containers.
+// refuseIfRunning asks every host that has joined for its running runners. A
+// host of the config that never joined has none of this controller's.
 func (c *Controller) refuseIfRunning(ctx context.Context) error {
 	lines := make([][]string, len(c.hosts))
 	errs := make([]error, len(c.hosts))
 	var wg sync.WaitGroup
 	for i, h := range c.hosts {
+		if h.id == "" {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
-			names, err := h.tr.Running(cctx)
+			names, err := h.running(cctx)
 			if err != nil {
 				errs[i] = fmt.Errorf("cannot check %s for running jobs: %w", h.cfg.Name, err)
 				return

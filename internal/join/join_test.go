@@ -27,7 +27,7 @@ func controller(t *testing.T) (*Server, HostConfig, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	token, _ := Token(dir)
+	token, _ := NewToken(dir, "", 100, time.Hour) // most tests register more than once
 	id, secret := NewHostID()
 	return s, HostConfig{Controller: addr.String(), Pin: s.id.Pin, ID: id, Secret: secret,
 		Name: "desk1", Kind: "desktop", CPUs: 6, Mem: 9 << 30}, token
@@ -165,7 +165,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 
 	var ref *Refused
 	err := hc.Register(ctx, "not-the-token", true)
-	if !errors.As(err, &ref) || ref.Code != http.StatusUnauthorized || !strings.HasPrefix(ref.Why, "not the controller's token; that one was made on ") {
+	if !errors.As(err, &ref) || ref.Code != http.StatusUnauthorized || !strings.HasPrefix(ref.Why, "the controller does not know this token") {
 		t.Fatalf("wrong token: %v", err)
 	}
 
@@ -213,15 +213,19 @@ func TestRefusalsSayWhy(t *testing.T) {
 	}
 }
 
-func TestRotatedTokenKeepsJoinedHosts(t *testing.T) {
-	s, hc, token := controller(t)
+// A token admits one host within its time, and a host that joined needs none.
+func TestTokenAdmitsOneHostWithinItsTime(t *testing.T) {
+	s, hc, _ := controller(t)
 	ctx := context.Background()
-	if err := hc.Register(ctx, token, false); err != nil {
+	token, err := NewToken(s.Dir, "", 1, time.Hour)
+	if err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := RotateToken(s.Dir)
-	if err != nil || fresh == token {
-		t.Fatal(err, fresh)
+	if err := hc.Register(ctx, token, true); err != nil {
+		t.Fatalf("asking does not use it up: %v", err)
+	}
+	if err := hc.Register(ctx, token, false); err != nil {
+		t.Fatal(err)
 	}
 	run(t, &Host{Config: hc})
 	waitUp(t, s.Peer(hc.ID)) // by its own secret
@@ -231,11 +235,74 @@ func TestRotatedTokenKeepsJoinedHosts(t *testing.T) {
 	other := hc
 	other.ID, other.Secret = NewHostID()
 	other.Name = "desk2"
-	if err := other.Register(ctx, token, false); err == nil {
-		t.Fatal("the old token still works")
+	var ref *Refused
+	if err := other.Register(ctx, token, false); !errors.As(err, &ref) || ref.Code != http.StatusUnauthorized {
+		t.Fatalf("a second host with a token for one: %v", err)
 	}
-	if err := other.Register(ctx, fresh, false); err != nil {
+	old, _ := NewToken(s.Dir, "", 1, time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	if err := other.Register(ctx, old, false); !errors.As(err, &ref) || !strings.Contains(ref.Why, "the token ended at") {
+		t.Fatalf("a token past its time: %v", err)
+	}
+	two, _ := NewToken(s.Dir, "", 2, time.Hour)
+	third := other
+	third.ID, third.Secret = NewHostID()
+	third.Name = "desk3"
+	if err := errors.Join(other.Register(ctx, two, false), third.Register(ctx, two, false)); err != nil {
+		t.Fatalf("a token for two: %v", err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(tokenDir(s.Dir), "*.json")); len(files) != 1 { // the test's own
+		t.Fatalf("spent tokens left behind: %v", files)
+	}
+}
+
+// The controller's own token for a host of its config: it admits that name
+// only, takes a reserved name, and replaces the member that had it.
+func TestTokenForOneName(t *testing.T) {
+	s, hc, any := controller(t)
+	ctx := context.Background()
+	s.Reserved = func(n string) bool { return n == "server1" }
+	hc.Name = "server1"
+	var ref *Refused
+	if err := hc.Register(ctx, any, false); !errors.As(err, &ref) || ref.Code != http.StatusConflict {
+		t.Fatalf("an invite taking a name of the config: %v", err)
+	}
+	bound, _ := NewToken(s.Dir, "server1", 1, time.Hour)
+	other := hc
+	other.Name = "desk9"
+	if err := other.Register(ctx, bound, false); !errors.As(err, &ref) || !strings.Contains(ref.Why, "for the host named server1") {
+		t.Fatalf("the token under another name: %v", err)
+	}
+	if err := hc.Register(ctx, bound, false); err != nil {
 		t.Fatal(err)
+	}
+	// The machine lost its files and joins again as someone new.
+	again := hc
+	again.ID, again.Secret = NewHostID()
+	bound, _ = NewToken(s.Dir, "server1", 1, time.Hour)
+	if err := again.Register(ctx, bound, false); err != nil {
+		t.Fatal(err)
+	}
+	if ms := s.Members(); len(ms) != 1 || ms[0].ID != again.ID {
+		t.Fatalf("members %+v", ms)
+	}
+}
+
+// The Host header ends up in the script: only an address gets one.
+func TestScriptRefusesAHostHeaderThatIsNotAnAddress(t *testing.T) {
+	_, hc, _ := controller(t)
+	c := hc.client()
+	for host, want := range map[string]int{"10.0.0.5:7411": 200, "ctl.example.com": 200, "[fe80::1]:7411": 200, "x'; rm -rf ~; '": 400, "a b": 400} {
+		req, _ := http.NewRequest(http.MethodGet, "https://"+hc.Controller+"/join.sh", nil)
+		req.Host = host
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("Host %q: %d, want %d", host, resp.StatusCode, want)
+		}
 	}
 }
 

@@ -33,7 +33,8 @@ type HostState struct {
 	Closed string `json:"closed"`
 	// Free share of the disk that holds the runners, in percent; nil when unknown.
 	DiskFreePct *float64 `json:"diskFreePct"`
-	// The connection: who opened it (ssh | join), seconds since the last answer
+	// The connection: how the host got there (ssh = the controller ran the
+	// invite line for it, join = someone ran it there), seconds since the last answer
 	// (nil = none yet), how long that answer took, the agent's build and why the
 	// host was last cut off. Empty without a running controller, except Via.
 	Via         string  `json:"via"`
@@ -84,7 +85,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	}
 	hosts := map[string]int{} // name -> index in out.Hosts
 	for _, h := range KnownHosts(cfg) {
-		hs := HostState{Name: h.Name, Kind: h.Kind, BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory), Via: "ssh"}
+		hs := HostState{Name: h.Name, Kind: h.Kind(), BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory), Via: "ssh"}
 		if h.SSH == "" {
 			hs.Via = "join"
 		}

@@ -17,23 +17,23 @@ import (
 
 	"github.com/midagedev/pumasi/internal/agent"
 	"github.com/midagedev/pumasi/internal/config"
+	"github.com/midagedev/pumasi/internal/controller"
 	"github.com/midagedev/pumasi/internal/join"
 )
 
-// runInvite prints the line that joins a host to this controller.
+// runInvite prints the line that joins a host to this controller. Every
+// invite is a token of its own.
 func runInvite(args []string) error {
 	fs := flag.NewFlagSet("pumasi invite", flag.ContinueOnError)
 	cfgPath := fs.String("config", "pumasi.yaml", "config file")
-	rotate := fs.Bool("rotate", false, "make a new token; hosts that already joined stay")
+	uses := fs.Int("uses", join.InviteUses, "how many hosts may join with this line")
+	ttl := fs.Duration("ttl", join.InviteTTL, "how long the line works")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
-	}
-	if cfg.Listen == "" {
-		return fmt.Errorf("%s has no listen: address; add e.g. `listen: 0.0.0.0:7411` and restart `pumasi up`", *cfgPath)
 	}
 	if err := os.MkdirAll(cfg.StateDir(), 0o700); err != nil {
 		return err
@@ -42,74 +42,44 @@ func runInvite(args []string) error {
 	if err != nil {
 		return err
 	}
-	token, err := join.Token(cfg.StateDir())
-	if *rotate {
-		token, err = join.RotateToken(cfg.StateDir())
-	}
+	token, err := join.NewToken(cfg.StateDir(), "", *uses, *ttl)
 	if err != nil {
 		return err
 	}
-	addr, others := advertised(cfg.Listen)
-	fmt.Print(inviteText(id.Pin, addr, token))
-	if len(others) > 0 {
-		fmt.Printf("This machine also has %s; use the address the host can reach.\n", strings.Join(others, ", "))
+	addrs := join.Advertised(cfg.Listen)
+	fmt.Print(inviteText(id.Pin, addrs[0], token, *uses, *ttl))
+	if len(addrs) > 1 {
+		fmt.Printf("This machine also has %s; use the address the host can reach.\n", strings.Join(addrs[1:], ", "))
+	}
+	if controller.DashboardURL(cfg) == "" {
+		fmt.Println("No `pumasi up` is running here: a host can join only while it runs.")
 	}
 	return nil
 }
 
 // inviteText is what `pumasi invite` prints: one line per kind of shell.
-func inviteText(pin, addr, token string) string {
-	return fmt.Sprintf(`Run this on the host that should join.
+func inviteText(pin, addr, token string, uses int, ttl time.Duration) string {
+	hosts := "one host"
+	if uses > 1 {
+		hosts = fmt.Sprintf("%d hosts", uses)
+	}
+	return fmt.Sprintf(`Run this on the host that should join. It works for %[4]s, until %[5]s.
 
 Linux, macOS:
 
-  curl -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.sh | sh -s -- %[3]s
+  curl -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.sh | PUMASI_TOKEN=%[3]s sh -s --
 
 Windows (PowerShell, in a window on that machine's desktop):
 
-  & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.ps1 | Out-String))) %[3]s
+  $env:PUMASI_TOKEN='%[3]s'; & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.ps1 | Out-String)))
 
+curl's -k is safe here: --pinnedpubkey accepts only this controller's key, whatever the certificate says.
 The host lends half of its cpus and memory under its hostname; to say otherwise, add
---name NAME, --cpus N, --mem 6G or --desktop (someone works on it) after the token.
-On macOS and Windows runners are processes of the user who ran the line, not containers.
-`, pin, addr, token)
-}
-
-// advertised is the address hosts should dial for a listen address, and this
-// machine's other addresses when the listen address names none.
-func advertised(listen string) (string, []string) {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return listen, nil
-	}
-	if ip := net.ParseIP(host); host != "" && (ip == nil || !ip.IsUnspecified()) {
-		return listen, nil
-	}
-	var all []string
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, a := range addrs {
-			if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
-				all = append(all, n.IP.String())
-			}
-		}
-	}
-	// The address of the default route; no packet is sent.
-	first := ""
-	if c, err := net.Dial("udp4", "192.0.2.1:9"); err == nil {
-		first = c.LocalAddr().(*net.UDPAddr).IP.String()
-		c.Close()
-	} else if len(all) > 0 {
-		first = all[0]
-	} else {
-		first = "127.0.0.1"
-	}
-	var others []string
-	for _, a := range all {
-		if a != first {
-			others = append(others, a)
-		}
-	}
-	return net.JoinHostPort(first, port), others
+--name NAME, --cpus N or --mem 6G at the end. A Mac, a Windows machine and a Linux machine
+with a screen session join as a desktop (someone works on it: theirs first); --server or
+--desktop says otherwise. On macOS and Windows runners are processes of the user who ran
+the line, not containers.
+`, pin, addr, token, hosts, time.Now().Add(ttl).Format("15:04"))
 }
 
 // Where a joined host keeps its things. Everything pumasi puts on a host is
@@ -177,12 +147,16 @@ func runJoin(args []string) error {
 	name := fs.String("name", strings.Trim(hostNameRE.ReplaceAllString(hostname, "-"), "-."), "the host's name at the controller")
 	cpus := fs.Float64("cpus", 0, "cpus to lend (default: half of this machine)")
 	memStr := fs.String("mem", "", "memory to lend, e.g. 6G (default: half of this machine)")
-	desktop := fs.Bool("desktop", false, "someone works on this machine: it is filled after the servers")
+	desktop := fs.Bool("desktop", false, "someone works on this machine: it is filled after the servers and takes no new runners while they are at it")
+	server := fs.Bool("server", false, "nobody works on this machine")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 3 {
-		return errors.New("usage: pumasi join [--name NAME] [--cpus N] [--mem 6G] [--desktop] <controller> <pin> <token>\n(`pumasi invite` on the controller prints the whole line)")
+	// The token comes in the environment, not as an argument: arguments show in ps.
+	token := os.Getenv("PUMASI_TOKEN")
+	os.Unsetenv("PUMASI_TOKEN") // the agent and its runners do not inherit it
+	if fs.NArg() != 2 || token == "" || (*desktop && *server) {
+		return errors.New("usage: PUMASI_TOKEN=<token> pumasi join [--name NAME] [--cpus N] [--mem 6G] [--desktop|--server] <controller> <pin>\n(`pumasi invite` on the controller prints the whole line)")
 	}
 	p := paths()
 	hc, err := join.LoadHostConfig(p.conf)
@@ -191,10 +165,15 @@ func runJoin(args []string) error {
 		hc.ID, hc.Secret = join.NewHostID() // a host that joins again keeps who it is
 	}
 	hc.Controller, hc.Pin = fs.Arg(0), fs.Arg(1)
-	token := fs.Arg(2)
-	hc.Name, hc.Kind, hc.CPUs = *name, "server", *cpus
-	if *desktop {
+	hc.Name, hc.CPUs = *name, *cpus
+	kindWhy := ""
+	switch {
+	case *desktop:
 		hc.Kind = "desktop"
+	case *server:
+		hc.Kind = "server"
+	default:
+		hc.Kind, kindWhy = defaultKind()
 	}
 	if hc.Mem, err = config.ParseBytes(*memStr); err != nil {
 		return fmt.Errorf("--mem: %w", err)
@@ -252,11 +231,43 @@ func runJoin(args []string) error {
 		return fmt.Errorf("registered as %s, but the agent is not connected: %s\nsee %s, then `pumasi doctor`", hc.Name, why, p.log)
 	}
 	fmt.Printf("joined as %s (%s): lends %g cpus and %s, runs as %s\n", hc.Name, hc.Kind, hc.CPUs, gib(hc.Mem), how)
+	if kindWhy != "" {
+		fmt.Println(kindWhy)
+	}
 	if note != "" {
 		fmt.Println(note)
 	}
 	fmt.Println("`pumasi doctor` checks the connection, `pumasi leave` removes everything.")
 	return nil
+}
+
+// defaultKind is what a host is when the line does not say: a machine someone
+// sits at is a desktop. It also returns the line that tells the person so.
+func defaultKind() (kind, why string) {
+	const server = "it joined as a server: runners are placed whenever there is room; if someone works on this machine, run the line again with --desktop"
+	const desktop = "it joined as a desktop (%s): it takes no new runners while someone is at it; if nobody works here, run the line again with --server"
+	switch runtime.GOOS {
+	case "darwin":
+		return "desktop", fmt.Sprintf(desktop, "a Mac")
+	case "windows":
+		return "desktop", fmt.Sprintf(desktop, "a Windows machine")
+	}
+	if screen := screenSession(); screen != "" {
+		return "desktop", fmt.Sprintf(desktop, "it has a screen session, "+screen)
+	}
+	return "server", server
+}
+
+// screenSession names a graphical session on this Linux machine ("" = none):
+// an X or Wayland socket. WSL with its desktop integration has one too, and a
+// WSL host is someone's desktop.
+func screenSession() string {
+	for _, pat := range []string{"/tmp/.X11-unix/X*", filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "wayland-*"), "/run/user/*/wayland-*", "/mnt/wslg/runtime-dir/wayland-*"} {
+		if m, _ := filepath.Glob(pat); len(m) > 0 {
+			return m[0]
+		}
+	}
+	return ""
 }
 
 // preflight checks one thing after the other and names what failed. token ""
@@ -311,7 +322,7 @@ func preflight(ctx context.Context, w io.Writer, hc join.HostConfig, token strin
 		case errors.As(err, &ref) && ref.Code == 401 && token == "":
 			say(false, "membership: %s — run the invite line again (`pumasi invite` on the controller)", ref.Why)
 		case errors.As(err, &ref) && ref.Code == 401:
-			say(false, "token: the controller refused it (%s) — run `pumasi invite` again", ref.Why)
+			say(false, "token: %s — run `pumasi invite` on the controller again", ref.Why)
 		case errors.As(err, &ref) && ref.Code == 409:
 			say(false, "name: %s", ref.Why)
 		default:
@@ -349,6 +360,8 @@ func removeRunners(ctx context.Context, p hostPaths) (int, error) {
 			return 0, fmt.Errorf("remove runner %s: %w", c.Name, err)
 		}
 	}
+	// Native runners of a class with driver: native live in their own scopes.
+	scopes := sweepScopes()
 	// The runners' own place, outside p.dir. What cannot be deleted there
 	// (files of root that a job left) stays, and stays said.
 	root := agent.RunnerRoot(p.dir)
@@ -358,7 +371,7 @@ func removeRunners(ctx context.Context, p hostPaths) (int, error) {
 	if runtime.GOOS == "windows" {
 		_ = os.Remove(filepath.Dir(root)) // C:\pm, when no other user has runners there
 	}
-	return len(cs), nil
+	return len(cs) + scopes, nil
 }
 
 func tcpWhy(err error) string {
@@ -445,7 +458,7 @@ func runLeave(args []string) error {
 	if hc, err := join.LoadHostConfig(p.conf); err == nil {
 		told = "the controller forgot this host"
 		if err := hc.Leave(ctx); err != nil {
-			told = fmt.Sprintf("the controller could not be told (%v); it keeps %s as unreachable until `pumasi down --force`", err, hc.Name)
+			told = fmt.Sprintf("the controller could not be told (%v); it shows %s as unreachable until someone runs `pumasi down` there", err, hc.Name)
 		}
 	}
 	stopService(p, true)

@@ -7,12 +7,10 @@
 $ErrorActionPreference = 'Stop'
 $controller = '{{controller}}'
 $pin = '{{pin}}'
-if ($args.Count -lt 1) {
-  throw 'usage: & ([scriptblock]::Create(...)) <token> [--name NAME] [--cpus N] [--mem 6G] [--desktop]'
+if (-not $env:PUMASI_TOKEN) {
+  throw 'usage: $env:PUMASI_TOKEN=''<token>''; & ([scriptblock]::Create(...)) [--name NAME] [--cpus N] [--mem 6G] [--desktop|--server]'
 }
-$token = [string]$args[0]
-$rest = @()
-if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)]) }
+$rest = @($args)
 
 # Windows on ARM runs the x86_64 build.
 $file = 'pumasi-windows-amd64.exe'
@@ -36,4 +34,5 @@ if (Test-Path $bin) {
   Move-Item $bin "$bin.old" -Force
 }
 Move-Item $new $bin
-& $bin join @rest $controller $pin $token
+# The token stays in the environment: an argument would show in the process list.
+& $bin join @rest $controller $pin

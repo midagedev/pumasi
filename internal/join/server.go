@@ -55,12 +55,14 @@ func ReadMembers(dir string) []Member {
 type Server struct {
 	Dir  string // the controller's state directory: key pair, token, members
 	Dist string // holds pumasi-<os>-<arch>[.exe], handed to hosts
-	// Reserved reports a name a joining host may not take (a host of the config).
+	// Reserved reports a name only the controller itself may give to a host (a
+	// host of its config): a token made for that name admits it, no other does.
 	Reserved func(name string) bool
 	// Changed is called after a host joined, left, connected or dropped.
 	Changed func()
 	Log     *slog.Logger
 
+	reg     sync.Mutex // one registration at a time
 	mu      sync.Mutex
 	members []Member
 	peers   map[string]*Peer // by member id
@@ -87,9 +89,7 @@ func (s *Server) Listen(addr string) (net.Addr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := Token(s.Dir); err != nil {
-		return nil, err
-	}
+	pruneTokens(s.Dir, time.Now())
 	// http/1.1 only: the session takes the connection over, which h2 cannot give.
 	ln, err := tls.Listen("tcp", addr, &tls.Config{Certificates: []tls.Certificate{id.Cert},
 		MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
@@ -194,8 +194,15 @@ func (s *Server) member(id string) (Member, bool) {
 	return s.members[i], true
 }
 
+// The Host header ends up inside the script it asks for.
+var hostHeaderRE = regexp.MustCompile(`^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$`)
+
 func (s *Server) script(text, contentType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !hostHeaderRE.MatchString(r.Host) {
+			http.Error(w, "bad Host header", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", contentType)
 		// r.Host is the address this host reached the controller at; it keeps using it.
 		_, _ = strings.NewReplacer("{{controller}}", r.Host, "{{pin}}", s.id.Pin).WriteString(w, text)
@@ -280,28 +287,33 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	known, isMember := s.member(reg.ID)
-	token, _ := Token(s.Dir)
-	byToken := reg.Token != "" && token != "" && same(reg.Token, token)
 	bySecret := isMember && same(hashSecret(reg.Secret), known.SecretHash)
+	// One registration at a time: a token that admits one host admits one.
+	s.reg.Lock()
+	defer s.reg.Unlock()
+	byToken, bound, why := checkToken(s.Dir, reg.Token, reg.Name, false, time.Now())
 	if !byToken && !bySecret {
-		why := "this host is not known to the controller"
-		if reg.Token != "" {
-			why = "not the controller's token"
-			if fi, err := os.Stat(tokenPath(s.Dir)); err == nil {
-				why += "; that one was made on " + fi.ModTime().Format("01-02 15:04")
-			}
+		if why == "" {
+			why = "this host is not known to the controller"
 		}
 		http.Error(w, why, http.StatusUnauthorized)
 		return
 	}
-	if s.Reserved(reg.Name) {
+	// A token made for this name is the controller's own word for the host.
+	vouched := byToken && bound == reg.Name
+	if s.Reserved(reg.Name) && !vouched {
 		http.Error(w, fmt.Sprintf("name %s is a host of the controller's pumasi.yaml; pass --name", reg.Name), http.StatusConflict)
 		return
 	}
 	from, _, _ := net.SplitHostPort(r.RemoteAddr)
 	s.mu.Lock()
+	var replaced []string
 	for _, m := range s.members {
 		if m.Name == reg.Name && m.ID != reg.ID {
+			if vouched {
+				replaced = append(replaced, m.ID) // the same machine, having lost what it was
+				continue
+			}
 			s.mu.Unlock()
 			http.Error(w, fmt.Sprintf("name %s is taken by another host (joined %s from %s); pass --name",
 				reg.Name, m.JoinedAt.Format("01-02 15:04"), m.From), http.StatusConflict)
@@ -311,6 +323,20 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if reg.Probe {
 		s.mu.Unlock()
 		return
+	}
+	if byToken {
+		if ok, _, why := checkToken(s.Dir, reg.Token, reg.Name, true, time.Now()); !ok {
+			s.mu.Unlock()
+			http.Error(w, why, http.StatusUnauthorized)
+			return
+		}
+	}
+	for _, id := range replaced {
+		s.members = slices.DeleteFunc(s.members, func(m Member) bool { return m.ID == id })
+		if p := s.peers[id]; p != nil {
+			delete(s.peers, id)
+			go p.drop(nil, "replaced by the host joining again")
+		}
 	}
 	m := Member{ID: reg.ID, Name: reg.Name, Kind: reg.Kind, CPUs: reg.CPUs, Mem: reg.Mem,
 		SecretHash: hashSecret(reg.Secret), JoinedAt: time.Now(), From: from}
