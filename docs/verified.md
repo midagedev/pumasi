@@ -28,7 +28,7 @@
 | 동작 | 수준 | 본 것 |
 |---|---|---|
 | 초대 줄로 붙기 | 실물 | Linux·Mac·Windows(ssh 세션에서) |
-| `hosts: - ssh:` 를 controller 가 대신 붙이기 | 실물(Linux) / 미확인 | `shell: wsl -e sh -s` 인 호스트는 길을 하나로 줄인 뒤 다시 보지 않았다 |
+| `hosts: - ssh:` 를 controller 가 대신 붙이기 | 실물(Linux, WSL) | `shell: wsl -e sh -s` 인 호스트도 붙었고(11-26), native 러너가 user scope 로 잡 하나를 돌렸다 |
 | 닿지 못하는 `listen` 주소 | 실물 | `up` 이 `cannot reach this controller at …` 로 끝남 |
 | 모르는 토큰, 한 번 쓴 토큰, 틀린 지문 | 실물 | `FAIL token` / `FAIL token` / curl 이 pinned key 불일치로 끝남. 실패 뒤 호스트에 남는 것 없음 |
 | 토큰이 프로세스 인자·파일에 남지 않는다 | 실물 | Linux·Mac |
@@ -101,6 +101,7 @@
 | | 값 |
 |---|---|
 | `runs-on` 매칭 | 잡의 라벨이 전부 scale set 라벨 안에 있어야 온다. `self-hosted` 는 scale set 에 넣어야 한다 |
+| 시험용 라벨 하나만 단 scale set(`labels: [trial]`, `runs-on: [trial]`) | 온다. 기존 라벨을 건드리지 않고 남의 워크플로우를 브랜치에서 `runs-on` 만 바꿔 돌려 볼 수 있다(조직 레포의 gradle 잡·하드웨어 WebGPU 브라우저 e2e 를 Mac 호스트에서 이렇게 확인, 11-26) |
 | 고정 러너의 라벨을 단 scale set(`labels: [self-hosted, macOS, ARM64, ci-pool]`) | 만들어진다(기본 라벨도 거절 없음). 전체 라벨·부분집합·대소문자가 다른 `runs-on` 모두 scale set 으로 온다 |
 | 같은 라벨의 일반 등록 러너가 idle 로 같이 있을 때 | 잡 14개 모두 scale set 으로 갔다(고정 러너 0개). scale set 과 고정 러너 중 어느 쪽을 먼저 만들었는지와 무관 |
 | scale set 은 있는데 `up` 이 꺼져 있을 때 | 고정 러너가 idle 이어도 잡은 `queued` 로 기다린다(90초 관찰) |
