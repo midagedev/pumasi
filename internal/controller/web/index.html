@@ -22,7 +22,7 @@
   <section>
     <h2>Hosts</h2>
     <div class="scroll"><table id="hosts">
-      <thead><tr><th>Host</th><th class="opt">Kind</th><th>CPUs</th><th>Memory</th><th class="num">CPU pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th>State</th></tr></thead>
+      <thead><tr><th>Host</th><th class="opt">Kind</th><th>CPUs</th><th>Memory</th><th class="num opt">CPU pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th>State</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -31,7 +31,7 @@
     <h2>Runners</h2>
     <p class="empty" id="runners-empty" hidden>no runners</p>
     <div class="scroll"><table id="runners">
-      <thead><tr><th>Runner</th><th>Class</th><th>Host</th><th>State</th><th>Job</th><th class="num">Age</th><th class="num opt">CPU</th><th>Memory</th></tr></thead>
+      <thead><tr><th>Runner</th><th class="opt">Class</th><th>Host</th><th>State</th><th>Job</th><th class="num opt">Age</th><th class="num opt">CPU</th><th>Memory</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -49,9 +49,10 @@
     <h2>Recent jobs</h2>
     <p class="empty" id="jobs-empty" hidden>no finished jobs yet</p>
     <div class="scroll"><table id="jobs">
-      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak</th></tr></thead>
+      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num opt">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak</th></tr></thead>
       <tbody></tbody>
     </table></div>
+    <button id="jobs-more" type="button" hidden></button>
   </section>
 
   <section>

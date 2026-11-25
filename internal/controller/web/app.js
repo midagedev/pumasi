@@ -52,15 +52,15 @@ function renderState(s) {
       td(h.name), td(h.kind, "muted opt"),
       bar(h.usedCpus, h.budgetCpus, h.usedCpus + "/" + h.budgetCpus),
       bar(h.usedMem, h.budgetMem, gib(h.usedMem) + "/" + gib(h.budgetMem)),
-      td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num"),
+      td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"),
       td(h.diskFreePct === null ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(String(h.runners), "num"),
       td(state, state === "ok" ? "muted" : "problem"));
   }));
 
   fill("runners", s.runners.map((r) => el("tr", {},
-    td(r.name), td(r.class), td(r.host), td(r.state, "muted"), td(r.job || "-"),
-    td(dur(r.ageSeconds), "num"),
+    td(r.name), td(r.class, "opt"), td(r.host), td(r.state, "muted"), td(r.job || "-"),
+    td(dur(r.ageSeconds), "num opt"),
     td(r.cpuSec ? r.cpuSec.toFixed(0) + "s" : "-", "num opt"),
     r.memBytes ? bar(r.memBytes, r.memLimit, mib(r.memBytes) + "/" + gib(r.memLimit)) : td("-"))), "runners-empty");
 
@@ -73,26 +73,38 @@ function resultCell(j) {
   if (j.result === "succeeded") return td("succeeded", "muted");
   if (j.oomKills) return td((j.result || j.state) + " · out of memory", "problem");
   if (j.result) return td(j.result, "problem");
-  return td(j.state === "done" ? "-" : j.state + (j.reason ? ": " + j.reason : ""), j.state === "failed" || j.state === "lost" ? "problem wrap" : "muted");
+  // No result from GitHub. A runner taken away by a person is not a failure.
+  if (j.reason === "down") return td("unknown: removed by pumasi down", "muted");
+  if (j.reason === "controller stopped") return td("unknown: removed when the controller stopped", "muted");
+  if (j.state === "failed" || j.state === "lost") return td(j.state + (j.reason ? ": " + j.reason : ""), "problem wrap");
+  return td("unknown", "muted");
 }
 
-let openJob = "";
-function renderJobs(jobs) {
+// Recent jobs lists jobs: a runner that never took one is not a row here.
+const SHORT = 15;
+let openJob = "", showAll = false, lastJobs = [];
+function renderJobs(all) {
+  lastJobs = all;
+  const jobs = all.filter((j) => j.job || j.startedAt);
   const rows = [];
-  for (const j of jobs) {
+  for (const j of showAll ? jobs : jobs.slice(0, SHORT)) {
     const tr = el("tr", { className: "job" },
       td(j.finishedAt ? clock(j.finishedAt) : clock(j.createdAt), "muted"),
-      td(j.job || "(no job)"), resultCell(j), td(j.class, "opt"), td(j.host),
-      td(j.startedAt && j.job ? dur(j.waitSec) : "-", "num"),
+      td(j.job || "(name unknown)"), resultCell(j), td(j.class, "opt"), td(j.host),
+      td(j.startedAt && j.job ? dur(j.waitSec) : "-", "num opt"),
       td(j.finishedAt && j.startedAt ? dur(j.runSec) : "-", "num"),
       td(j.cpuSec ? j.cpuSec.toFixed(0) + "s" : "-", "num opt"),
       td(j.memPeak ? mib(j.memPeak) : "-", "num"));
-    tr.onclick = () => { openJob = openJob === j.runner ? "" : j.runner; renderJobs(jobs); };
+    tr.onclick = () => { openJob = openJob === j.runner ? "" : j.runner; renderJobs(all); };
     rows.push(tr);
     if (openJob === j.runner) rows.push(detailRow(j));
   }
   fill("jobs", rows, "jobs-empty");
+  const more = $("jobs-more");
+  more.hidden = jobs.length <= SHORT;
+  more.textContent = showAll ? "show fewer" : "show all " + jobs.length;
 }
+$("jobs-more").onclick = () => { showAll = !showAll; renderJobs(lastJobs); };
 
 function detailRow(j) {
   const cell = el("td", { colSpan: 9 }, el("div", { className: "muted", textContent: j.runner + (j.exitCode === null ? "" : " · exit code " + j.exitCode) + (j.provisionMs ? " · ready in " + (j.provisionMs / 1000).toFixed(1) + "s" : "") }));

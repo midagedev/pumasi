@@ -57,6 +57,9 @@ td.wrap { white-space: normal; max-width: 420px; }
 .detail pre { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; background: #fff; border: 1px solid var(--line);
   font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
 
+#jobs-more { margin-top: 8px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
+#jobs-more:hover { color: var(--ink); }
+
 #charts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
 .chart h3 { font-size: 13px; font-weight: 400; margin: 0 0 4px; color: var(--muted); }
 .chart svg { display: block; width: 100%; height: 120px; overflow: visible; }
@@ -69,5 +72,6 @@ td.wrap { white-space: normal; max-width: 420px; }
   #charts { grid-template-columns: 1fr; }
   .opt { display: none; }
   #updated { margin-left: 0; }
-  th, td { padding-right: 12px; }
+  th, td { padding-right: 10px; }
+  .bar { width: 36px; margin-right: 6px; }
 }
