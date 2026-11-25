@@ -1,0 +1,41 @@
+name: native
+# Acceptance load for native (process) runners, see docs/platforms.md: short
+# jobs on one OS's class, each leaving child processes behind that must be gone
+# once the job is over.
+on:
+  workflow_dispatch:
+    inputs:
+      class:
+        description: "class (scale set pumasi-<class>)"
+        default: "macos"
+      jobs:
+        description: "JSON list, one job per element"
+        default: "[1,2,3,4,5]"
+      seconds:
+        description: "burn duration per job"
+        default: "30"
+      parallel:
+        description: "jobs at once"
+        default: "5"
+
+jobs:
+  burn:
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        i: ${{ fromJSON(inputs.jobs) }}
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 15
+    steps:
+      - name: burn one cpu, hold ~300M, leave children behind
+        shell: bash
+        run: |
+          echo "runner=$RUNNER_NAME os=$RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
+          # Left behind on purpose. The runner itself kills what still carries
+          # RUNNER_TRACKING_ID when the job ends; the second one hides from that
+          # and has left the process group, so only pumasi can end it.
+          sleep 600 &
+          RUNNER_TRACKING_ID= nohup perl -MPOSIX -e 'POSIX::setsid(); sleep 601' > /dev/null 2>&1 &
+          perl -e '$x = "x" x (300 << 20); $e = time + $ARGV[0]; 1 while time < $e' ${{ inputs.seconds }}
+          echo "done runner=$RUNNER_NAME"
