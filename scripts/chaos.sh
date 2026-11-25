@@ -61,7 +61,7 @@ up() {
 join_host() {
   if ! grep -q "\"name\": \"$CHAOS_HOST\"" "$(dirname "$LEDGER")/hosts.json" 2>/dev/null; then
     local line
-    line=$("$BIN" invite -config "$CFG" | grep 'curl ') || return 1
+    line=$("$BIN" invite -config "$CFG" | grep 'join.sh') || return 1
     echo "$line --name $CHAOS_HOST ${CHAOS_JOIN_FLAGS:---cpus 4 --mem 6G}" | host >> "$LOG" 2>&1
   fi
   wait_for 90 "$CHAOS_HOST connected" host_reachable
@@ -316,7 +316,7 @@ row_max_duration() {
 
 row_disk() {
   config "diskMinFree: 99.9"; up || return 1
-  check "incident with the free space" noticed 60 "free on docker's disk"
+  check "incident with the free space" noticed 60 "free on the disk that holds its runners"
   local run; run=$(dispatch 20 100) || return 1
   wait_for 120 "job waits because of the disk" eval 'status | jq -e ".waiting[] | select(.reason | test(\"disk\"))" > /dev/null'
   check "no runner placed while below the threshold" test "$(status | jq '.runners | length')" = 0
@@ -324,7 +324,7 @@ row_disk() {
   config; up || return 1
   check "incident ends when there is room" noticed 60 "disk low resolved"
   check "job then ran" test "$(conclusion "$run" 600)" = success
-  NOTE="threshold raised to 99.9%: $(notice_line "docker's disk")"
+  NOTE="threshold raised to 99.9%: $(notice_line "free on the disk")"
 }
 
 row_quarantine() {
