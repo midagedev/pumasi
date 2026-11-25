@@ -19,6 +19,10 @@ type Class struct {
 	MemBytes   int64
 	MaxRunners int
 	Hosts      []string // empty = every host
+	// Native: the runner is a process of the host's user, not a container.
+	Native bool
+	// Paths the host must have (the class's mounts).
+	Paths []string
 	// MaxDuration stops a runner whose job has run this long (0 = never).
 	MaxDuration time.Duration
 }
@@ -42,6 +46,10 @@ type Host struct {
 	// Closed: why the host takes no new runners although it is up
 	// ("quarantined", "disk 4% free"). Empty = open.
 	Closed string
+	// NoNative: why the host cannot run process runners. Empty = it can.
+	NoNative string
+	// Paths: of the paths classes ask for, those this host has.
+	Paths []string
 }
 
 // Runner joins the ledger row with what the host's agent reports.
@@ -190,6 +198,12 @@ func Decide(s Snapshot) Plan {
 		}
 		best, bestSlots := "", -1.0
 		var why []string
+		lacking := "" // a path no host that could otherwise take the class has
+		for _, hn := range c.Hosts {
+			if _, ok := hosts[hn]; !ok {
+				why = append(why, hn+" has not joined")
+			}
+		}
 		for _, hn := range hostNames {
 			h := hosts[hn]
 			freeCPU, freeMem := free(h, alloc[hn])
@@ -204,6 +218,12 @@ func Decide(s Snapshot) Plan {
 			case h.Closed != "":
 				why = append(why, hn+" "+h.Closed)
 				continue
+			case c.Native && h.NoNative != "":
+				why = append(why, hn+": "+h.NoNative)
+				continue
+			case missing(c.Paths, h.Paths) != "":
+				lacking = missing(c.Paths, h.Paths)
+				continue
 			case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
 				why = append(why, fmt.Sprintf("%s cpu pressure %.0f", hn, h.PSICPU))
 				continue
@@ -217,6 +237,13 @@ func Decide(s Snapshot) Plan {
 			}
 		}
 		if best == "" {
+			if len(why) == 0 && lacking != "" {
+				deferred(c.Name, "no host has "+lacking)
+				continue
+			}
+			if lacking != "" {
+				why = append(why, "the others lack "+lacking)
+			}
 			if len(why) == 0 {
 				why = append(why, "no allowed host")
 			}
@@ -315,6 +342,16 @@ func less(a, b Demand) bool {
 		return a.Class < b.Class
 	}
 	return a.ID < b.ID
+}
+
+// missing is the first of want that is not in have ("" = all are there).
+func missing(want, have []string) string {
+	for _, p := range want {
+		if !slices.Contains(have, p) {
+			return p
+		}
+	}
+	return ""
 }
 
 func osOf(os string) string {

@@ -465,7 +465,7 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 			defer cancel()
 			asked := time.Now()
-			s, err := h.agent.Snapshot(cctx)
+			s, err := h.agent.Snapshot(cctx, c.cfg.MountPaths()...)
 			if err == nil {
 				h.seenAt, h.rtt, h.version = now, time.Since(asked), s.Version
 			}
@@ -618,7 +618,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 				dh.Kind = a.Kind // a host that joined says itself what it is
 			}
 			h.closed = c.closedReason(h)
-			dh.Closed = h.closed
+			dh.Closed, dh.NoNative, dh.Paths = h.closed, a.NoNative, a.Paths
 		}
 		s.Hosts = append(s.Hosts, dh)
 	}
@@ -636,7 +636,8 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	defer c.mu.Unlock()
 	for _, cl := range c.classes {
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
-			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration})
+			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
+			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts)})
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
 			for i := perClass[cl.cfg.Name]; i < cl.stats.TotalAssignedJobs-cl.stats.TotalRunningJobs; i++ {
@@ -645,6 +646,14 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		}
 	}
 	return s
+}
+
+func mountPaths(mounts []string) []string {
+	out := make([]string, len(mounts))
+	for i, m := range mounts {
+		out[i] = config.MountPath(m)
+	}
+	return out
 }
 
 func minPositive(a, b float64) float64 {
@@ -781,7 +790,8 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
-		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig})
+		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
+		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts})
 	if err != nil {
 		// The registration stays until unregister removes it.
 		fail("agent start: " + err.Error())

@@ -19,6 +19,11 @@ type Spec struct {
 	MemBytes  int64
 	Image     string
 	JITConfig string
+	// Driver: docker | native. Empty = the host's own way (Linux: docker).
+	Driver string
+	// Mounts are host paths a container runner sees at the same path
+	// ("/srv/cache", "/srv/keys:ro"). Process runners see the host anyway.
+	Mounts []string
 }
 
 // Container is a runner container as the driver sees it.
@@ -67,13 +72,25 @@ const (
 func (d Docker) Start(ctx context.Context, s Spec) error {
 	cpus := strconv.FormatFloat(s.CPUs, 'f', -1, 64)
 	mem := strconv.FormatInt(s.MemBytes, 10)
-	cmd := exec.CommandContext(ctx, "docker", "run", "-d", "--name", s.Name,
-		"--label", labelTag+"="+d.Tag, "--label", labelClass+"="+s.Class,
-		"--label", labelCPUs+"="+cpus, "--label", labelMem+"="+mem,
+	args := []string{"run", "-d", "--name", s.Name,
+		"--label", labelTag + "=" + d.Tag, "--label", labelClass + "=" + s.Class,
+		"--label", labelCPUs + "=" + cpus, "--label", labelMem + "=" + mem,
 		"--cpus", cpus, "--memory", mem, "--memory-swap", mem,
 		// The JIT config goes over stdin so it never lands on disk or in argv.
-		"--env-file", "/dev/stdin",
-		s.Image, "/home/runner/run.sh")
+		"--env-file", "/dev/stdin"}
+	for _, m := range s.Mounts {
+		// --mount, not -v: docker must refuse a path the host does not have, not create it as root.
+		path, ro := strings.CutSuffix(m, ":ro")
+		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, ",\n") {
+			return fmt.Errorf("bad mount %q", m)
+		}
+		arg := "type=bind,source=" + path + ",target=" + path
+		if ro {
+			arg += ",readonly"
+		}
+		args = append(args, "--mount", arg)
+	}
+	cmd := exec.CommandContext(ctx, "docker", append(args, s.Image, "/home/runner/run.sh")...)
 	cmd.Stdin = strings.NewReader("ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

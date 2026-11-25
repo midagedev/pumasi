@@ -23,11 +23,16 @@ type Snapshot struct {
 	// linux | macos | windows. Empty (an older agent) means linux.
 	OS string `json:"os,omitempty"`
 	// The host's own reason to take no new runners right now ("memory pressure"). Empty = none.
-	Closed     string  `json:"closed,omitempty"`
-	CPUs       float64 `json:"cpus"`
-	MemBytes   int64   `json:"memBytes"`
-	BudgetCPUs float64 `json:"budgetCpus"` // 0 = no agent-side budget
-	BudgetMem  int64   `json:"budgetMem"`
+	Closed string `json:"closed,omitempty"`
+	// Why the host cannot run runners as processes (classes with driver: native):
+	// "no systemd user session for ci". Empty = it can.
+	NoNative string `json:"noNative,omitempty"`
+	// Of the paths the controller asked about (GET /v1/snapshot?path=...), those the host has.
+	Paths      []string `json:"paths,omitempty"`
+	CPUs       float64  `json:"cpus"`
+	MemBytes   int64    `json:"memBytes"`
+	BudgetCPUs float64  `json:"budgetCpus"` // 0 = no agent-side budget
+	BudgetMem  int64    `json:"budgetMem"`
 	// avg10 of /proc/pressure "some", percent. Linux only; absent elsewhere.
 	PSI          map[string]float64 `json:"psi"`
 	NonRunnerCPU float64            `json:"nonRunnerCpu"` // cores used by everything but runners
@@ -76,6 +81,10 @@ type StartRequest struct {
 	MemBytes  int64   `json:"memBytes"`
 	Image     string  `json:"image"`
 	JITConfig string  `json:"jitConfig"`
+	// docker | native. Empty = the host's own way (Linux: docker; macOS, Windows: native).
+	Driver string `json:"driver,omitempty"`
+	// Host paths a container runner gets at the same path; ":ro" = read only.
+	Mounts []string `json:"mounts,omitempty"`
 }
 
 // Client talks to one agent. BaseURL is resolved per call so a transport can
@@ -126,9 +135,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	return json.Unmarshal(b, out)
 }
 
-func (c *Client) Snapshot(ctx context.Context) (Snapshot, error) {
+// Snapshot asks for the host's state. The host also says which of paths it has.
+func (c *Client) Snapshot(ctx context.Context, paths ...string) (Snapshot, error) {
 	var s Snapshot
-	err := c.do(ctx, http.MethodGet, "/v1/snapshot", nil, &s)
+	q := url.Values{"path": paths}
+	err := c.do(ctx, http.MethodGet, "/v1/snapshot?"+q.Encode(), nil, &s)
 	return s, err
 }
 

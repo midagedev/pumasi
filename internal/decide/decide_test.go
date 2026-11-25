@@ -334,3 +334,69 @@ func TestClassRunsOnlyOnItsOS(t *testing.T) {
 		t.Errorf("plan %+v", p)
 	}
 }
+
+func TestClassBoundToHosts(t *testing.T) {
+	bound := Class{Name: "release", CPUs: 2, MemBytes: 2 * gb, MaxRunners: 10, Hosts: []string{"desk1"}}
+	s := snap([]Host{server(), desktop()}, demand("release", 4), nil)
+	s.Classes = []Class{bound}
+	// The desktop's budget holds three. The server has room and still gets none.
+	p := Decide(s)
+	if got := starts(p); !reflect.DeepEqual(got, []string{"release@desk1", "release@desk1", "release@desk1"}) {
+		t.Errorf("starts %v", got)
+	}
+	if len(p.Defer) != 1 || !strings.Contains(p.Defer[0].Reason, "desk1 0.0cpu") || strings.Contains(p.Defer[0].Reason, "server1") {
+		t.Errorf("defer %+v, want the full desktop named and the server left out", p.Defer)
+	}
+	// The host it is bound to is down, or has never joined: said by name.
+	down := desktop()
+	down.Up = false
+	s.Hosts = []Host{server(), down}
+	if p := Decide(s); len(p.Start) != 0 || !strings.Contains(p.Defer[0].Reason, "desk1 down") {
+		t.Errorf("plan %+v", p)
+	}
+	s.Hosts = []Host{server()}
+	if p := Decide(s); len(p.Start) != 0 || !strings.Contains(p.Defer[0].Reason, "desk1 has not joined") {
+		t.Errorf("plan %+v", p)
+	}
+}
+
+func TestClassGoesWhereItsPathsAre(t *testing.T) {
+	mnt := Class{Name: "mnt", CPUs: 1, MemBytes: gb, MaxRunners: 10, Paths: []string{"/srv/ci-cache", "/srv/keys"}}
+	srv, desk := server(), desktop()
+	desk.Paths = []string{"/srv/ci-cache", "/srv/keys", "/other"}
+	srv.Paths = []string{"/srv/ci-cache"}
+	s := snap([]Host{srv, desk}, demand("mnt", 2), nil)
+	s.Classes = []Class{mnt}
+	if got := starts(Decide(s)); !reflect.DeepEqual(got, []string{"mnt@desk1", "mnt@desk1"}) {
+		t.Errorf("starts %v, want the desktop although servers go first", got)
+	}
+	// Nobody has it: the reason is the path.
+	desk.Paths = nil
+	s.Hosts = []Host{srv, desk}
+	if p := Decide(s); len(p.Start) != 0 || p.Defer[0].Reason != "no host has /srv/keys" || p.Defer[0].Count != 2 {
+		t.Errorf("plan %+v", p)
+	}
+	// The one that has it is full: both are said.
+	desk.Paths, desk.BudgetCPUs = []string{"/srv/ci-cache", "/srv/keys"}, 0.5
+	s.Hosts = []Host{srv, desk}
+	if p := Decide(s); len(p.Start) != 0 || !strings.Contains(p.Defer[0].Reason, "desk1 0.5cpu") || !strings.Contains(p.Defer[0].Reason, "the others lack /srv/keys") {
+		t.Errorf("plan %+v", p)
+	}
+}
+
+func TestNativeClassNeedsAHostThatCan(t *testing.T) {
+	build := Class{Name: "build", CPUs: 1, MemBytes: gb, MaxRunners: 10, Native: true}
+	srv, desk := server(), desktop()
+	srv.NoNative = "no systemd user session for ci"
+	s := snap([]Host{srv, desk}, demand("build", 1), nil)
+	s.Classes = []Class{build, classS}
+	s.Demand = append(s.Demand, demand("linux-s", 1)...)
+	// The container class still goes to the server.
+	if got := starts(Decide(s)); !reflect.DeepEqual(got, []string{"build@desk1", "linux-s@server1"}) {
+		t.Errorf("starts %v", got)
+	}
+	s.Hosts = []Host{srv}
+	if p := Decide(s); len(p.Start) != 1 || len(p.Defer) != 1 || !strings.Contains(p.Defer[0].Reason, "server1: no systemd user session for ci") {
+		t.Errorf("plan %+v", p)
+	}
+}

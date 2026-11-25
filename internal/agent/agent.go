@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -67,6 +68,7 @@ type hostState struct {
 	diskFree     int64
 	diskTotal    int64
 	closed       string
+	noNative     string
 }
 
 func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
@@ -118,13 +120,20 @@ func (a *Agent) Sample(ctx context.Context) {
 		a.dataMu.Unlock()
 
 		var st *Usage
-		if c.State == "running" {
+		// Once more when it has just ended: where the OS still knows the final
+		// numbers (a Windows job, a scope that still holds processes), a runner
+		// that came and went between two samples is measured after all.
+		if c.State == "running" || (c.State == "exited" && r.State != "exited") {
 			if u, err := a.met.Runner(c); err != nil {
-				a.log.Warn("runner usage", "runner", c.Name, "err", err)
+				if c.State == "running" {
+					a.log.Warn("runner usage", "runner", c.Name, "err", err)
+				}
 			} else {
 				st = &u
 				runnerUsecDelta += u.CPUUsec - min(r.lastUsec, u.CPUUsec)
-				runnerMem += u.MemCurrent
+				if c.State == "running" {
+					runnerMem += u.MemCurrent
+				}
 			}
 		}
 		var ev LogEvents
@@ -145,7 +154,6 @@ func (a *Agent) Sample(ctx context.Context) {
 		if c.State == "exited" {
 			r.ExitedAt = ptr(c.FinishedAt)
 			r.ExitCode = ptr(c.ExitCode)
-			r.MemCurrent = 0
 			if c.OOMKilled && r.OOMKills == 0 {
 				r.OOMKills = 1 // the cgroup is gone with the container; docker still knows
 			}
@@ -156,6 +164,9 @@ func (a *Agent) Sample(ctx context.Context) {
 		r.rebooted = false // either it survived (not a real reboot of its world) or it is marked now
 		if st != nil {
 			applyStats(r, *st)
+		}
+		if c.State == "exited" {
+			r.MemCurrent = 0
 		}
 		if !ev.Listening.IsZero() && r.ListeningAt == nil {
 			r.ListeningAt = ptr(ev.Listening)
@@ -220,6 +231,9 @@ func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta u
 		a.log.Warn("host usage", "err", err)
 	}
 	h.psi, h.closed = hu.PSI, hu.Closed
+	if n, ok := a.drv.(interface{ NativeProblem() string }); ok {
+		h.noNative = n.NativeProblem()
+	}
 	if hu.MemBytes > 0 {
 		h.memBytes = hu.MemBytes
 		h.nonRunnerMem = max(0, hu.MemBytes-hu.MemAvailable-runnerMem)
@@ -244,7 +258,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
 	s := api.Snapshot{
-		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Closed: a.host.closed, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
+		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Closed: a.host.closed, NoNative: a.host.noNative, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
 		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
@@ -288,7 +302,8 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	a.recs[req.Name] = r
 	a.dataMu.Unlock()
 
-	err := a.drv.Start(ctx, Spec{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig})
+	err := a.drv.Start(ctx, Spec{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
+		Driver: req.Driver, Mounts: req.Mounts})
 
 	a.dataMu.Lock()
 	if err != nil {
@@ -339,7 +354,13 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/snapshot", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, a.Snapshot())
+		s := a.Snapshot()
+		for _, p := range r.URL.Query()["path"] {
+			if _, err := os.Stat(p); err == nil {
+				s.Paths = append(s.Paths, p)
+			}
+		}
+		writeJSON(w, http.StatusOK, s)
 	})
 	mux.HandleFunc("POST /v1/runners", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StartRequest

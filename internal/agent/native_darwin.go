@@ -1,10 +1,7 @@
 package agent
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,10 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	distOS  = "osx"
-	distExt = ".tar.gz"
-)
+const distOS = "osx"
 
 // tree is one runner's processes. macOS has nothing like a cgroup to hold
 // them, so the tree is found again at every look: the runner's process group,
@@ -45,7 +39,7 @@ type tree struct {
 // around run.sh leaves the exit code in a file, because a later agent is not
 // its parent and cannot wait for it.
 func startTree(dir string, _ Spec, env []string, log *os.File) (*tree, error) {
-	cmd := exec.Command("/bin/sh", "-c", `cd "$1/runner" && ./run.sh; echo $? > "$1/exit.tmp" && mv "$1/exit.tmp" "$1/exit"`, "sh", dir)
+	cmd := exec.Command("/bin/sh", "-c", runScript, "sh", dir)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -192,15 +186,6 @@ func (t *tree) refresh(ps map[int]process, children map[int][]int) {
 
 func (t *tree) alive() bool { return t.leader }
 
-func (t *tree) exitCode() (int, bool) {
-	b, err := os.ReadFile(filepath.Join(t.dir, "exit"))
-	if err != nil {
-		return 0, false
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	return code, err == nil
-}
-
 // usage: CPU time and memory are measured; disk I/O is not (libproc counts it
 // per live process only, so short-lived processes would be missing) and there
 // is no pressure accounting per process tree.
@@ -238,58 +223,6 @@ func cloneTree(src, dst string) error {
 		return fmt.Errorf("%w: %s", err, lastLine(out))
 	}
 	return nil
-}
-
-func unpack(arc *os.File, _ int64, dir string) error {
-	if _, err := arc.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	zr, err := gzip.NewReader(arc)
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(zr)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		p, err := inside(dir, h.Name)
-		if err != nil {
-			return err
-		}
-		switch h.Typeflag {
-		case tar.TypeDir:
-			err = os.MkdirAll(p, 0o755)
-		case tar.TypeSymlink:
-			if err = os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
-				err = os.Symlink(h.Linkname, p)
-			}
-		case tar.TypeLink:
-			var target string
-			if target, err = inside(dir, h.Linkname); err == nil {
-				err = os.Link(target, p)
-			}
-		case tar.TypeReg:
-			if err = os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-				break
-			}
-			var f *os.File
-			if f, err = os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.FileInfo().Mode().Perm()); err != nil {
-				break
-			}
-			_, err = io.Copy(f, tr)
-			if cerr := f.Close(); err == nil {
-				err = cerr
-			}
-		}
-		if err != nil {
-			return err
-		}
-	}
 }
 
 // hostUsage: macOS has no PSI. The kernel's own memory pressure level closes

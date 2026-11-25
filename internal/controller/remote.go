@@ -50,10 +50,10 @@ func (l *sshLink) Revive(ctx context.Context, distDir string) (string, error) {
 func (l *sshLink) Running(ctx context.Context) ([]string, error) { return runningContainers(ctx, l.h) }
 
 func (l *sshLink) Clean(ctx context.Context) (string, error) {
-	// A runner that is a process tree is best ended by its agent, which knows
-	// the processes that left the runner's group. The script below gets the rest.
+	// A runner is best ended by its agent: of a process tree it knows the
+	// processes that left the runner's group. The script below gets the rest.
 	byAgent := 0
-	if snap, err := l.api.Snapshot(ctx); err == nil && snap.OS != "" && snap.OS != "linux" {
+	if snap, err := l.api.Snapshot(ctx); err == nil {
 		for _, r := range snap.Runners {
 			if _, err := l.api.Delete(ctx, r.Name); err == nil {
 				byAgent++
@@ -207,9 +207,9 @@ func (l *lineWrapper) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// nativeRunners is sh for hosts without containers (macOS): it sets $up to
-// the pids of the runners whose process still lives. Each is the leader of its
-// runner's process group.
+// nativeRunners is sh for runners that are processes: it sets $up to the pids
+// of the runners whose process still lives. On macOS each is the leader of its
+// runner's process group; on Linux its systemd scope holds the runner.
 const nativeRunners = `
 d=` + remoteDir + `
 up=
@@ -223,7 +223,7 @@ done
 
 // runningContainers lists the pumasi runners that are up on a host.
 func runningContainers(ctx context.Context, h config.Host) ([]string, error) {
-	out, err := runRemote(ctx, h, `if [ "$(uname -s)" = Linux ]; then docker ps --filter label=pumasi --format '{{.Names}}'; exit; fi`+nativeRunners+`
+	out, err := runRemote(ctx, h, `if [ "$(uname -s)" = Linux ]; then docker ps --filter label=pumasi --format '{{.Names}}'; fi`+nativeRunners+`
 for r in $up; do echo "${r#*:}"; done`)
 	if err != nil {
 		return nil, err
@@ -232,8 +232,8 @@ for r in $up; do echo "${r#*:}"; done`)
 }
 
 // cleanHost removes everything pumasi left on a host: the agent, every runner
-// (containers labelled pumasi on Linux, the runners' process groups elsewhere)
-// and the cache directory. Docker is touched on Linux only: a Mac's docker is
+// (containers labelled pumasi and the scopes of process runners on Linux, the
+// runners' process groups elsewhere) and the cache directory. Docker is touched on Linux only: a Mac's docker is
 // its user's, not pumasi's.
 func cleanHost(ctx context.Context, h config.Host) (string, error) {
 	return runRemote(ctx, h, stopAgentScript+`
@@ -241,6 +241,12 @@ n=0
 if [ "$(uname -s)" = Linux ]; then
   ids=$(docker ps -aq --filter label=pumasi 2>/dev/null || true)
   if [ -n "$ids" ]; then n=$(echo "$ids" | wc -l | tr -d ' '); docker rm -f $ids >/dev/null; fi
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  for u in $(systemctl --user list-units 'pumasi-*.scope' --all --no-legend --plain 2>/dev/null | awk '{print $1}'); do
+    systemctl --user kill --signal=SIGKILL "$u" 2>/dev/null || true
+    systemctl --user stop "$u" 2>/dev/null || true
+    n=$((n+1))
+  done
 else`+nativeRunners+`
   for r in $up; do kill -TERM -- "-${r%%:*}" 2>/dev/null || true; n=$((n+1)); done
   [ -z "$up" ] || sleep 2

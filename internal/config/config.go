@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -61,7 +62,17 @@ type Class struct {
 	CPUs       float64  `yaml:"cpus"`
 	Memory     Bytes    `yaml:"memory"`
 	MaxRunners int      `yaml:"maxRunners"`
-	Hosts      []string `yaml:"hosts"` // empty = every host
+	// Hosts binds the class to these hosts (empty = every host). Jobs that hand
+	// each other files in a host directory need the same machine.
+	Hosts []string `yaml:"hosts"`
+	// Driver: docker (a container per runner) or native (a process of the
+	// host's user, which sees the host's paths, credentials and docker).
+	// Default: docker on linux, native on macos and windows.
+	Driver string `yaml:"driver"`
+	// Mounts are host paths a container runner sees at the same path
+	// ("/srv/cache", "/srv/keys:ro"). The class goes only to hosts that have
+	// them all; a native class sees the host anyway and only uses them for that.
+	Mounts []string `yaml:"mounts"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
@@ -175,6 +186,12 @@ func (c *Config) defaults() {
 		if cl.OS == "" {
 			cl.OS = "linux"
 		}
+		if cl.Driver == "" {
+			cl.Driver = "native"
+			if cl.OS == "linux" {
+				cl.Driver = "docker"
+			}
+		}
 	}
 	for i := range c.Hosts {
 		h := &c.Hosts[i]
@@ -194,6 +211,22 @@ func (c *Config) defaults() {
 			}
 		}
 	}
+}
+
+// MountPath is the path of a mounts entry, without its ":ro".
+func MountPath(m string) string { return strings.TrimSuffix(m, ":ro") }
+
+// MountPaths is every host path some class asks for.
+func (c *Config) MountPaths() []string {
+	var out []string
+	for _, cl := range c.Classes {
+		for _, m := range cl.Mounts {
+			if p := MountPath(m); !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // StateDir holds the ledger, the event log and the running controller's address.
@@ -249,6 +282,17 @@ func (c *Config) validate() error {
 		}
 		if cl.OS != "linux" && cl.OS != "macos" && cl.OS != "windows" {
 			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
+		}
+		switch {
+		case cl.Driver != "docker" && cl.Driver != "native":
+			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
+		case cl.Driver == "docker" && cl.OS != "linux":
+			return fmt.Errorf("class %s: %s hosts run runners as processes only (driver: native)", cl.Name, cl.OS)
+		}
+		for _, m := range cl.Mounts {
+			if p := MountPath(m); !strings.HasPrefix(p, "/") || strings.ContainsAny(p, ":, \t\n") {
+				return fmt.Errorf("class %s: mount %q must be an absolute path, optionally ending in :ro", cl.Name, m)
+			}
 		}
 		for _, h := range cl.Hosts {
 			// With listen: a class may name a host that joins later.

@@ -59,3 +59,34 @@ func TestClassOS(t *testing.T) {
 		t.Errorf("err %v", err)
 	}
 }
+
+func TestClassDriverAndMounts(t *testing.T) {
+	load := func(classes string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: "+classes+"\nhosts: [{ssh: h, budget: {cpus: 1, memory: 1G}}]\n"), 0o600)
+		return Load(p)
+	}
+	c, err := load(`[{name: a, cpus: 1, memory: 1G}, {name: m, cpus: 1, memory: 1G, os: macos}, {name: w, cpus: 1, memory: 1G, os: windows},
+	  {name: b, cpus: 1, memory: 1G, driver: native, hosts: [h], mounts: [/srv/cache, "/srv/keys:ro", /srv/cache]}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{c.Classes[0].Driver, c.Classes[1].Driver, c.Classes[2].Driver, c.Classes[3].Driver}; strings.Join(got, ",") != "docker,native,native,native" {
+		t.Errorf("drivers %v", got)
+	}
+	if got := strings.Join(c.MountPaths(), ","); got != "/srv/cache,/srv/keys" {
+		t.Errorf("mount paths %s", got)
+	}
+	for classes, want := range map[string]string{
+		"[{name: a, cpus: 1, memory: 1G, driver: vm}]":                    "docker or native",
+		"[{name: a, cpus: 1, memory: 1G, os: macos, driver: docker}]":     "processes only",
+		"[{name: a, cpus: 1, memory: 1G, mounts: [cache]}]":               "absolute path",
+		`[{name: a, cpus: 1, memory: 1G, mounts: ["/srv/a:/srv/b"]}]`:     "absolute path",
+		`[{name: a, cpus: 1, memory: 1G, mounts: ["/srv/a,readonly"]}]`:   "absolute path",
+		"[{name: a, cpus: 1, memory: 1G, driver: native, hosts: [nope]}]": "unknown host",
+	} {
+		if _, err := load(classes); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err %v, want %q", classes, err, want)
+		}
+	}
+}
