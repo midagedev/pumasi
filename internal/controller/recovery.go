@@ -150,7 +150,11 @@ func (c *Controller) requestRerun(r ledger.Runner, reason string) string {
 		return ""
 	}
 	if r.RunID == 0 || r.Repo == "" {
-		return "not rerun: the job's workflow run is unknown"
+		// GitHub names the job half a minute after it starts; the runner can be dead by then.
+		c.mu.Lock()
+		c.rerunWanted[r.Name] = reason
+		c.mu.Unlock()
+		return "failed jobs of its run are rerun once GitHub names the run and closes it"
 	}
 	queued, err := c.ledger.RequestRerun(r.Repo, r.RunID, reason, c.now(), c.cfg.Rerun)
 	if err != nil {
@@ -161,6 +165,20 @@ func (c *Controller) requestRerun(r ledger.Runner, reason string) string {
 		return fmt.Sprintf("not rerun: run %d was already rerun %d times", r.RunID, c.cfg.Rerun)
 	}
 	return fmt.Sprintf("failed jobs of run %d are rerun once GitHub closes the run", r.RunID)
+}
+
+// rerunNamed queues the rerun of a dead runner's job now that a message named its run.
+func (c *Controller) rerunNamed(runner string, j ledger.Job) {
+	c.mu.Lock()
+	reason, ok := c.rerunWanted[runner]
+	delete(c.rerunWanted, runner)
+	c.mu.Unlock()
+	if !ok || j.RunID == 0 || j.Repo == "" {
+		return
+	}
+	if _, err := c.ledger.RequestRerun(j.Repo, j.RunID, reason+" while running "+j.Name, c.now(), c.cfg.Rerun); err != nil {
+		c.log.Error("ledger rerun", "err", err)
+	}
 }
 
 // checkReruns asks GitHub to rerun the failed jobs of queued runs. A run can

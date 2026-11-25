@@ -4,7 +4,7 @@ GO      ?= go
 FLAGS   := -trimpath -ldflags "-s -w"
 export CGO_ENABLED = 0
 
-.PHONY: all test clean
+.PHONY: all test chaos clean
 all:
 	$(GO) build $(FLAGS) -o dist/pumasi ./cmd/pumasi
 	GOOS=linux GOARCH=amd64 $(GO) build $(FLAGS) -o dist/pumasi-linux-amd64 ./cmd/pumasi
@@ -13,6 +13,10 @@ all:
 test:
 	$(GO) vet ./...
 	$(GO) test ./...
+
+# Provokes the failures of docs/robustness.md on real hosts; see scripts/chaos.sh.
+chaos: all
+	scripts/chaos.sh
 
 clean:
 	rm -rf dist

@@ -56,6 +56,8 @@ type Controller struct {
 	// Runners closed in this round because their host rebooted, per host.
 	rebootLost map[string][]ledger.Runner
 	rerunCheck map[int64]time.Time
+	// Dead runners whose job's run GitHub has not named yet -> why they died. Guarded by mu.
+	rerunWanted map[string]string
 	// LedgerMoved names the damaged ledger that was set aside at startup ("" = none).
 	LedgerMoved string
 }
@@ -101,7 +103,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 		return nil, fmt.Errorf("github client: %w", err)
 	}
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
-		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
+		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
 		c.hosts = append(c.hosts, &host{cfg: hc, tr: tr,
@@ -156,6 +158,14 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		c.lastAlive = fi.ModTime()
 	}
 	go c.book.deliver(ctx)
+	// Quarantine lives in this process; one left open by an earlier controller is over.
+	if open, err := c.ledger.OpenIncidents(); err == nil {
+		for _, in := range open {
+			if in.Kind == "host-quarantined" {
+				c.book.resolve(in.Key)
+			}
+		}
+	}
 	if c.LedgerMoved != "" {
 		c.book.report("problem", "ledger-rebuilt/"+filepath.Base(c.LedgerMoved), "ledger-rebuilt", "ledger", fmt.Sprintf(
 			"the ledger was damaged and set aside as %s; started from an empty one, history is lost", filepath.Base(c.LedgerMoved)),
@@ -316,6 +326,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 			c.log.Warn("job started on a runner not in the ledger", "class", cls, "runner", j.RunnerName)
 		}
 		c.log.Info(fmt.Sprintf("job %s on %s", j.JobDisplayName, j.RunnerName))
+		c.rerunNamed(j.RunnerName, job(cls, j.JobMessageBase))
 	}
 	for _, j := range msg.JobCompletedMessages {
 		if j.RunnerName == "" {
@@ -325,6 +336,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 			return err
 		}
 		c.log.Info(fmt.Sprintf("done %s on %s  %s", j.JobDisplayName, j.RunnerName, j.Result))
+		c.rerunNamed(j.RunnerName, job(cls, j.JobMessageBase))
 	}
 	if msg.Statistics != nil {
 		c.mu.Lock()

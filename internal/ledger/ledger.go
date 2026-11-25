@@ -299,8 +299,11 @@ type Job struct {
 // JobStarted binds a job to the runner that took it and closes its demand.
 // It reports whether the runner is one of ours.
 func (l *Ledger) JobStarted(runner string, j Job, at time.Time) (bool, error) {
-	res, err := l.db.Exec(`UPDATE runners SET state='busy', assigned_job_id=?, repo=?, workflow=?, job=?, run_id=?, started_at=?
-	  WHERE name=? AND state IN ('starting','idle','busy')`, j.ID, j.Repo, j.Workflow, j.Name, j.RunID, ts(at), runner)
+	// The message can come after the runner is over (the controller was away while
+	// the job ran): the row still learns which job it was, its state stays.
+	res, err := l.db.Exec(`UPDATE runners SET state=CASE WHEN state IN ('starting','idle','busy') THEN 'busy' ELSE state END,
+	  assigned_job_id=?, repo=?, workflow=?, job=?, run_id=?, started_at=CASE WHEN state IN ('starting','idle','busy') THEN ? ELSE COALESCE(started_at, ?) END
+	  WHERE name=?`, j.ID, j.Repo, j.Workflow, j.Name, j.RunID, ts(at), ts(at), runner)
 	if err != nil {
 		return false, err
 	}
