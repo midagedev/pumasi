@@ -53,6 +53,44 @@ notify:
 - 알림 전송 실패는 장부에 남기고 다음 평가 때 다시 보낸다. 알림이 막혀도 배치는 멈추지 않는다.
 - 웹훅 주소는 controller 에만 둔다. 호스트의 에이전트 알림은 그 호스트에 따로 적은 `command` 로만 한다.
 
+## controller 를 상시로 띄우기
+
+`pumasi up` 은 죽었다 다시 떠도 장부와 호스트의 스냅샷으로 이어받는다(표의 첫 행). 그래서 상시 실행은 서비스 관리자에게
+"죽으면 다시 띄워라" 만 시키면 된다. Mac 에서는 로그인한 사용자의 LaunchAgent 로:
+
+```xml
+<!-- ~/Library/LaunchAgents/dev.pumasi.controller.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>dev.pumasi.controller</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string><string>-c</string>
+		<string>PUMASI_GITHUB_TOKEN=$(gh auth token) exec /path/to/dist/pumasi up -config /path/to/pumasi.yaml</string>
+	</array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>10</integer>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>StandardOutPath</key><string>/path/to/pumasi-up.log</string>
+	<key>StandardErrorPath</key><string>/path/to/pumasi-up.log</string>
+	<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict>
+</plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.pumasi.controller.plist   # 올리기
+launchctl bootout gui/$(id -u)/dev.pumasi.controller                                  # 내리기 (러너와 잡은 그대로)
+```
+
+- 토큰은 plist 에 적지 않고 뜰 때마다 읽는다. `dist/` 는 통째로 두어야 한다(호스트가 거기서 자기 판을 받는다).
+- `ProcessType` 을 `Interactive` 로 둔다. 안 적으면 launchd 가 바쁜 머신에서 CPU·IO 를 뒤로 미룰 수 있다.
+- 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮춘다(zsh: nice 5). `up` 은 그럴 때 경고 한 줄을 낸다.
+- Linux 에서는 같은 일을 systemd user unit(`Restart=always`)이 한다.
+
 ## 확인 방법
 
 장애 표의 행마다 실제 호스트에서 일으켜 보는 스크립트(`make chaos`)를 둔다: 에이전트 kill, controller kill -9, 호스트 연결 끊기, 러너 kill(기동 중·잡 도중), 메모리 상한 넘기기, 디스크 임계 낮추기, 장부 파일 훼손, 잘못된 토큰. 행마다 기대 결과는 "잡 결과 · 열린 사건 · 온 알림 · 닫힌 사건". 통과한 행만 README 에 "복구됨"으로 적는다.

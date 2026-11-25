@@ -1083,22 +1083,26 @@ func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (s
 }
 
 // startAgents makes every host of the config join, in parallel: one that is
-// a member already is waited for, any other is bootstrapped over ssh. A host
+// a member already is waited for, any other is bootstrapped over ssh. Hosts
+// that joined by themselves are waited for and nothing else. A host
 // that fails is reported and left out; the run goes on while one host works
 // or others have joined by themselves.
 func (c *Controller) startAgents(ctx context.Context) error {
-	var hosts []*host
-	for _, h := range c.hosts {
-		if h.cfg.SSH != "" {
-			hosts = append(hosts, h)
-		}
-	}
+	hosts := c.hosts
 	bad := make([]string, len(hosts))
 	var wg sync.WaitGroup
 	for i, h := range hosts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if h.cfg.SSH == "" {
+				// A host that joined by itself comes back by itself. Waiting for it
+				// here lets the first round see the runners it still has.
+				if err := h.wait(ctx); err != nil && ctx.Err() == nil {
+					c.log.Warn(fmt.Sprintf("host %s has not connected yet; its running jobs are left alone", h.cfg.Name))
+				}
+				return
+			}
 			cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 			defer cancel()
 			did := "connected"
