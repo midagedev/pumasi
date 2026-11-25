@@ -171,6 +171,7 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 func (c *Controller) listen(ctx context.Context, cl *class) {
 	hostname, _ := os.Hostname()
 	backoff := 5 * time.Second
+	conflict := false
 	for ctx.Err() == nil {
 		err := func() error {
 			session, err := c.gh.MessageSessionClient(ctx, cl.setID, "pumasi-"+hostname)
@@ -188,7 +189,17 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 		if ctx.Err() != nil {
 			return
 		}
-		c.log.Error("listener stopped, restarting", "class", cl.cfg.Name, "err", err, "in", backoff)
+		if errors.Is(err, scaleset.ConflictError) {
+			// Another machine's controller, or one that died without closing its
+			// session. Keep trying quietly: a dead session expires on GitHub's side.
+			if !conflict {
+				c.log.Warn(fmt.Sprintf("class %s: GitHub already has a message session for scale set %s (another controller, or one that just died); no jobs for this class until it ends, retrying", cl.cfg.Name, cl.cfg.ScaleSet))
+			}
+			conflict = true
+		} else {
+			conflict = false
+			c.log.Error("listener stopped, restarting", "class", cl.cfg.Name, "err", err, "in", backoff)
+		}
 		select {
 		case <-ctx.Done():
 			return
