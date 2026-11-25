@@ -712,6 +712,9 @@ func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
 // shutdown runs after Ctrl-C, on its own deadline: remove our runners, stop the
 // agents we started, close the tunnels.
 func (c *Controller) shutdown() {
+	if !slices.ContainsFunc(c.hosts, func(h *host) bool { return h.started }) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	c.log.Info("stopping: removing runners and agents (scale sets stay; `pumasi down` deletes them)")
@@ -783,6 +786,10 @@ func (c *Controller) Down(ctx context.Context) error {
 	wg.Wait()
 	c.forgetLiveRunners("down")
 	c.unregister(ctx)
+	// Jobs still waiting have nowhere to go once the scale sets are gone.
+	if err := c.ledger.CloseOpenDemand("down", c.now()); err != nil {
+		c.log.Error("ledger demand", "err", err)
+	}
 	for _, cl := range c.cfg.Classes {
 		set, err := c.gh.GetRunnerScaleSet(ctx, c.cfg.RunnerGroupID, cl.ScaleSet)
 		if err != nil || set == nil {

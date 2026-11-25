@@ -114,5 +114,9 @@ func runController(args []string, down bool) error {
 	if down {
 		return c.Down(ctx)
 	}
-	return c.Run(ctx, filepath.Dir(exe))
+	dist := filepath.Dir(exe)
+	if m, _ := filepath.Glob(filepath.Join(dist, "pumasi-linux-*")); len(m) == 0 {
+		return fmt.Errorf("no linux build next to %s: the hosts need pumasi-linux-amd64 or pumasi-linux-arm64 there; run `make` in the pumasi source tree and use ./dist/pumasi", exe)
+	}
+	return c.Run(ctx, dist)
 }

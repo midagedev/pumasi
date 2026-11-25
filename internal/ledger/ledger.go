@@ -192,6 +192,11 @@ func (l *Ledger) CloseDemand(jobID, servedBy string, at time.Time) error {
 	return l.exec(`UPDATE demand SET served_by=?, closed_at=? WHERE job_id=? AND closed_at IS NULL`, servedBy, ts(at), jobID)
 }
 
+// CloseOpenDemand closes every waiting job, for when nothing will serve them anymore.
+func (l *Ledger) CloseOpenDemand(servedBy string, at time.Time) error {
+	return l.exec(`UPDATE demand SET served_by=?, closed_at=? WHERE closed_at IS NULL`, servedBy, ts(at))
+}
+
 type Demand struct {
 	JobID, Class, Repo  string
 	RunID               int64
