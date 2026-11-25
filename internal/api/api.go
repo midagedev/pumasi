@@ -15,7 +15,11 @@ import (
 
 // Snapshot is GET /v1/snapshot.
 type Snapshot struct {
-	Host       string  `json:"host"`
+	Host string `json:"host"`
+	// What the host says of itself: server | desktop ("" = the controller's config says),
+	// and the build of its agent.
+	Kind       string  `json:"kind,omitempty"`
+	Version    string  `json:"version,omitempty"`
 	CPUs       float64 `json:"cpus"`
 	MemBytes   int64   `json:"memBytes"`
 	BudgetCPUs float64 `json:"budgetCpus"` // 0 = no agent-side budget

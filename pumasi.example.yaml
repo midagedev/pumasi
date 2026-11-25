@@ -13,6 +13,9 @@ hosts:                               # ssh destinations (aliases from ~/.ssh/con
     shell: wsl -e sh -s              # Windows host running WSL (default: sh -s)
     budget: {cpus: 6, memory: 9G}
 
+# listen: 0.0.0.0:7411              # optional: hosts join by themselves instead of (or next to) hosts:
+#                                    #   `pumasi invite` prints the line to run on a host
+
 # rerun: 1                           # optional: after a failure on pumasi's side (host reboot, runner killed)
 #                                    #   rerun that run's failed jobs once; default 0 = only tell
 # notify:                            # optional: problems (and their end) as one line each

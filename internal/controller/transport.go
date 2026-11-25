@@ -10,12 +10,32 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/midagedev/pumasi/internal/api"
 )
 
-// Transport gives the base URL of one host's agent. M1 reaches agents through
-// ssh port forwarding; an agent-dials-controller transport can replace it later.
-type Transport interface {
-	BaseURL(ctx context.Context) (string, error)
+// link is how the controller reaches one host and looks after its agent. It
+// is the only place that knows who dials whom: over ssh the controller goes to
+// the host (sshLink), with join the host comes to the controller (joinLink).
+// Everything else — placement, the ledger, incidents, recovery — sees a host
+// with an agent API.
+type link interface {
+	// Agent is the client of the host's agent API.
+	Agent() *api.Client
+	// Via names the way the host is attached: "ssh" or "join".
+	Via() string
+	// Why says why the host was last cut off ("" = not known).
+	Why() string
+	// Ensure makes the host ready before the first round and says what it did.
+	Ensure(ctx context.Context, distDir string) (string, error)
+	// Revive brings a silent agent back. "" with a nil error: nothing the
+	// controller can do from here, the host has to come back by itself.
+	Revive(ctx context.Context, distDir string) (string, error)
+	// Running lists the pumasi containers that are up on the host.
+	Running(ctx context.Context) ([]string, error)
+	// Clean removes everything pumasi put on the host and returns how many
+	// containers that took.
+	Clean(ctx context.Context) (string, error)
 	Close()
 }
 

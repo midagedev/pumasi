@@ -10,20 +10,23 @@ controller 쪽:
 
 ```yaml
 # pumasi.yaml
-repo: github.com/me/project
-listen: 0.0.0.0:7411        # 이 줄이 있으면 호스트의 가입을 받는다
+url: https://github.com/me/project
+listen: 0.0.0.0:7411        # 이 줄이 있으면 호스트의 가입을 받는다 (hosts: 는 없어도 된다)
 classes:
-  - { name: linux-s, cpus: 1, mem: 1G }
-  - { name: linux-l, cpus: 2, mem: 3G }
+  - {name: linux-s, cpus: 1, memory: 1G}
+  - {name: linux-l, cpus: 2, memory: 3G}
 ```
 
 ```
 $ pumasi up
 $ pumasi invite
-호스트에서 이 한 줄을 실행하세요:
+Run this on the host that should join:
 
   curl -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.sh | sh -s -- <token>
 ```
+
+`listen` 이 `0.0.0.0` 이면 초대 줄의 주소는 기본 경로의 주소다. 머신에 주소가 여럿이면 나머지도 알려 준다.
+호스트는 스크립트를 받은 그 주소로 계속 붙는다.
 
 호스트 쪽은 그 한 줄이 전부다. 스크립트는 controller 에서 자기 아키텍처의 바이너리를 받아
 `~/.local/bin/pumasi` 에 두고 `pumasi join` 을 서비스로 올린다. 예산과 종류는 호스트가 말한다:
@@ -48,11 +51,13 @@ $ pumasi invite
 
 ## 서로를 믿는 방법
 
-- controller 는 처음 `up` 때 TLS 키와 인증서, 가입 토큰을 만들어 상태 디렉터리에 둔다.
+- controller 는 처음 `up`(또는 `invite`) 때 TLS 키와 인증서, 가입 토큰을 만들어 상태 디렉터리에 둔다
+  (`join.key`·`join.crt`·`join.token`, 가입한 호스트는 `hosts.json`).
 - **호스트가 controller 를 확인**: 초대 줄에 인증서 공개키 지문이 들어 있다(`--pinnedpubkey`).
   `pumasi join` 도 같은 지문으로만 붙는다. 호스트는 시키는 이미지를 실행하므로 이 확인이 필요하다.
-- **controller 가 호스트를 확인**: 가입 토큰. `pumasi invite --rotate` 로 바꾸면 이미 붙은 호스트는
-  유지되고(호스트별 자격을 가입 때 발급) 새 가입만 새 토큰을 쓴다.
+- **controller 가 호스트를 확인**: 가입 토큰. 호스트는 가입할 때 자기 id 와 비밀값을 만들어 토큰과 함께
+  보내고, controller 는 비밀값의 해시만 적어 둔다. 그 뒤 연결은 id 와 비밀값으로 한다. 그래서
+  `pumasi invite --rotate` 로 토큰을 바꿔도 이미 붙은 호스트는 유지되고 새 가입만 새 토큰을 쓴다.
 - JIT 설정은 TLS 안으로만 간다. GitHub 토큰은 지금처럼 controller 밖으로 나가지 않는다.
 - 대시보드와 status 는 계속 loopback 에만 열린다. `listen` 포트는 가입·바이너리 내려받기·세션만 받는다.
 
@@ -61,9 +66,9 @@ $ pumasi invite
 | 일 | ssh 방식 | join 방식 |
 |---|---|---|
 | 바이너리 전달 | up 이 올림 | 호스트가 controller 에서 받음 (`/dl/pumasi-linux-<arch>`, sha 확인) |
-| 판 맞추기 | up 이 sha 로 경로를 나눔 | 붙을 때 판을 말하고, 다르면 호스트가 새 판을 받아 자기 자신을 바꿔 실행(러너는 건드리지 않음) |
-| 죽은 에이전트 다시 올리기 | controller 가 ssh 로 | 호스트의 서비스(systemd user unit, 없으면 재시작 루프) |
-| `down --force` 의 호스트 정리 | ssh 로 지움 | 세션으로 `leave` 를 시킴. 안 붙어 있는 호스트는 이름을 나열하고 "거기서 `pumasi leave`" 라고 말함 |
+| 판 맞추기 | up 이 sha 로 경로를 나눔 | 붙을 때 판(바이너리 sha256)을 말하고, 다르면 controller 가 세션을 주지 않고 자기 판을 알려 준다. 호스트가 그 판을 받아 sha 를 확인하고 자기 자신을 바꿔 실행한다(러너는 건드리지 않음). 못 바꾸면 이유를 말하며 옛 판으로 붙는다 |
+| 죽은 에이전트 다시 올리기 | controller 가 ssh 로 | 호스트의 서비스. 로그인이 끝나도 사용자 unit 이 도는 호스트(linger)면 systemd user unit, 아니면 스스로 다시 뜨는 백그라운드 프로세스(재부팅 뒤에는 안 올라온다 — 가입할 때 그렇게 말한다) |
+| `down` 의 호스트 정리 | ssh 로 지움 | 세션으로 `leave` 를 시킴. 안 붙어 있는 호스트는 controller 쪽에서 잊고 "거기서 `pumasi leave`" 라고 말함 |
 | 호스트 이름 충돌 | 설정에서 드러남 | 호스트 id(가입 때 만든 난수)가 다르면 거부하고 이유를 말함 |
 
 ## 연결 문제를 말로 한다
@@ -79,13 +84,21 @@ $ pumasi invite
   ok    docker 27.3 reachable as this user
   ok    cgroup v2 with memory and cpu controllers
   ```
-  호스트에서 `pumasi doctor` 로 언제든 다시 볼 수 있다.
+  하나라도 FAIL 이면 아무것도 등록하지 않고 끝난다. 호스트에서 `pumasi doctor` 로 언제든 다시 볼 수 있고,
+  거기에는 에이전트가 도는지와 지금 붙어 있는지(아니면 언제부터 왜)가 더 나온다.
 - **status 와 대시보드의 Hosts 표**에 호스트별로: 붙은 방식(join/ssh), 마지막으로 본 시각,
-  왕복 시간, 에이전트 판, 마지막으로 끊긴 이유(`keepalive timeout`, `connection reset`, `agent exited`,
-  `token refused`).
+  왕복 시간(스냅샷 한 번의 왕복), 에이전트 판, 마지막으로 끊긴 이유(`keepalive timeout`,
+  `connection reset`, `agent exited`). ssh 호스트도 같은 열에 나온다.
 - **사건**: 지금의 "host unreachable" 이 그대로 쓰이고 문구에 끊긴 이유가 붙는다.
   하루에 여러 번 끊겼다 붙는 호스트는 flapping 으로 한 건에 묶인다(이미 있음).
   판이 달라 스스로 바꾸지 못하면 "agent version" 사건.
+
+## 떼기
+
+- 호스트에서 `pumasi leave`: 에이전트를 멈추고 pumasi 컨테이너·`~/.cache/pumasi`·바이너리·서비스를 지우고
+  controller 에 알린다. 러너가 떠 있으면 목록을 보이고 거부한다(`--force` 로 강행, `down` 과 같다).
+  controller 에 못 닿으면 호스트 쪽만 지우고 그렇게 말한다.
+- controller 가 호스트를 잊으면(`leave`, `down`) 그 호스트의 러너는 장부에서 "host … is not configured" 로 닫힌다.
 
 ## 하지 않는 것
 

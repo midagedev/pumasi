@@ -28,8 +28,14 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
   pumasi open    the same in a browser, with recent jobs and the last 24 hours
   pumasi down    remove everything pumasi created on the hosts and on GitHub
                  (refuses while jobs run, unless --force)
+  pumasi invite  print the line that joins a host to this controller
+                 (needs listen: in the config; --rotate makes a new token)
 
-Flags: -config pumasi.yaml (all commands), -v (up: verbose log).
+On a host that joined:
+  pumasi doctor  check the way to the controller, docker and the agent
+  pumasi leave   remove this host from the controller and pumasi from this host
+
+Flags: -config pumasi.yaml (up, status, open, down, invite), -v (up: verbose log).
 up and down read the GitHub token from PUMASI_GITHUB_TOKEN.
 `
 
@@ -51,6 +57,14 @@ func main() {
 		err = runOpen(args)
 	case "agent":
 		err = runAgent(args)
+	case "invite":
+		err = runInvite(args)
+	case "join":
+		err = runJoin(args)
+	case "doctor":
+		err = runDoctor(args)
+	case "leave":
+		err = runLeave(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:

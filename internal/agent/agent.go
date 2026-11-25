@@ -21,6 +21,8 @@ import (
 
 type Config struct {
 	Host       string
+	Kind       string  // server | desktop, when the host itself says ("" = the controller knows)
+	Version    string  // this build, as shown to people
 	BudgetCPUs float64 // 0 = no limit from the agent side
 	BudgetMem  int64
 	Interval   time.Duration
@@ -261,7 +263,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
 	s := api.Snapshot{
-		Host: a.cfg.Host, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
+		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
 		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},

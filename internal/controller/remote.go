@@ -8,14 +8,51 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/config"
 )
+
+// sshLink: the controller goes to the host. It uploads and starts the agent
+// over ssh and talks to it through a port forward.
+type sshLink struct {
+	h   config.Host
+	tun *SSHTunnel
+	api *api.Client
+}
+
+func newSSHLink(h config.Host, log *slog.Logger) *sshLink {
+	tun := &SSHTunnel{Dest: h.SSH, RemotePort: h.AgentPort, Log: log}
+	return &sshLink{h: h, tun: tun, api: &api.Client{BaseURL: tun.BaseURL, HTTP: &http.Client{Timeout: 90 * time.Second}}}
+}
+
+func (l *sshLink) Agent() *api.Client { return l.api }
+func (l *sshLink) Via() string        { return "ssh" }
+func (l *sshLink) Why() string        { return "" }
+func (l *sshLink) Close()             { l.tun.Close() }
+
+func (l *sshLink) Ensure(ctx context.Context, distDir string) (string, error) {
+	return ensureAgent(ctx, l.h, distDir)
+}
+
+func (l *sshLink) Revive(ctx context.Context, distDir string) (string, error) {
+	return ensureAgent(ctx, l.h, distDir)
+}
+
+func (l *sshLink) Running(ctx context.Context) ([]string, error) { return runningContainers(ctx, l.h) }
+
+func (l *sshLink) Clean(ctx context.Context) (string, error) {
+	out, err := cleanHost(ctx, l.h)
+	return lastLine(out), err
+}
 
 // Everything pumasi puts on a host lives here: the agent binary, its pid file and its log.
 const remoteDir = `"$HOME/.cache/pumasi"`

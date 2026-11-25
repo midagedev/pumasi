@@ -35,6 +35,9 @@ type Config struct {
 
 	Notify Notify `yaml:"notify"`
 
+	// Listen: the address hosts dial to join, e.g. 0.0.0.0:7411 ("" = ssh hosts only).
+	Listen string `yaml:"listen"`
+
 	Classes []Class `yaml:"classes"`
 	Hosts   []Host  `yaml:"hosts"`
 }
@@ -209,8 +212,11 @@ func (c *Config) validate() error {
 	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
 		return fmt.Errorf("notify.level must be problem, recovered or all")
 	}
-	if len(c.Classes) == 0 || len(c.Hosts) == 0 {
-		return fmt.Errorf("at least one class and one host are required")
+	if len(c.Classes) == 0 {
+		return fmt.Errorf("at least one class is required")
+	}
+	if len(c.Hosts) == 0 && c.Listen == "" {
+		return fmt.Errorf("no hosts: list them under hosts: (reached over ssh) or set listen: so that hosts can join")
 	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {
@@ -236,7 +242,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class needs name, cpus and memory: %+v", cl)
 		}
 		for _, h := range cl.Hosts {
-			if !hosts[h] {
+			// With listen: a class may name a host that joins later.
+			if !hosts[h] && c.Listen == "" {
 				return fmt.Errorf("class %s: unknown host %s", cl.Name, h)
 			}
 		}

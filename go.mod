@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/actions/scaleset v0.5.0
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/yamux v0.1.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.63.0
 )

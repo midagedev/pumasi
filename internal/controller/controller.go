@@ -25,6 +25,7 @@ import (
 	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
+	"github.com/midagedev/pumasi/internal/join"
 	"github.com/midagedev/pumasi/internal/ledger"
 )
 
@@ -39,7 +40,11 @@ type Controller struct {
 	ev          *EventLog
 	now         func() time.Time
 
+	// hosts changes only on the evaluating goroutine (a host joins or leaves);
+	// hostsMu covers the readers on other goroutines.
 	hosts   []*host
+	hostsMu sync.Mutex
+	join    *join.Server // the hosts that dial in
 	classes []*class
 	kick    chan struct{}
 
@@ -76,10 +81,12 @@ type host struct {
 	quarantined time.Time
 	probedAt    time.Time
 	probing     atomic.Bool
-	tr          Transport
+	tr          link
 	agent       *api.Client
 	snap        *api.Snapshot
 	downSince   time.Time
+	seenAt      time.Time     // the last snapshot that arrived
+	rtt         time.Duration // how long that snapshot took, there and back
 }
 
 type class struct {
@@ -105,21 +112,35 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
 		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
-		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
-		c.hosts = append(c.hosts, &host{cfg: hc, tr: tr,
-			agent: &api.Client{BaseURL: tr.BaseURL, HTTP: &http.Client{Timeout: 90 * time.Second}}})
+		l := newSSHLink(hc, log)
+		c.hosts = append(c.hosts, &host{cfg: hc, tr: l, agent: l.Agent()})
 	}
 	for _, cc := range cfg.Classes {
 		c.classes = append(c.classes, &class{cfg: cc})
 	}
 	c.book = newIncidentBook(c)
+	c.join = join.NewServer(cfg.StateDir(), "", log)
+	c.join.Reserved = func(name string) bool {
+		return slices.ContainsFunc(cfg.Hosts, func(h config.Host) bool { return h.Name == name })
+	}
+	c.join.Changed = func() {
+		select {
+		case c.kick <- struct{}{}:
+		default:
+		}
+	}
+	c.syncJoined(false)
 	return c, nil
 }
 
 func (c *Controller) Close() {
-	for _, h := range c.hosts {
+	c.hostsMu.Lock()
+	hosts := c.hosts
+	c.hostsMu.Unlock()
+	for _, h := range hosts {
 		h.tr.Close()
 	}
+	c.join.Close()
 }
 
 // EnsureScaleSets finds or creates the scale set of every class.
@@ -177,6 +198,9 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		c.book.flush(fctx)
 	}()
 	defer c.shutdown()
+	if err := c.listenForHosts(distDir); err != nil {
+		return err
+	}
 	if err := c.startAgents(ctx, distDir); err != nil {
 		return err
 	}
@@ -372,6 +396,7 @@ func orNow(t, now time.Time) time.Time {
 // Evaluate is one reconciliation round: read agents, update the ledger, decide, act.
 func (c *Controller) Evaluate(ctx context.Context) {
 	now := c.now()
+	c.syncJoined(true)
 	c.refreshHosts(ctx, now)
 
 	live, err := c.ledger.LiveRunners()
@@ -436,7 +461,11 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 			defer cancel()
+			asked := time.Now()
 			s, err := h.agent.Snapshot(cctx)
+			if err == nil {
+				h.seenAt, h.rtt = now, time.Since(asked)
+			}
 			warming := err == nil && s.SampledAt.IsZero()
 			if warming {
 				// Before its first sample the agent lists no runners; acting on that
@@ -572,6 +601,9 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
 			dh.BudgetCPUs = minPositive(dh.BudgetCPUs, a.BudgetCPUs)
 			dh.BudgetMem = int64(minPositive(float64(dh.BudgetMem), float64(a.BudgetMem)))
+			if a.Kind != "" {
+				dh.Kind = a.Kind // a host that joined says itself what it is
+			}
 			h.closed = c.closedReason(h)
 			dh.Closed = h.closed
 		}
@@ -613,7 +645,10 @@ func minPositive(a, b float64) float64 {
 }
 
 func (c *Controller) hostByName(name string) *host {
-	for _, h := range c.hosts {
+	c.hostsMu.Lock()
+	hosts := c.hosts
+	c.hostsMu.Unlock()
+	for _, h := range hosts {
 		if h.cfg.Name == name {
 			return h
 		}
@@ -873,12 +908,12 @@ func (c *Controller) startAgents(ctx context.Context, distDir string) error {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 			defer cancel()
-			did, err := ensureAgent(cctx, h.cfg, distDir)
+			did, err := h.tr.Ensure(cctx, distDir)
 			for try := 0; err != nil && try < 2 && cctx.Err() == nil; try++ {
 				// ssh hops fail now and then (seen: a WSL host timing out once); the steps are idempotent.
 				c.log.Warn(fmt.Sprintf("host %s: retrying", h.cfg.Name), "err", err)
 				time.Sleep(3 * time.Second)
-				did, err = ensureAgent(cctx, h.cfg, distDir)
+				did, err = h.tr.Ensure(cctx, distDir)
 			}
 			if err != nil {
 				errs[i] = err
@@ -911,7 +946,10 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 		defer h.ensuring.Store(false)
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
-		did, err := ensureAgent(cctx, h.cfg, c.distDir)
+		did, err := h.tr.Revive(cctx, c.distDir)
+		if did == "" && err == nil {
+			return // the host looks after its own agent
+		}
 		if err != nil {
 			c.log.Warn(fmt.Sprintf("host %s: agent not restarted", h.cfg.Name), "err", err)
 			if h.reviveBad.Add(1) == 3 {
@@ -997,8 +1035,12 @@ func (c *Controller) hostIncidents(now time.Time, live []ledger.Runner) {
 				jobs++
 			}
 		}
+		why := ""
+		if h.tr != nil && h.tr.Why() != "" {
+			why = " (" + h.tr.Why() + ")"
+		}
 		c.book.open("host-unreachable/"+name, "host-unreachable", name, fmt.Sprintf(
-			"%s unreachable for %s — %d jobs still running there, no new runners placed", name, down.Round(time.Second), jobs))
+			"%s unreachable for %s%s — %d jobs still running there, no new runners placed", name, down.Round(time.Second), why, jobs))
 	}
 }
 
@@ -1099,6 +1141,9 @@ func (c *Controller) forgetLiveRunners(reason string) {
 // Runner containers that are still up may be running jobs, so Down refuses
 // while there are any unless force is set.
 func (c *Controller) Down(ctx context.Context, force bool) error {
+	if err := c.listenForHosts(""); err != nil {
+		return err
+	}
 	if !force {
 		if err := c.refuseIfRunning(ctx); err != nil {
 			return err
@@ -1112,13 +1157,13 @@ func (c *Controller) Down(ctx context.Context, force bool) error {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
-			out, err := cleanHost(cctx, h.cfg)
+			n, err := h.tr.Clean(cctx)
 			if err != nil {
 				errs[i] = err
 				c.log.Error(fmt.Sprintf("host %s not cleaned", h.cfg.Name), "err", err)
 				return
 			}
-			c.log.Info(fmt.Sprintf("host %s  agent stopped, %s containers removed, ~/.cache/pumasi removed", h.cfg.Name, lastLine(out)))
+			c.log.Info(fmt.Sprintf("host %s  agent stopped, %s containers removed, ~/.cache/pumasi removed", h.cfg.Name, n))
 		}()
 	}
 	wg.Wait()
@@ -1154,7 +1199,7 @@ func (c *Controller) refuseIfRunning(ctx context.Context) error {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
-			names, err := runningContainers(cctx, h.cfg)
+			names, err := h.tr.Running(cctx)
 			if err != nil {
 				errs[i] = fmt.Errorf("cannot check %s for running jobs: %w", h.cfg.Name, err)
 				return

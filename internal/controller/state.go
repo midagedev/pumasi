@@ -31,6 +31,14 @@ type HostState struct {
 	Closed string `json:"closed"`
 	// Free share of docker's disk in percent; nil when unknown.
 	DiskFreePct *float64 `json:"diskFreePct"`
+	// The connection: who opened it (ssh | join), seconds since the last answer
+	// (nil = none yet), how long that answer took, the agent's build and why the
+	// host was last cut off. Empty without a running controller, except Via.
+	Via         string  `json:"via"`
+	SeenSeconds *int64  `json:"seenSeconds"`
+	RTTMs       float64 `json:"rttMs"`
+	Agent       string  `json:"agent"`
+	LastDrop    string  `json:"lastDrop"`
 }
 
 type RunnerState struct {
@@ -73,12 +81,22 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		size[c.Name] = c
 	}
 	hosts := map[string]int{} // name -> index in out.Hosts
-	for _, h := range cfg.Hosts {
-		hs := HostState{Name: h.Name, Kind: h.Kind, BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory)}
+	for _, h := range KnownHosts(cfg) {
+		hs := HostState{Name: h.Name, Kind: h.Kind, BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory), Via: "ssh"}
+		if h.SSH == "" {
+			hs.Via = "join"
+		}
 		if ok {
 			snap := live.Hosts[h.Name]
 			up := snap != nil
 			hs.Reachable = &up
+			if ln, ok := live.Links[h.Name]; ok {
+				hs.RTTMs, hs.Agent, hs.LastDrop = ln.RTTMs, ln.Agent, ln.LastDrop
+				if !ln.SeenAt.IsZero() {
+					s := int64(now.Sub(ln.SeenAt).Seconds())
+					hs.SeenSeconds = &s
+				}
+			}
 			if up {
 				p := snap.PSI["cpu"]
 				hs.CPUPressure = &p

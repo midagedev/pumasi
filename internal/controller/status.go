@@ -21,6 +21,17 @@ type Status struct {
 	Waiting []Waiting                `json:"waiting"`
 	// Closed: hosts that are up but take no new runners, with the reason.
 	Closed map[string]string `json:"closed,omitempty"`
+	// Links: how each host is attached and how that connection is doing.
+	Links map[string]Link `json:"links,omitempty"`
+}
+
+// Link is the connection to one host, whichever side opened it.
+type Link struct {
+	Via      string    `json:"via"`                // ssh | join
+	SeenAt   time.Time `json:"seenAt"`             // the last answer (zero = none yet)
+	RTTMs    float64   `json:"rttMs"`              // how long that answer took
+	Agent    string    `json:"agent,omitempty"`    // the agent's build
+	LastDrop string    `json:"lastDrop,omitempty"` // why the host was last cut off
 }
 
 type Waiting struct {
@@ -30,9 +41,16 @@ type Waiting struct {
 }
 
 func (c *Controller) setStatus(defers []decide.Defer) {
-	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}}
+	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{}}
 	for _, h := range c.hosts {
 		st.Hosts[h.cfg.Name] = h.snap
+		if h.tr != nil {
+			ln := Link{Via: h.tr.Via(), SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000, LastDrop: h.tr.Why()}
+			if h.snap != nil {
+				ln.Agent = h.snap.Version
+			}
+			st.Links[h.cfg.Name] = ln
+		}
 		if h.snap != nil && h.closed != "" {
 			st.Closed[h.cfg.Name] = h.closed
 		}
