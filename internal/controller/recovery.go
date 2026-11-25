@@ -155,9 +155,13 @@ func (c *Controller) reportOOM(lr ledger.Runner, ar api.Runner) {
 	if cl := c.classByName(lr.Class); cl != nil {
 		limit = int64(cl.cfg.Memory)
 	}
+	what := "the kernel killed a process of the job"
+	if h := c.hostByName(lr.Host); h != nil && h.os == "windows" {
+		what = "Windows refused the job more memory" // a Job Object fails the allocation, it kills nothing
+	}
 	c.book.report("problem", "oom/"+lr.Name, "out-of-memory", lr.Name, fmt.Sprintf(
-		"%s hit the %s %s memory limit on %s (peak %s); the kernel killed a process of the job",
-		jobName(lr), lr.Class, gib(limit), lr.Host, gib(ar.MemPeak)), "none: raise the class's memory or fix the job; not rerun")
+		"%s hit the %s %s memory limit on %s (peak %s); %s",
+		jobName(lr), lr.Class, gib(limit), lr.Host, gib(ar.MemPeak), what), "none: raise the class's memory or fix the job; not rerun")
 }
 
 // reportOverClass tells once per runner that it used more memory than its
