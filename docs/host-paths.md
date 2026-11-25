@@ -70,6 +70,10 @@ GitHub 은 "앞 잡과 같은 머신" 을 지정하게 해 주지 않으므로, 
 - 어차피 없는 자리(그 호스트가 내려가 있다, 남이 다 쓰고 있다)는 남을 막지 않는다.
 - 대기열의 순서(우선순위)는 만들지 않았다. 예약 하나로 한다.
 
+실물(WSL2 호스트 한 대, 예산 6cpu, `plain` 1cpu 와 `resv` 2cpu·`reserve: 1`): plain 잡 7개를 한꺼번에 넣으면 4개만 뜨고 3개는
+`no host with 1.0cpu/1.0G free (desk1 reserved for resv)` 로 기다린다. 그사이 넣은 resv 잡은 남겨 둔 2cpu 에 바로 뜬다.
+resv 잡이 끝난 뒤에도 그 자리는 다시 비워 두고, plain 은 자기 러너가 끝난 만큼만 이어서 뜬다. 7개 모두 성공.
+
 ## 3-2. 러너 안의 docker — `docker: inside`
 
 ```yaml
