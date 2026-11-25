@@ -176,6 +176,7 @@ type Host struct {
 
 	stay string
 	last string // why the previous session of this process ended
+	note string // and what this side had to do with it
 }
 
 const (
@@ -195,10 +196,13 @@ func (h *Host) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		why = h.Watch.Explain(why)
+		note := h.Watch.Note()
+		if note != "" && connected {
+			why += " (" + note + ")"
+		}
 		h.State(false, why)
 		if connected {
-			h.last = why
+			h.last, h.note = why, note
 			h.Log.Warn("disconnected from the controller; dialing again", "why", why, "after", time.Since(began).Round(time.Second))
 			if time.Since(began) > backoffMax {
 				wait = backoffMin
@@ -232,6 +236,9 @@ func (h *Host) connect(ctx context.Context) (bool, string) {
 	}
 	if h.last != "" {
 		req.Header.Set(hdrWhy, h.last)
+	}
+	if h.note != "" {
+		req.Header.Set(hdrNote, h.note)
 	}
 	if h.stay != "" {
 		req.Header.Set(hdrStay, h.stay)

@@ -382,7 +382,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := s.Peer(id)
-	p.attach(sess, version, stay, r.Header.Get(hdrWhy))
+	p.attach(sess, version, stay, r.Header.Get(hdrWhy), r.Header.Get(hdrNote))
 	s.Changed()
 	go func() {
 		<-sess.CloseChan()
@@ -405,8 +405,9 @@ type Peer struct {
 }
 
 // attach makes sess the peer's session. hostWhy is why the host says its
-// previous one ended ("" = it does not know: a new process).
-func (p *Peer) attach(sess *yamux.Session, version, stay, hostWhy string) {
+// previous one ended ("" = it does not know: a new process), hostNote what the
+// host had to do with that itself (it was stalled, or asleep).
+func (p *Peer) attach(sess *yamux.Session, version, stay, hostWhy, hostNote string) {
 	p.mu.Lock()
 	old := p.sess
 	p.sess, p.version, p.stay, p.since = sess, version, stay, time.Now()
@@ -414,10 +415,12 @@ func (p *Peer) attach(sess *yamux.Session, version, stay, hostWhy string) {
 	case old != nil:
 		// This side had not noticed yet; only the host knows why it dialed again.
 		p.why, p.droppedAt = cmp.Or(hostWhy, WhyReplaced), time.Now()
-	case hostWhy != "" && (p.why == WhyExited || strings.HasPrefix(hostWhy, p.why+" (")):
-		// The host closed the connection, but not because its agent ended; or it
-		// knows more about a timeout both sides saw (it was stalled, or asleep).
+	case hostWhy != "" && p.why == WhyExited:
+		// The host closed the connection, but not because its agent ended.
 		p.why = hostWhy
+	case hostNote != "" && p.why == WhyKeepalive:
+		// This side gave up on a host that knows why it did not answer.
+		p.why += " (" + hostNote + ")"
 	}
 	if old == nil {
 		close(p.up)

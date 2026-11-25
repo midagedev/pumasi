@@ -19,12 +19,13 @@ type Watchdog struct {
 	what string // "stalled" or "asleep"
 	long time.Duration
 	at   time.Time
+	tick time.Time // the last tick, for a gap that Note is asked about before the next one
 }
 
 const (
 	watchEvery = time.Second
-	watchSlack = 5 * time.Second  // a gap this long is worth a line
-	watchKeep  = 45 * time.Second // how long a gap explains a dropped connection
+	watchSlack = 5 * time.Second // a gap this long is worth a line
+	watchFresh = 5 * time.Second // a connection found dead this soon after a gap died of it
 )
 
 // Run ticks until ctx ends.
@@ -41,6 +42,9 @@ func (w *Watchdog) Run(ctx context.Context) {
 		now := time.Now()
 		w.saw(last, now)
 		last = now
+		w.mu.Lock()
+		w.tick = now
+		w.mu.Unlock()
 	}
 }
 
@@ -76,18 +80,25 @@ func (w *Watchdog) sawClocks(mono, wall time.Duration, now time.Time) {
 	}
 }
 
-// Explain adds what the watchdog saw a moment ago to why a connection ended.
-func (w *Watchdog) Explain(why string) string {
-	if w == nil || why != WhyKeepalive {
-		return why
+// Note is what the watchdog saw just now ("" = nothing): the reason a
+// connection that ended in this moment ended on this side's account.
+func (w *Watchdog) Note() string {
+	if w == nil {
+		return ""
+	}
+	w.mu.Lock()
+	tick := w.tick
+	w.mu.Unlock()
+	if !tick.IsZero() {
+		w.saw(tick, time.Now()) // the connection's end may be noticed before the overdue tick
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.what == "" || time.Since(w.at) > watchKeep {
-		return why
+	if w.what == "" || time.Since(w.at) > watchFresh {
+		return ""
 	}
 	if w.what == "asleep" {
-		return fmt.Sprintf("%s (the host was asleep for %s)", why, w.long)
+		return fmt.Sprintf("the host was asleep for %s", w.long)
 	}
-	return fmt.Sprintf("%s (the agent did not get to run for %s: the host is overloaded or was suspended)", why, w.long)
+	return fmt.Sprintf("the agent did not get to run for %s: the host is overloaded or was suspended", w.long)
 }

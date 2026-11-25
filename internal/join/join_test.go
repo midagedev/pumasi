@@ -408,28 +408,28 @@ func TestBuildIsMatchedPerSystem(t *testing.T) {
 func TestHostSaysWhyItDialedAgain(t *testing.T) {
 	p := &Peer{up: make(chan struct{})}
 	p.why = WhyExited
-	p.attach(nil, "v", "", WhyKeepalive)
+	p.attach(nil, "v", "", WhyKeepalive, "")
 	if got := p.Link().Why; got != WhyKeepalive {
 		t.Fatalf("why = %q", got)
 	}
 	// A new agent process has nothing to say: the controller's reading stands.
 	p = &Peer{up: make(chan struct{})}
 	p.why = WhyExited
-	p.attach(nil, "v", "", "")
+	p.attach(nil, "v", "", "", "")
 	if got := p.Link().Why; got != WhyExited {
 		t.Fatalf("why = %q", got)
 	}
 	// The host knows more about a timeout both sides saw.
 	p = &Peer{up: make(chan struct{})}
 	p.why = WhyKeepalive
-	p.attach(nil, "v", "", WhyKeepalive+" (the host was asleep for 5m0s)")
+	p.attach(nil, "v", "", "the controller closed the connection (the host was asleep for 5m0s)", "the host was asleep for 5m0s")
 	if got := p.Link().Why; got != WhyKeepalive+" (the host was asleep for 5m0s)" {
 		t.Fatalf("why = %q", got)
 	}
 	// What the controller saw itself is not overwritten.
 	p = &Peer{up: make(chan struct{})}
 	p.why = WhyKeepalive
-	p.attach(nil, "v", "", "the controller closed the connection")
+	p.attach(nil, "v", "", "the controller closed the connection", "")
 	if got := p.Link().Why; got != WhyKeepalive {
 		t.Fatalf("why = %q", got)
 	}
@@ -457,29 +457,29 @@ func TestCurlAcceptsThePinAndRejectsAnother(t *testing.T) {
 	}
 }
 
-func TestWatchdogExplainsItsOwnTimeouts(t *testing.T) {
+func TestWatchdogNotesWhatJustHappened(t *testing.T) {
 	w := &Watchdog{}
 	t0 := time.Now()
 	w.saw(t0, t0.Add(time.Second)) // an ordinary tick
-	if got := w.Explain(WhyKeepalive); got != WhyKeepalive {
+	if got := w.Note(); got != "" {
 		t.Fatalf("nothing happened, yet %q", got)
 	}
-	w.saw(t0, t0.Add(15*time.Second)) // the process did not run for 14s
-	if got := w.Explain(WhyKeepalive); !strings.Contains(got, "did not get to run for 14s") {
+	w.sawClocks(15*time.Second, 15*time.Second, time.Now()) // the process did not run for 14s
+	if got := w.Note(); !strings.Contains(got, "did not get to run for 14s") {
 		t.Fatalf("stall: %q", got)
 	}
-	if got := w.Explain(WhyReset); got != WhyReset {
-		t.Fatalf("only a timeout is explained: %q", got)
-	}
 	// Asleep: the wall clock moved 5 minutes, the monotonic clock one tick.
-	woke := t0.Add(time.Second)
-	wall := time.Unix(0, woke.UnixNano()).Add(5 * time.Minute)
-	w.sawClocks(time.Second, wall.Sub(time.Unix(0, t0.UnixNano())), time.Now())
-	if got := w.Explain(WhyKeepalive); !strings.Contains(got, "asleep for 5m0s") {
+	w.sawClocks(time.Second, 5*time.Minute+time.Second, time.Now())
+	if got := w.Note(); got != "the host was asleep for 5m0s" {
 		t.Fatalf("sleep: %q", got)
 	}
+	// A gap from a while ago does not explain a connection that ends now.
+	w.sawClocks(15*time.Second, 15*time.Second, time.Now().Add(-20*time.Second))
+	if got := w.Note(); got != "" {
+		t.Fatalf("stale: %q", got)
+	}
 	var none *Watchdog
-	if got := none.Explain(WhyKeepalive); got != WhyKeepalive {
+	if got := none.Note(); got != "" {
 		t.Fatalf("no watchdog: %q", got)
 	}
 }

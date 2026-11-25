@@ -42,6 +42,7 @@ const (
 	hdrArch    = "Pumasi-Arch"
 	hdrOS      = "Pumasi-Os"   // linux when absent (hosts from before other systems could join)
 	hdrWhy     = "Pumasi-Why"  // why the host's previous session ended, as the host saw it
+	hdrNote    = "Pumasi-Note" // what the host itself had to do with that end (it was stalled, asleep)
 	hdrStay    = "Pumasi-Stay" // why the host could not switch to the controller's build
 )
 
