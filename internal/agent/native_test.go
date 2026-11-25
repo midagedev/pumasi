@@ -142,3 +142,32 @@ func TestBootIDIsKnownAndSteady(t *testing.T) {
 	}
 	t.Logf("boot id %s", id)
 }
+
+func TestClassEnv(t *testing.T) {
+	base := []string{"HOME=/home/u", "PATH=/usr/bin:/bin", "LANG=C"}
+	if got := classEnv(base, Spec{}, "/r/x"); !slices.Equal(got, base) {
+		t.Fatalf("no class env must change nothing: %v", got)
+	}
+	got := classEnv(base, Spec{
+		Env:  map[string]string{"LANG": "en_US.UTF-8", "GRADLE_USER_HOME": "{runner}/gradle", "HOME": "{runner}"},
+		Path: []string{"/opt/java/bin", "{runner}/bin"},
+	}, "/r/x")
+	want := map[string]string{
+		"PATH": "/opt/java/bin" + string(os.PathListSeparator) + "/r/x/bin" + string(os.PathListSeparator) + "/usr/bin:/bin",
+		"LANG": "en_US.UTF-8", "GRADLE_USER_HOME": "/r/x/gradle", "HOME": "/r/x",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("each name once: %v", got)
+	}
+	for _, kv := range got {
+		k, v, _ := strings.Cut(kv, "=")
+		if want[k] != v {
+			t.Errorf("%s = %q, want %q", k, v, want[k])
+		}
+	}
+	// A class may set PATH outright; path: then goes in front of what the agent had, env wins.
+	got = classEnv(base, Spec{Env: map[string]string{"PATH": "/only"}}, "/r/x")
+	if !slices.Contains(got, "PATH=/only") || slices.Contains(got, "PATH=/usr/bin:/bin") {
+		t.Fatalf("env PATH replaces: %v", got)
+	}
+}

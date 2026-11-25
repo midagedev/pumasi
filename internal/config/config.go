@@ -87,6 +87,12 @@ type Class struct {
 	// runs-on is among them ([self-hosted, Linux, X64, ci-pool] takes over
 	// from fixed runners with those labels, workflows unchanged).
 	Labels []string `yaml:"labels"`
+	// Env is added to the environment of the class's runners, and so of their
+	// jobs: what a fixed runner got from its service unit or its .env file.
+	// {runner} in a value is the runner's own directory, removed with it.
+	Env map[string]string `yaml:"env"`
+	// Path goes in front of PATH of a native runner (a fixed runner's .path).
+	Path []string `yaml:"path"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
@@ -280,6 +286,8 @@ func expandHome(p string) string {
 // Names end up in runner names, container names and remote scripts.
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func (c *Config) validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("url is required")
@@ -316,6 +324,16 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate class %s", cl.Name)
 		}
 		classes[cl.Name] = true
+		for k, v := range cl.Env {
+			if !envKeyRE.MatchString(k) || strings.ContainsAny(v, "\n\x00") {
+				return fmt.Errorf("class %s: env %s: names are letters, digits and '_', values one line", cl.Name, k)
+			}
+		}
+		for _, p := range cl.Path {
+			if p == "" || strings.ContainsAny(p, "\n\x00") {
+				return fmt.Errorf("class %s: path: empty or multi-line entry", cl.Name)
+			}
+		}
 		if cl.OS != "linux" && cl.OS != "macos" && cl.OS != "windows" {
 			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
 		}
@@ -326,6 +344,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
 		case cl.Docker != "" && cl.Docker != "inside":
 			return fmt.Errorf("class %s: docker must be inside (or left out)", cl.Name)
+		case len(cl.Path) > 0 && cl.Driver != "native":
+			return fmt.Errorf("class %s: path is for native runners; a container has its image's PATH (set env: {PATH: ...} to replace it)", cl.Name)
 		case cl.Docker == "inside" && cl.Driver != "docker":
 			return fmt.Errorf("class %s: docker: inside is for container runners; a native runner uses the host's docker", cl.Name)
 		case cl.Driver == "docker" && cl.OS != "linux":

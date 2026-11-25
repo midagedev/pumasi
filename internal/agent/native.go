@@ -116,7 +116,7 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 	}
 	defer log.Close()
 	// The JIT config goes through the environment so it never lands on disk or in argv.
-	env := append(runnerEnv(os.Environ()), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
+	env := append(classEnv(runnerEnv(os.Environ()), s, dir), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
 	t, err := startTree(dir, s, env, log)
 	if err != nil {
 		return fail(fmt.Errorf("start runner: %w", err))

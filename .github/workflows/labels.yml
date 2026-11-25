@@ -13,6 +13,9 @@ on:
       seconds:
         description: "how long each job runs"
         default: "20"
+      show:
+        description: "environment variables to print (grep -E pattern on NAME=value)"
+        default: "^(LANG)="
 
 jobs:
   hold:
@@ -26,4 +29,5 @@ jobs:
       - shell: sh
         run: |
           echo "runner=$RUNNER_NAME job=${{ matrix.i }}"
+          env | grep -E '${{ inputs.show }}' | sort || true
           sleep ${{ inputs.seconds }}

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +36,53 @@ type Spec struct {
 	WorkDir string
 	// InnerDocker gives a container runner a docker daemon of its own.
 	InnerDocker bool
+	// Env is added to the runner's environment; Path goes in front of a native
+	// runner's PATH. "{runner}" in a value is the runner's own directory.
+	Env  map[string]string
+	Path []string
+}
+
+// The runner's own directory in the runner image.
+const containerHome = "/home/runner"
+
+// classEnv is env with the class's Path in front of PATH and its Env set,
+// "{runner}" replaced by dir. Names compare the way the OS compares them.
+func classEnv(env []string, s Spec, dir string) []string {
+	if len(s.Env) == 0 && len(s.Path) == 0 {
+		return env
+	}
+	same := func(a, b string) bool { return a == b }
+	if runtime.GOOS == "windows" {
+		same = strings.EqualFold
+	}
+	out := slices.Clone(env)
+	set := func(k, v string) {
+		out = slices.DeleteFunc(out, func(kv string) bool {
+			name, _, _ := strings.Cut(kv, "=")
+			return same(name, k)
+		})
+		out = append(out, k+"="+v)
+	}
+	if len(s.Path) > 0 {
+		key, old := "PATH", ""
+		for _, kv := range out {
+			if name, v, _ := strings.Cut(kv, "="); same(name, "PATH") {
+				key, old = name, v
+			}
+		}
+		parts := make([]string, 0, len(s.Path)+1)
+		for _, p := range s.Path {
+			parts = append(parts, strings.ReplaceAll(p, "{runner}", dir))
+		}
+		if old != "" {
+			parts = append(parts, old)
+		}
+		set(key, strings.Join(parts, string(os.PathListSeparator)))
+	}
+	for _, k := range slices.Sorted(maps.Keys(s.Env)) {
+		set(k, strings.ReplaceAll(s.Env[k], "{runner}", dir))
+	}
+	return out
 }
 
 // Container is a runner container as the driver sees it.
@@ -141,7 +191,8 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 		run = []string{"sh", "-c", innerDockerScript}
 	}
 	cmd := exec.CommandContext(ctx, "docker", append(append(args, image), run...)...)
-	cmd.Stdin = strings.NewReader("ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig + "\n")
+	env := classEnv([]string{"ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig}, Spec{Env: s.Env}, containerHome)
+	cmd.Stdin = strings.NewReader(strings.Join(env, "\n") + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if s.WorkDir != "" {

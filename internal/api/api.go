@@ -103,6 +103,10 @@ type StartRequest struct {
 	WorkDir string `json:"workDir,omitempty"`
 	// InnerDocker: a container runner with a docker daemon of its own.
 	InnerDocker bool `json:"innerDocker,omitempty"`
+	// Env is added to the runner's environment and Path goes in front of a
+	// native runner's PATH; "{runner}" in a value is the runner's own directory.
+	Env  map[string]string `json:"env,omitempty"`
+	Path []string          `json:"path,omitempty"`
 }
 
 // Client talks to one agent. BaseURL is resolved per call so a transport can

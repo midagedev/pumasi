@@ -55,16 +55,17 @@ type Controller struct {
 	mu sync.Mutex // guards class.stats and inflight
 	// Runners whose start request the agent has not answered yet (zero), or
 	// answered at that time: a snapshot asked for before then cannot show them.
-	inflight   map[string]time.Time
-	starts     sync.WaitGroup
-	lastDefer  map[string]deferRec
-	runCheck   map[int64]time.Time
-	status     Status // last round, for `pumasi status`
-	distDir    string
-	adopted    bool // the first round has reported what it found on the hosts
-	warmRounds int  // rounds the adoption report waited for an agent's first sample
-	book       *incidentBook
-	lastAlive  time.Time // when an earlier controller last ran (zero = never)
+	inflight    map[string]time.Time
+	starts      sync.WaitGroup
+	lastDefer   map[string]deferRec
+	runCheck    map[int64]time.Time
+	status      Status // last round, for `pumasi status`
+	distDir     string
+	adopted     bool     // the first round has reported what it found on the hosts
+	genericTold sync.Map // class/labels of jobs that asked only for generic labels: told once
+	warmRounds  int      // rounds the adoption report waited for an agent's first sample
+	book        *incidentBook
+	lastAlive   time.Time // when an earlier controller last ran (zero = never)
 	// Runners closed in this round because their host rebooted, per host.
 	rebootLost map[string][]ledger.Runner
 	rerunCheck map[int64]time.Time
@@ -195,8 +196,26 @@ func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 				name, strings.Join(has, ", "), strings.Join(want, ", "))
 		}
 		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]", cl.cfg.Name, strings.Join(cl.cfg.RunsOn(), ", ")))
+		if generic := genericOnly(cl.cfg.RunsOn()); len(cl.cfg.Labels) > 0 && len(generic) > 0 {
+			// GitHub sends a job here when all of its labels are among the class's.
+			c.log.Warn(fmt.Sprintf("class %s also takes jobs that ask for less than all of its labels, like runs-on: [%s]; a job that takes that way is named when it comes",
+				cl.cfg.Name, strings.Join(generic, ", ")))
+		}
 	}
 	return nil
+}
+
+// genericOnly is the labels among ls that every self-hosted runner of that
+// machine type has: a job asking only for these did not ask for this class.
+func genericOnly(ls []string) []string {
+	var out []string
+	for _, l := range ls {
+		switch strings.ToLower(l) {
+		case "self-hosted", "linux", "macos", "windows", "x64", "arm64", "arm":
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // sameLabels compares label sets the way GitHub matches them: without case or order.
@@ -384,6 +403,13 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 	for _, j := range msg.JobAssignedMessages {
 		if err := c.ledger.UpsertDemand(job(cls, j.JobMessageBase), now); err != nil {
 			return err
+		}
+		if len(s.cl.cfg.Labels) > 0 && len(j.RequestLabels) > 0 && len(genericOnly(j.RequestLabels)) == len(j.RequestLabels) {
+			key := strings.ToLower(strings.Join(j.RequestLabels, ","))
+			if _, told := c.genericTold.LoadOrStore(cls+"/"+key, true); !told {
+				c.log.Warn(fmt.Sprintf("job %s of %s asks only for runs-on: [%s] and came to class %s, whose labels include them",
+					j.JobDisplayName, j.RepositoryName, strings.Join(j.RequestLabels, ", "), cls))
+			}
 		}
 	}
 	for _, j := range msg.JobStartedMessages {
@@ -974,7 +1000,8 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	defer cancel()
 	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
 		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
-		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir, InnerDocker: cl.cfg.Docker == "inside"})
+		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir, InnerDocker: cl.cfg.Docker == "inside",
+		Env: cl.cfg.Env, Path: cl.cfg.Path})
 	var se *api.StatusError
 	switch {
 	case err == nil:

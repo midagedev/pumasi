@@ -150,3 +150,29 @@ func TestClassLabels(t *testing.T) {
 		t.Fatalf("labels %s, scale set %s", got, cl.ScaleSet())
 	}
 }
+
+func TestClassEnvAndPath(t *testing.T) {
+	load := func(class string) error {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		if err := os.WriteFile(p, []byte("url: u\nclasses: ["+class+"]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(p)
+		return err
+	}
+	if err := load(`{name: a, cpus: 1, memory: 1G, driver: native, env: {JAVA_HOME: /opt/java, HOME: "{runner}"}, path: [/opt/java/bin]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := load(`{name: a, cpus: 1, memory: 1G, env: {LANG: C}}`); err != nil {
+		t.Fatalf("env on a container class: %v", err)
+	}
+	for _, bad := range []string{
+		`{name: a, cpus: 1, memory: 1G, path: [/x]}`,                       // a container has its image's PATH
+		`{name: a, cpus: 1, memory: 1G, env: {"A B": x}}`,                  // not a variable name
+		`{name: a, cpus: 1, memory: 1G, driver: native, env: {A: "x\ny"}}`, // one line
+	} {
+		if err := load(bad); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}
