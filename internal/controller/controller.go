@@ -73,6 +73,10 @@ type Controller struct {
 	rerunWanted map[string]string
 	// LedgerMoved names the damaged ledger that was set aside at startup ("" = none).
 	LedgerMoved string
+	// Registered runners (classes with slots:); Evaluate's goroutine only.
+	slotSeen map[string]string // run -> the state it was last told in
+	slotJobs map[string]bool   // ended jobs already recorded
+	slotTold map[string]bool   // classes told to have no registered runner
 }
 
 // github is what the controller asks of GitHub's scale set service.
@@ -125,16 +129,24 @@ type deferRec struct {
 	at    time.Time
 }
 
+// New makes a controller. token may be empty when every class is one of
+// registered runners (slots:): then nothing asks GitHub for anything.
 func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *slog.Logger) (*Controller, error) {
-	gh, err := scaleset.NewClientWithPersonalAccessToken(scaleset.NewClientWithPersonalAccessTokenConfig{
-		GitHubConfigURL:     cfg.URL,
-		PersonalAccessToken: token,
-		SystemInfo:          scaleset.SystemInfo{System: "pumasi", Subsystem: "controller", CommitSHA: "NA", Version: "0.1.0"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("github client: %w", err)
+	var gh github
+	if token != "" {
+		client, err := scaleset.NewClientWithPersonalAccessToken(scaleset.NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL:     cfg.URL,
+			PersonalAccessToken: token,
+			SystemInfo:          scaleset.SystemInfo{System: "pumasi", Subsystem: "controller", CommitSHA: "NA", Version: "0.1.0"},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("github client: %w", err)
+		}
+		gh = client
+	} else if cfg.NeedsToken() {
+		return nil, errors.New("a GitHub token is needed: a class without slots: is a scale set")
 	}
-	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
+	c := &Controller{cfg: cfg, gh: gh, token: token, slotSeen: map[string]string{}, slotJobs: map[string]bool{}, slotTold: map[string]bool{}, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
 		kick: make(chan struct{}, 1), inflight: map[string]time.Time{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		c.hosts = append(c.hosts, newHost(hc))
@@ -169,6 +181,11 @@ const runnerGroup = 1
 // EnsureScaleSets finds or creates the scale set of every class.
 func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 	for _, cl := range c.classes {
+		if cl.cfg.Registered() {
+			c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]  registered runners, up to %d on a host (`pumasi register`, or `pumasi adopt` on a host)",
+				cl.cfg.Name, strings.Join(cl.cfg.RunsOn(), ", "), cl.cfg.Slots))
+			continue
+		}
 		name := cl.cfg.ScaleSet()
 		var labels []scaleset.Label
 		for _, l := range cl.cfg.RunsOn() {
@@ -277,6 +294,9 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 	c.log.Info("listening for jobs (Ctrl-C to stop)")
 	var wg sync.WaitGroup
 	for _, cl := range c.classes {
+		if cl.cfg.Registered() {
+			continue // its runners listen themselves, on the hosts
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -509,6 +529,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	}
 	_ = os.WriteFile(c.aliveFile(), nil, 0o600)
 	c.hostIncidents(now, live)
+	c.syncSlots(ctx, now)
 	snap := c.decideSnapshot(now, runners)
 	plan := decide.Decide(snap)
 
@@ -734,6 +755,12 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			}
 			h.closed = c.closedReason(h)
 			dh.Closed, dh.NoNative, dh.Paths = h.closed, a.NoNative, a.Paths
+			for _, sl := range a.Slots {
+				if cl := c.classByName(sl.Class); cl != nil && sl.State == "busy" {
+					dh.HeldCPUs += cl.cfg.CPUs
+					dh.HeldMem += int64(cl.cfg.Memory)
+				}
+			}
 		}
 		s.Hosts = append(s.Hosts, dh)
 	}
@@ -750,6 +777,9 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, cl := range c.classes {
+		if cl.cfg.Registered() {
+			continue // placed by the hosts themselves, from their plan
+		}
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
 			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve})
@@ -909,6 +939,10 @@ func alive(s *api.Snapshot, runner string) bool {
 // maxDuration does not. When GitHub cannot be asked, the runner stays for
 // this round.
 func (c *Controller) release(ctx context.Context, name string, lr ledger.Runner, why string) bool {
+	if c.gh == nil {
+		c.log.Warn(fmt.Sprintf("runner %s left alone (%s): this controller runs without a GitHub token and cannot ask whether it holds a job", name, why))
+		return false
+	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	id := lr.RunnerID
@@ -1060,6 +1094,9 @@ func (c *Controller) decision(at time.Time, class, host, action, runner, reason 
 // unregister removes GitHub registrations of runners that are gone. A runner
 // that ended normally has removed itself already (RunnerNotFound).
 func (c *Controller) unregister(ctx context.Context) {
+	if c.gh == nil {
+		return
+	}
 	rs, err := c.ledger.PendingUnregister()
 	if err != nil {
 		c.log.Error("ledger pending", "err", err)
@@ -1399,6 +1436,9 @@ func (c *Controller) shutdown() {
 		}
 	}
 	c.unregister(ctx)
+	if c.hasSlots() {
+		c.log.Info("registered runners go on listening and running jobs on the hosts by their last plan")
+	}
 	if running > 0 {
 		c.log.Info(fmt.Sprintf("stopped  %d jobs still running on the hosts; `pumasi up` picks them up again (%d idle runners removed)", running, removed))
 		return
@@ -1450,19 +1490,23 @@ func (c *Controller) down(ctx context.Context, force bool) error {
 		}
 	}
 	errs := make([]error, len(c.hosts))
+	runnerToken := c.removalToken(ctx)
 	for i, h := range c.hosts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			var did string
 			var err error
 			switch {
 			case h.connected():
-				var n string
-				if n, err = h.leave(cctx); err == nil {
-					did = fmt.Sprintf("agent stopped, %s runners removed, pumasi's files removed", n)
+				var res api.LeaveResult
+				if res, err = h.leave(cctx, runnerToken); err == nil {
+					did = fmt.Sprintf("agent stopped, %d runners removed, pumasi's files removed", res.Containers)
+					for _, line := range res.Slots {
+						c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, line))
+					}
 				}
 			case h.cfg.SSH != "":
 				did, err = leaveOverSSH(cctx, h.cfg, force)
@@ -1489,6 +1533,9 @@ func (c *Controller) down(ctx context.Context, force bool) error {
 		c.log.Error("ledger demand", "err", err)
 	}
 	for _, cl := range c.cfg.Classes {
+		if cl.Registered() || c.gh == nil {
+			continue
+		}
 		set, err := c.gh.GetRunnerScaleSet(ctx, runnerGroup, cl.ScaleSet())
 		if err != nil || set == nil {
 			continue

@@ -30,13 +30,19 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (refuses while jobs run, unless --force)
   pumasi invite  print the line that joins a host to this controller
                  (one host within the hour; --uses N and --ttl 24h say otherwise)
+  pumasi register  classes with slots: — register runners on the connected hosts with a
+                 one-time registration token (in PUMASI_RUNNER_TOKEN or on stdin)
 
 On a host that joined:
   pumasi doctor  check the way to the controller, what runners need here, and the agent
+  pumasi adopt   classes with slots: — take over runners that are registered already
+                 (pumasi adopt [-class NAME] <runner directory>...; nothing changes on GitHub)
+  pumasi release give such a runner up again (its listener is stopped when no job is lost)
   pumasi leave   remove this host from the controller and pumasi from this host
 
-Flags: -config pumasi.yaml (up, status, open, down, invite), -v (up: verbose log).
-up and down read the GitHub token from PUMASI_GITHUB_TOKEN.
+Flags: -config pumasi.yaml (up, status, open, down, invite, register), -v (up: verbose log).
+up and down read the GitHub token from PUMASI_GITHUB_TOKEN; it is not needed when
+every class has slots: (registered runners listen with their own credentials).
 `
 
 func main() {
@@ -65,6 +71,12 @@ func main() {
 		err = runDoctor(args)
 	case "leave":
 		err = runLeave(args)
+	case "register":
+		err = runRegister(args)
+	case "adopt":
+		err = runAdopt(args)
+	case "release":
+		err = runRelease(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -90,8 +102,8 @@ func runController(args []string, down bool) error {
 		return err
 	}
 	token := os.Getenv("PUMASI_GITHUB_TOKEN")
-	if token == "" {
-		return errors.New("PUMASI_GITHUB_TOKEN is empty; e.g. PUMASI_GITHUB_TOKEN=$(gh auth token) pumasi up")
+	if token == "" && cfg.NeedsToken() {
+		return errors.New("PUMASI_GITHUB_TOKEN is empty; e.g. PUMASI_GITHUB_TOKEN=$(gh auth token) pumasi up (a class without slots: is a scale set, which needs the token; classes with slots: do not)")
 	}
 	exe, err := os.Executable()
 	if err != nil {

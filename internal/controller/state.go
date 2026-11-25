@@ -15,6 +15,30 @@ type State struct {
 	Hosts      []HostState       `json:"hosts"`
 	Runners    []RunnerState     `json:"runners"`
 	Waiting    []WaitingState    `json:"waiting"`
+	// Slots are the registered runners of classes with slots:, as the hosts
+	// last reported them. Empty without a running controller: the hosts keep
+	// them, not the ledger.
+	Slots []SlotState `json:"slots"`
+	// Unknown names the classes with slots:. GitHub hands their jobs to
+	// whichever runner listens and tells nobody how many wait.
+	Unknown []string `json:"unknown"`
+}
+
+// SlotState is one registered runner on a host.
+type SlotState struct {
+	Host   string `json:"host"`
+	Class  string `json:"class"`
+	N      int    `json:"n"`
+	Name   string `json:"name"`   // GitHub's name of the runner
+	Origin string `json:"origin"` // registered | adopted
+	State  string `json:"state"`  // off | starting | listening | busy | failing
+	Why    string `json:"why"`
+	Job    string `json:"job"`
+	// How long it has listened, or run its job.
+	AgeSeconds int64   `json:"ageSeconds"`
+	CPUSec     float64 `json:"cpuSec"`
+	MemBytes   int64   `json:"memBytes"`
+	MemLimit   int64   `json:"memLimit"`
 }
 
 type HostState struct {
@@ -28,7 +52,10 @@ type HostState struct {
 	// CPU pressure (PSI some avg10, percent); nil when the agent did not answer.
 	CPUPressure *float64 `json:"cpuPressure"`
 	Runners     int      `json:"runners"`
-	Reachable   *bool    `json:"reachable"` // nil = unknown, no controller running
+	// Listening: registered runners here that wait for a job. They hold
+	// nothing of the budget until they take one.
+	Listening int   `json:"listening"`
+	Reachable *bool `json:"reachable"` // nil = unknown, no controller running
 	// Closed: why the host, though reachable, gets no new runners ("quarantined", "disk 4% free").
 	Closed string `json:"closed"`
 	// Free share of the disk that holds the runners, in percent; nil when unknown.
@@ -66,7 +93,12 @@ type WaitingState struct {
 // CollectState joins the ledger with what a running controller knows (live, ok).
 // Without a controller it is the ledger alone.
 func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, now time.Time) (State, error) {
-	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}}
+	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Slots: []SlotState{}, Unknown: []string{}}
+	for _, c := range cfg.Classes {
+		if c.Registered() {
+			out.Unknown = append(out.Unknown, c.Name)
+		}
+	}
 	out.Controller = ok
 	var err error
 
@@ -130,6 +162,37 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			h.Runners++
 			h.UsedCPUs += size[r.Class].CPUs
 			h.UsedMem += int64(size[r.Class].Memory)
+		}
+	}
+
+	for _, h := range out.Hosts {
+		snap := live.Hosts[h.Name]
+		if snap == nil {
+			continue
+		}
+		for _, s := range snap.Slots {
+			ss := SlotState{Host: h.Name, Class: s.Class, N: s.N, Name: s.Name, Origin: s.Origin, State: s.State, Why: s.Why, Job: s.Job, MemLimit: int64(size[s.Class].Memory)}
+			if s.Runner != nil {
+				ss.CPUSec, ss.MemBytes = s.Runner.CPUSec, s.Runner.MemCurrent
+				// Since it took the job when it runs one, else since it started.
+				since := s.Runner.StartedAt
+				if s.State == "busy" && s.Runner.JobStartedAt != nil {
+					since = s.Runner.JobStartedAt
+				}
+				if since != nil {
+					ss.AgeSeconds = max(0, int64(now.Sub(*since).Seconds()))
+				}
+			}
+			out.Slots = append(out.Slots, ss)
+			hs := &out.Hosts[hosts[h.Name]]
+			switch s.State {
+			case "busy":
+				hs.Runners++
+				hs.UsedCPUs += size[s.Class].CPUs
+				hs.UsedMem += int64(size[s.Class].Memory)
+			case "listening", "starting":
+				hs.Listening++
+			}
 		}
 	}
 

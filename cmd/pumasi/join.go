@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -340,9 +341,12 @@ func preflight(ctx context.Context, w io.Writer, hc join.HostConfig, token strin
 func runners(ctx context.Context, p hostPaths, all bool) []string {
 	drv, _ := agent.Platform("pumasi", p.dir)
 	cs, _ := drv.List(ctx)
+	// An idle listener of a registered runner is stopped without loss; only
+	// one with a job counts as up.
+	_, idle := agent.SlotRuns(ctx, p.dir)
 	var names []string
 	for _, c := range cs {
-		if all || c.State == "running" {
+		if all || (c.State == "running" && !slices.Contains(idle, c.Name)) {
 			names = append(names, c.Name)
 		}
 	}
@@ -465,10 +469,19 @@ func runLeave(args []string) error {
 		}
 	}
 	stopService(p, true)
+	// Registered runners that only listen close their sessions before they go.
+	if busy := agent.StopSlotListeners(ctx, p.dir); len(busy) > 0 && !*force {
+		return fmt.Errorf("%d registered runners took a job while this host was leaving:\n  %s\nthe agent is stopped and their jobs go on; run `pumasi leave` again when they are done",
+			len(busy), strings.Join(busy, "\n  "))
+	}
 	n, err := removeRunners(ctx, p)
 	if err != nil {
 		return err
 	}
+	slots := agent.GiveUpSlots(ctx, p.dir, keepDir(), strings.TrimSpace(os.Getenv(controller.RunnerTokenEnv)))
 	fmt.Printf("left: agent stopped, %d runners removed, %s; %s\n", n, removeFiles(p), told)
+	for _, line := range slots {
+		fmt.Println("  " + line)
+	}
 	return nil
 }

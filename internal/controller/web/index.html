@@ -36,8 +36,17 @@
     </table></div>
   </section>
 
+  <section id="slots-section" hidden>
+    <h2>Registered runners</h2>
+    <div class="scroll"><table id="slots">
+      <thead><tr><th>Runner</th><th class="opt">Class</th><th>Host</th><th>State</th><th>Job</th><th class="num opt">Up</th><th class="num opt">CPU</th><th>Memory</th><th>Why</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
   <section>
     <h2>Waiting</h2>
+    <p class="empty" id="waiting-unknown" hidden></p>
     <p class="empty" id="waiting-empty" hidden>no jobs waiting</p>
     <div class="scroll"><table id="waiting">
       <thead><tr><th>Class</th><th class="num">Jobs</th><th class="num">Oldest</th><th>Why</th></tr></thead>

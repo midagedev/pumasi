@@ -1,7 +1,11 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -89,6 +93,26 @@ func ReadStatus(cfg *config.Config) (st Status, ok bool) {
 	}
 	defer resp.Body.Close()
 	return st, json.NewDecoder(resp.Body).Decode(&st) == nil
+}
+
+// RequestRegister hands a registration token to the running controller.
+func RequestRegister(cfg *config.Config, token, class, host string) ([]RegisterOutcome, error) {
+	b, err := os.ReadFile(addrFile(cfg))
+	if err != nil {
+		return nil, errors.New("no controller running: `pumasi up` passes the token on to the hosts")
+	}
+	body, _ := json.Marshal(map[string]string{"token": token, "class": class, "host": host})
+	resp, err := (&http.Client{Timeout: 12 * time.Minute}).Post("http://"+strings.TrimSpace(string(b))+"/api/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("no controller answers (is `pumasi up` running?): %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, errors.New(strings.TrimSpace(string(msg)))
+	}
+	var out []RegisterOutcome
+	return out, json.NewDecoder(resp.Body).Decode(&out)
 }
 
 // DashboardURL is where the running controller serves its dashboard ("" = none running).

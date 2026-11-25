@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"mime"
 	"net/http"
 	"slices"
 	"time"
@@ -38,6 +39,26 @@ func (c *Controller) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/job", func(w http.ResponseWriter, r *http.Request) {
 		ds, tail, err := c.ledger.RunnerHistory(r.URL.Query().Get("runner"))
 		reply(w, map[string]any{"decisions": ds, "logTail": tail}, err)
+	})
+	// The one request that changes something: `pumasi register` hands over a
+	// registration token for the hosts. Only as JSON: a page in a browser
+	// cannot send that to another origin without being asked first.
+	mux.HandleFunc("POST /api/register", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Token, Class, Host string }
+		if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+			http.Error(w, "application/json only", http.StatusUnsupportedMediaType)
+			return
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil || req.Token == "" {
+			http.Error(w, "a registration token is required", http.StatusBadRequest)
+			return
+		}
+		out, err := c.Register(r.Context(), req.Token, req.Class, req.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, out)
 	})
 	mux.HandleFunc("GET /api/series", func(w http.ResponseWriter, _ *http.Request) {
 		s, err := c.series(c.now())
