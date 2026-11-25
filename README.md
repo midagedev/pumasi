@@ -108,6 +108,8 @@ hosts:
 | `driver` | `docker`(컨테이너) 또는 `native`(호스트 사용자의 프로세스 — 호스트의 경로·자격·docker 가 그대로 보인다) | linux 는 `docker`, macos·windows 는 `native` 만 |
 | `mounts` | 컨테이너 러너에 호스트 경로를 같은 경로로 붙인다(`/srv/cache`, `/srv/keys:ro`). 그 경로가 모두 있는 호스트에만 놓인다 | 없음 |
 | `hosts` | 그 호스트들에만 놓는다. 묶인 호스트가 차면 다른 곳이 비어 있어도 기다린다 | 모든 호스트 |
+| `env` | 러너(와 그 잡)의 환경에 더할 변수. 고정 러너가 서비스 unit 이나 `.env` 로 주던 것(`JAVA_HOME`, `DOCKER_HOST`, `LANG`). 값 안의 `{runner}` 는 그 러너의 디렉터리(러너와 함께 지워진다)로 바뀐다 | 없음 |
+| `path` | native 러너의 `PATH` 앞에 붙일 디렉터리(고정 러너의 `.path`). 컨테이너 클래스에는 못 적는다 | 없음 |
 | `reserve` | 이 클래스 러너 N개가 들어갈 자리를 다른 클래스가 못 쓰게 남겨 둔다(배포 잡이 빌드 뒤에 서지 않게) | 0 |
 | `maxDuration` | 잡이 이보다 오래 돌면 러너를 멈춘다(`90m`). pumasi 가 도는 잡을 건드리는 유일한 설정이다 | 없음 |
 | `docker: inside` | 컨테이너 러너에 자기 docker 데몬을 준다. 잡이 띄운 컨테이너·compose 스택이 클래스 한도와 수치 안에 들어가고 러너와 함께 사라진다. 러너 컨테이너가 **privileged** 가 된다 | 없음 |
@@ -134,13 +136,23 @@ classes:
 
 ```yaml
 classes:   # 워크플로우는 runs-on: [self-hosted, Linux, X64, ci-pool] 그대로
-  - {name: shared, cpus: 4, memory: 8G, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}
+  - name: shared
+    cpus: 4
+    memory: 8G
+    driver: native
+    labels: [self-hosted, Linux, X64, ci-pool]
+    env: {JAVA_HOME: /usr/lib/jvm/java-21, DOCKER_HOST: unix:///run/user/1000/docker.sock}
+    path: [/opt/tools/bin]
 ```
 
 - 잡의 `runs-on` 이 그 라벨의 부분집합이면(`[self-hosted, ci-pool]`) 온다. 대소문자는 가리지 않는다. `self-hosted`·OS·아키텍처 라벨도 그냥 적으면 된다.
 - **섞여 돌지 않는다.** 그 라벨에 맞는 scale set 이 생기는 순간부터 그 잡은 전부 scale set 으로 오고, 같은 라벨의 고정 러너는 idle 이어도 잡을 받지 못한다.
   `pumasi up` 이 꺼져 있거나 자리가 없으면 잡은 고정 러너로 넘어가지 않고 기다린다. 그러니 옛 러너를 하나씩 멈추며 옮기는 것이 아니라 **라벨 단위로 한 번에 넘어온다.**
 - **되돌리기는 `pumasi down`**(scale set 삭제)이다. 그 뒤의 잡은 고정 러너가 바로 받고, 지우는 순간 기다리던 잡은 3 ~ 4분 뒤에 고정 러너로 간다. 넘어오는 동안 고정 러너는 켜 둔 채로 둔다.
+- **라벨이 넓으면 남의 잡도 온다.** 부분집합이면 오므로 `[self-hosted, Linux, X64, ci-pool]` 인 클래스는 `runs-on: self-hosted` 나 `[self-hosted, Linux]` 만 적은 잡도 전부 가져간다.
+  `up` 이 시작할 때 그 조합을 한 줄로 경고하고, 그런 잡이 실제로 오면 잡 이름과 함께 한 번 더 말한다. 그런 워크플로우가 있으면 먼저 라벨을 좁힌다.
+- 고정 러너가 주던 환경은 클래스의 `env`·`path` 로 준다. native 러너의 잡은 **에이전트 서비스의 환경**을 물려받는다 — 초대 줄을 실행한 셸의 환경이 아니다
+  (Mac 은 그때의 `PATH` 만 가져가고, Linux 는 systemd user 의 기본 `PATH` 다). 러너마다 따로 두던 것은 `{runner}` 로: `env: {HOME: "{runner}", GRADLE_USER_HOME: "{runner}/gradle"}`.
 - 라벨은 scale set 을 만들 때 정해진다. 바꾸려면 `pumasi down` 뒤 다시 `up` 하거나 클래스 이름을 바꾼다(`up` 이 그렇게 말한다).
 - 고정 러너처럼 호스트의 경로·자격·docker 를 쓰는 잡은 `driver: native` 로 시작하고, 잡끼리 호스트 디렉터리로 넘기는 것이 있으면 `hosts:` 로 한 머신에 묶는다.
   넘기는 것이 없는 클래스부터 `hosts:` 를 풀고, 호스트를 안 쓰는 잡은 컨테이너 클래스로 옮긴다. 일회용 러너라서 달라지는 것은 [설계](docs/design.md#고정-러너에서-옮길-때-달라지는-것).

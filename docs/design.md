@@ -124,6 +124,9 @@ ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전�
 | 호스트의 것 | 안 보인다(`mounts` 로 붙인 것만) | 전부 보인다 | 전부 보인다 | 전부 보인다 |
 
 - **러너가 잡을 받았는지는 에이전트가 먼저 안다.** 러너 출력의 `Running job` 줄을 읽어 busy 를 알린다(GitHub 의 메시지는 30초쯤 늦다).
+- **러너의 환경** = 에이전트의 환경(native; 자격처럼 보이는 이름은 뺀다) 또는 이미지의 환경(컨테이너) + 클래스의 `env`. native 는 `path` 를 `PATH` 앞에 붙인다. `env` 가 이긴다.
+  값의 `{runner}` 는 그 러너의 디렉터리다(native: `<러너 루트>/<이름>`, 컨테이너: `/home/runner`). 다른 변수 참조(`$PATH`)는 풀지 않는다 — 그래서 `path` 가 따로 있다.
+  에이전트의 환경은 서비스 관리자가 준 것이다: Mac 의 LaunchAgent 는 가입할 때의 `PATH` 만, Linux 의 systemd user unit 은 user manager 의 기본값.
 - **JIT 설정은 환경 변수로 넘긴다**(인자는 `ps` 에 보인다). 에이전트의 환경에서 자격처럼 보이는 것(`*TOKEN*`, `*SECRET*`, `PUMASI_*`)은 러너에 넘기지 않는다.
 - **러너 판**은 `image` 의 태그다(`ghcr.io/actions/actions-runner:2.338.2`). 컨테이너는 그 이미지를 쓰고, native 는 태그에서 판 번호를 읽어 같은 판의 배포판을
   처음 한 번 받는다(`~/.cache/pumasi/dist`, sha256 을 GitHub release 의 digest 와 대조한 뒤에만 푼다). **태그가 `:latest` 면 native 러너는 뜨지 못한다.** 러너의 자체 업데이트는 꺼져 있어 판은 사람이 올린다.

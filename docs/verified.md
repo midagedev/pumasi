@@ -56,6 +56,8 @@
 | 러너 루트(홈 밖) | 실물(Linux·Windows) / 유닛(Mac) | Mac 은 디렉터리 만들고 clone 하는 테스트까지 |
 | 함께 쓰는 배포판을 읽기 전용으로, 손댄 것은 새로 받기 | 실물 | Linux·Windows |
 | 지우지 못한 파일 → `.trash/` 와 `leftover` 사건 | 실물 | 잡이 컨테이너로 남긴 root 의 디렉터리 |
+| 클래스 `env`·`path`·`{runner}` | 실물(Mac native) / 유닛 | 잡에서 찍은 값이 설정대로, `path` 는 에이전트의 `PATH` 앞에. 초대 줄을 실행한 셸의 변수는 잡에 없다. 컨테이너와 Linux native 는 유닛뿐 |
+| 넓은 라벨 경고 | 실물 | `runs-on: [self-hosted]` 만 적은 잡이 오자 잡 이름과 함께 경고 한 줄 |
 | `image` 가 `:latest` 일 때 native 러너 | 미확인 | 코드로는 판 번호를 못 읽어 뜨지 않는다 |
 | Mac 수치(cpu 초, 메모리 peak) | 실물 | `ps`·`top` 과 일치 |
 | Windows: 책상에 로그온한 세션(입력 감지, 로그온 때 시작, 창) | 미확인 | ssh 세션에서만 붙여 봤다 |
