@@ -292,6 +292,7 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 			a.dataMu.Unlock()
 		}
 	}
+	tail := a.drv.LogTail(ctx, name, 40)
 	if err := a.drv.Remove(ctx, name); err != nil {
 		return api.Runner{}, err
 	}
@@ -301,7 +302,9 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 	if !ok {
 		return api.Runner{Name: name, State: "unknown"}, nil
 	}
-	return r.Runner, nil
+	out := r.Runner
+	out.LogTail = tail
+	return out, nil
 }
 
 // Handler serves the agent API.

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pumasi</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>pumasi</h1>
+  <span id="url"></span>
+  <span id="updated"></span>
+</header>
+
+<main>
+  <section id="problems" hidden>
+    <h2>Problems</h2>
+    <ul id="problem-list"></ul>
+  </section>
+
+  <section>
+    <h2>Hosts</h2>
+    <div class="scroll"><table id="hosts">
+      <thead><tr><th>Host</th><th class="opt">Kind</th><th>CPUs</th><th>Memory</th><th class="num">CPU pressure</th><th class="num">Runners</th><th>State</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Runners</h2>
+    <p class="empty" id="runners-empty" hidden>no runners</p>
+    <div class="scroll"><table id="runners">
+      <thead><tr><th>Runner</th><th>Class</th><th>Host</th><th>State</th><th>Job</th><th class="num">Age</th><th class="num opt">CPU</th><th>Memory</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Waiting</h2>
+    <p class="empty" id="waiting-empty" hidden>no jobs waiting</p>
+    <div class="scroll"><table id="waiting">
+      <thead><tr><th>Class</th><th class="num">Jobs</th><th class="num">Oldest</th><th>Why</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Recent jobs</h2>
+    <p class="empty" id="jobs-empty" hidden>no finished jobs yet</p>
+    <div class="scroll"><table id="jobs">
+      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Last 24 hours</h2>
+    <div id="charts"></div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -95,6 +96,13 @@ func Open(path string) (*Ledger, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
+	}
+	// Columns added after the first release; "duplicate column" means it is there.
+	for _, col := range []string{"runners ADD COLUMN log_tail TEXT"} {
+		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("schema: %w", err)
+		}
 	}
 	return &Ledger{db: db}, nil
 }
@@ -405,4 +413,132 @@ func (l *Ledger) Sent(id int64, at time.Time, sendErr error) error {
 		return l.exec(`UPDATE outbox SET attempts=attempts+1, error=? WHERE id=?`, sendErr.Error(), id)
 	}
 	return l.exec(`UPDATE outbox SET attempts=attempts+1, error=NULL, sent_at=? WHERE id=?`, ts(at), id)
+}
+
+// FinishedJob is a runner whose container is gone, with what its job cost.
+type FinishedJob struct {
+	Runner      string    `json:"runner"`
+	Class       string    `json:"class"`
+	Host        string    `json:"host"`
+	Job         string    `json:"job"`
+	Repo        string    `json:"repo"`
+	RunID       int64     `json:"runId"`
+	State       string    `json:"state"`
+	Result      string    `json:"result"` // GitHub's result; empty when the runner never got a job
+	Reason      string    `json:"reason"`
+	CreatedAt   time.Time `json:"createdAt"`
+	StartedAt   time.Time `json:"startedAt,omitzero"`
+	FinishedAt  time.Time `json:"finishedAt,omitzero"`
+	WaitSec     float64   `json:"waitSec"` // job first seen -> job started
+	RunSec      float64   `json:"runSec"`
+	ProvisionMs int64     `json:"provisionMs"`
+	CPUSec      float64   `json:"cpuSec"`
+	MemPeak     int64     `json:"memPeak"`
+	ExitCode    *int      `json:"exitCode"`
+}
+
+// RecentJobs are the newest runners that are over, newest first.
+func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
+	rows, err := l.db.Query(`SELECT r.name, r.class, r.host, COALESCE(r.job,''), COALESCE(r.repo,''), COALESCE(r.run_id,0),
+	    r.state, COALESCE(r.result,''), COALESCE(r.reason,''), r.created_at, r.started_at, r.finished_at,
+	    COALESCE((julianday(r.started_at)-julianday(d.first_seen))*86400, 0),
+	    COALESCE((julianday(r.finished_at)-julianday(r.started_at))*86400, 0),
+	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code
+	  FROM runners r LEFT JOIN demand d ON d.job_id = r.assigned_job_id
+	  WHERE r.removed_at IS NOT NULL OR r.state IN ('failed','lost')
+	  ORDER BY COALESCE(r.finished_at, r.removed_at, r.created_at) DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []FinishedJob{}
+	for rows.Next() {
+		var j FinishedJob
+		var created, started, finished sql.NullString
+		var exit sql.NullInt64
+		if err := rows.Scan(&j.Runner, &j.Class, &j.Host, &j.Job, &j.Repo, &j.RunID, &j.State, &j.Result, &j.Reason,
+			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit); err != nil {
+			return nil, err
+		}
+		j.CreatedAt, j.StartedAt, j.FinishedAt = parseTS(created), parseTS(started), parseTS(finished)
+		if exit.Valid {
+			c := int(exit.Int64)
+			j.ExitCode = &c
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// Decision is one placement decision as it was recorded.
+type Decision struct {
+	At     time.Time `json:"at"`
+	Action string    `json:"action"`
+	Host   string    `json:"host"`
+	Reason string    `json:"reason"`
+}
+
+// RunnerHistory is everything recorded about one runner: its decisions, the
+// incidents that name it and the last lines of its output.
+func (l *Ledger) RunnerHistory(name string) (ds []Decision, logTail string, err error) {
+	rows, err := l.db.Query(`SELECT at, action, COALESCE(host,''), COALESCE(reason,'') FROM decisions WHERE runner=? ORDER BY id`, name)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	ds = []Decision{}
+	for rows.Next() {
+		var d Decision
+		var at sql.NullString
+		if err := rows.Scan(&at, &d.Action, &d.Host, &d.Reason); err != nil {
+			return nil, "", err
+		}
+		d.At = parseTS(at)
+		ds = append(ds, d)
+	}
+	var tail sql.NullString
+	_ = l.db.QueryRow(`SELECT log_tail FROM runners WHERE name=?`, name).Scan(&tail)
+	return ds, tail.String, rows.Err()
+}
+
+func (l *Ledger) SetLogTail(name, tail string) error {
+	return l.exec(`UPDATE runners SET log_tail=? WHERE name=?`, tail, name)
+}
+
+// Span is something that occupied time: a runner on a host, or a job waiting.
+type Span struct {
+	Class, Host string
+	From, To    time.Time // To is zero while it still lasts
+}
+
+// RunnerSpans are runners alive at some point since `since`.
+func (l *Ledger) RunnerSpans(since time.Time) ([]Span, error) {
+	return l.spans(`SELECT class, host, created_at, COALESCE(removed_at, CASE WHEN state IN ('failed','lost') THEN COALESCE(finished_at, created_at) END)
+	  FROM runners WHERE COALESCE(removed_at, 'z') >= ?`, since)
+}
+
+// WaitSpans are jobs waiting at some point since `since`, from first seen to
+// the moment a runner took them (or the wait ended otherwise).
+func (l *Ledger) WaitSpans(since time.Time) ([]Span, error) {
+	return l.spans(`SELECT class, CASE WHEN served_by LIKE 'unassigned-%' OR served_by IN ('down','ttl') OR served_by LIKE 'run-%' THEN '' ELSE 'served' END,
+	  first_seen, closed_at FROM demand WHERE COALESCE(closed_at, 'z') >= ?`, since)
+}
+
+func (l *Ledger) spans(q string, since time.Time) ([]Span, error) {
+	rows, err := l.db.Query(q, ts(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Span
+	for rows.Next() {
+		var s Span
+		var from, to sql.NullString
+		if err := rows.Scan(&s.Class, &s.Host, &from, &to); err != nil {
+			return nil, err
+		}
+		s.From, s.To = parseTS(from), parseTS(to)
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

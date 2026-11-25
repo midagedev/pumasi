@@ -52,13 +52,8 @@ func (c *Controller) serveStatus() (func(), error) {
 		l.Close()
 		return nil, err
 	}
-	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		c.mu.Lock()
-		st := c.status
-		c.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(st)
-	})}
+	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: c.webHandler()}
+	c.log.Info("dashboard http://" + l.Addr().String() + "/  (`pumasi open`)")
 	go func() { _ = srv.Serve(l) }()
 	return func() {
 		_ = srv.Close()
@@ -72,10 +67,19 @@ func ReadStatus(cfg *config.Config) (st Status, ok bool) {
 	if err != nil {
 		return st, false
 	}
-	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://" + strings.TrimSpace(string(b)) + "/")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://" + strings.TrimSpace(string(b)) + "/api/live")
 	if err != nil {
 		return st, false
 	}
 	defer resp.Body.Close()
 	return st, json.NewDecoder(resp.Body).Decode(&st) == nil
+}
+
+// DashboardURL is where the running controller serves its dashboard ("" = none running).
+func DashboardURL(cfg *config.Config) string {
+	if _, ok := ReadStatus(cfg); !ok {
+		return ""
+	}
+	b, _ := os.ReadFile(addrFile(cfg))
+	return "http://" + strings.TrimSpace(string(b)) + "/"
 }

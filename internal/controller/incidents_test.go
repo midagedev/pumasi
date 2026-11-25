@@ -37,7 +37,9 @@ func testBook(t *testing.T) (*Controller, *time.Time, func() []string) {
 
 func TestIncidentOpenRemindResolve(t *testing.T) {
 	c, now, sent := testBook(t)
-	open := func() { c.book.open("host-unreachable/server1", "host-unreachable", "server1", "server1 unreachable for 2m") }
+	open := func() {
+		c.book.open("host-unreachable/server1", "host-unreachable", "server1", "server1 unreachable for 2m")
+	}
 	open()
 	open() // same key: no second notification
 	*now = now.Add(31 * time.Minute)

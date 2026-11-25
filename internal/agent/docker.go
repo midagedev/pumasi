@@ -43,6 +43,8 @@ type Driver interface {
 	// LogEvents reports when the runner printed "Listening for Jobs" and "Running job",
 	// looking only at output after since (the runner image traces verbosely to stdout).
 	LogEvents(ctx context.Context, name string, since time.Time) (LogEvents, error)
+	// LogTail is the end of the runner's output, kept with the job once the container is gone.
+	LogTail(ctx context.Context, name string, lines int) string
 }
 
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
@@ -117,6 +119,14 @@ func (d Docker) List(ctx context.Context) ([]Container, error) {
 // LogEvents are times read from a runner's output; zero when not seen.
 type LogEvents struct {
 	Listening, JobStarted time.Time
+}
+
+func (d Docker) LogTail(ctx context.Context, name string, lines int) string {
+	out, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", strconv.Itoa(lines), name).CombinedOutput()
+	if len(out) > 8<<10 {
+		out = out[len(out)-8<<10:]
+	}
+	return string(out)
 }
 
 func (d Docker) LogEvents(ctx context.Context, name string, since time.Time) (LogEvents, error) {

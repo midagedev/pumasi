@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"text/tabwriter"
 	"time"
 
@@ -13,42 +15,6 @@ import (
 	"github.com/midagedev/pumasi/internal/controller"
 	"github.com/midagedev/pumasi/internal/ledger"
 )
-
-type statusOut struct {
-	Controller bool              `json:"controller"` // a `pumasi up` is running and answered
-	Incidents  []ledger.Incident `json:"incidents"`  // open problems
-	Hosts      []hostStatus      `json:"hosts"`
-	Runners    []runnerStatus    `json:"runners"`
-	Waiting    []waitingStatus   `json:"waiting"`
-}
-
-type hostStatus struct {
-	Name       string  `json:"name"`
-	Kind       string  `json:"kind"`
-	UsedCPUs   float64 `json:"usedCpus"` // sum of the sizes of the runners placed here
-	BudgetCPUs float64 `json:"budgetCpus"`
-	UsedMem    int64   `json:"usedMem"`
-	BudgetMem  int64   `json:"budgetMem"`
-	// CPU pressure (PSI some avg10, percent); nil when the agent did not answer.
-	CPUPressure *float64 `json:"cpuPressure"`
-	Runners     int      `json:"runners"`
-	Reachable   *bool    `json:"reachable"` // nil = unknown, no controller running
-}
-
-type runnerStatus struct {
-	Name       string `json:"name"`
-	Class      string `json:"class"`
-	Host       string `json:"host"`
-	State      string `json:"state"`
-	Job        string `json:"job"`
-	AgeSeconds int64  `json:"ageSeconds"`
-}
-
-type waitingStatus struct {
-	Class  string `json:"class"`
-	Jobs   int    `json:"jobs"`
-	Reason string `json:"reason"`
-}
 
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("pumasi status", flag.ContinueOnError)
@@ -69,7 +35,8 @@ func runStatus(args []string) error {
 		return err
 	}
 	defer l.Close()
-	out, err := collectStatus(cfg, l, time.Now())
+	live, ok := controller.ReadStatus(cfg)
+	out, err := controller.CollectState(cfg, l, live, ok, time.Now())
 	if err != nil {
 		return err
 	}
@@ -82,74 +49,7 @@ func runStatus(args []string) error {
 	return nil
 }
 
-func collectStatus(cfg *config.Config, l *ledger.Ledger, now time.Time) (statusOut, error) {
-	out := statusOut{Hosts: []hostStatus{}, Runners: []runnerStatus{}, Waiting: []waitingStatus{}}
-	live, ok := controller.ReadStatus(cfg)
-	out.Controller = ok
-	var err error
-
-	if out.Incidents, err = l.OpenIncidents(); err != nil {
-		return out, err
-	}
-	runners, err := l.LiveRunners()
-	if err != nil {
-		return out, err
-	}
-	size := map[string]config.Class{}
-	for _, c := range cfg.Classes {
-		size[c.Name] = c
-	}
-	hosts := map[string]int{} // name -> index in out.Hosts
-	for _, h := range cfg.Hosts {
-		hs := hostStatus{Name: h.Name, Kind: h.Kind, BudgetCPUs: h.Budget.CPUs, BudgetMem: int64(h.Budget.Memory)}
-		if ok {
-			snap := live.Hosts[h.Name]
-			up := snap != nil
-			hs.Reachable = &up
-			if up {
-				p := snap.PSI["cpu"]
-				hs.CPUPressure = &p
-			}
-		}
-		out.Hosts = append(out.Hosts, hs)
-		hosts[h.Name] = len(out.Hosts) - 1
-	}
-	for _, r := range runners {
-		out.Runners = append(out.Runners, runnerStatus{Name: r.Name, Class: r.Class, Host: r.Host, State: r.State,
-			Job: r.Job, AgeSeconds: int64(now.Sub(r.CreatedAt).Seconds())})
-		if i, ok := hosts[r.Host]; ok {
-			h := &out.Hosts[i]
-			h.Runners++
-			h.UsedCPUs += size[r.Class].CPUs
-			h.UsedMem += int64(size[r.Class].Memory)
-		}
-	}
-
-	if ok {
-		for _, w := range live.Waiting {
-			out.Waiting = append(out.Waiting, waitingStatus(w))
-		}
-		return out, nil
-	}
-	// No controller: every open job in the ledger waits, with the last reason recorded for its class.
-	open, err := l.OpenDemand()
-	if err != nil {
-		return out, err
-	}
-	idx := map[string]int{}
-	for _, d := range open {
-		i, seen := idx[d.Class]
-		if !seen {
-			i = len(out.Waiting)
-			idx[d.Class] = i
-			out.Waiting = append(out.Waiting, waitingStatus{Class: d.Class, Reason: l.LastDefer(d.Class)})
-		}
-		out.Waiting[i].Jobs++
-	}
-	return out, nil
-}
-
-func printStatus(w io.Writer, s statusOut) {
+func printStatus(w io.Writer, s controller.State) {
 	if !s.Controller {
 		fmt.Fprintln(w, "no controller running (start one with `pumasi up`); showing the ledger only")
 		fmt.Fprintln(w)
@@ -212,3 +112,26 @@ func printStatus(w io.Writer, s statusOut) {
 }
 
 func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
+
+// runOpen opens the running controller's dashboard in the browser.
+func runOpen(args []string) error {
+	fs := flag.NewFlagSet("pumasi open", flag.ContinueOnError)
+	cfgPath := fs.String("config", "pumasi.yaml", "config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	url := controller.DashboardURL(cfg)
+	if url == "" {
+		return fmt.Errorf("no controller running: the dashboard is served by `pumasi up`")
+	}
+	fmt.Println(url)
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	return exec.Command(opener, url).Start()
+}

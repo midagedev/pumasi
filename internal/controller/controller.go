@@ -60,6 +60,7 @@ type host struct {
 	started   bool        // its agent was started or found running
 	ensuring  atomic.Bool // an agent restart is in flight
 	reviveBad atomic.Int32
+	quiet     bool      // unreachable only because the agent has not sampled yet
 	ensuredAt time.Time // last restart attempt
 	tr        Transport
 	agent     *api.Client
@@ -404,7 +405,8 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 			defer cancel()
 			s, err := h.agent.Snapshot(cctx)
-			if err == nil && s.SampledAt.IsZero() {
+			warming := err == nil && s.SampledAt.IsZero()
+			if warming {
 				// Before its first sample the agent lists no runners; acting on that
 				// would read every runner on the host as missing.
 				err = errors.New("agent has not sampled yet")
@@ -414,15 +416,17 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 					h.downSince = now
 				}
 				h.snap = nil
-				if h.downSince.Equal(now) {
+				if h.downSince.Equal(now) && !warming {
 					c.log.Warn(fmt.Sprintf("host %s unreachable; its running jobs are left alone", h.cfg.Name), "err", err)
 				}
+				h.quiet = warming
 				c.reviveAgent(ctx, h, now)
 				return
 			}
-			if !h.downSince.IsZero() {
+			if !h.downSince.IsZero() && !h.quiet {
 				c.log.Info(fmt.Sprintf("host %s reachable again", h.cfg.Name))
 			}
+			h.quiet = false
 			h.snap, h.downSince = &s, time.Time{}
 		}()
 	}
@@ -591,6 +595,9 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			removed = true
 			if final.State != "unknown" {
 				c.recordUsage(final)
+			}
+			if final.LogTail != "" {
+				_ = c.ledger.SetLogTail(st.Runner, final.LogTail)
 			}
 			// If JobCompleted was missed while the controller was away, the exit code
 			// is all there is; a late message still replaces it.

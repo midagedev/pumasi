@@ -31,6 +31,7 @@ func (f *fakeDriver) List(context.Context) ([]Container, error) {
 	}
 	return out, nil
 }
+func (f *fakeDriver) LogTail(context.Context, string, int) string { return "" }
 func (f *fakeDriver) LogEvents(_ context.Context, name string, _ time.Time) (LogEvents, error) {
 	return LogEvents{Listening: f.listening[name]}, nil
 }

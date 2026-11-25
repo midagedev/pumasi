@@ -23,7 +23,8 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
 
   pumasi up      start agents on the hosts and serve jobs until Ctrl-C
                  (running jobs survive Ctrl-C; the next up picks them up)
-  pumasi status  hosts, runners and waiting jobs (--json for machines)
+  pumasi status  problems, hosts, runners and waiting jobs (--json for machines)
+  pumasi open    the same in a browser, with recent jobs and the last 24 hours
   pumasi down    remove everything pumasi created on the hosts and on GitHub
                  (refuses while jobs run, unless --force)
 
@@ -45,6 +46,8 @@ func main() {
 		err = runController(args, true)
 	case "status":
 		err = runStatus(args)
+	case "open":
+		err = runOpen(args)
 	case "agent":
 		err = runAgent(args)
 	case "help", "-h", "--help":

@@ -81,6 +81,24 @@ linux-s  2     no host with 1.0cpu/1.0G free (desk1 0.0cpu/1.0G, server1 0.0cpu/
 
 `pumasi down` 만 전부 지운다: 호스트의 pumasi 컨테이너·에이전트·`~/.cache/pumasi`, GitHub 의 scale set. 러너가 떠 있으면 목록을 보이고 거부한다(`--force` 로 강행).
 
+## 대시보드와 알림
+
+`pumasi up` 이 loopback 에 대시보드를 같이 띄운다(`pumasi open`). 문제·호스트·러너·대기·최근 잡 50개·24시간 추이를 한 화면에 보여 주고, 같은 주소의 `/metrics` 는 Prometheus 용이다. 따로 설치하거나 빌드할 것은 없다.
+
+문제는 사건으로 장부에 남고 `pumasi status` 맨 위 `PROBLEMS` 에 나온다. `notify:` 를 적으면 열릴 때·30분마다·해제될 때 한 줄씩 보낸다([견고함](docs/robustness.md)):
+
+```yaml
+notify:
+  webhook: https://hooks.example/…   # JSON POST {text, key, kind, subject, state, detail}
+  command: my-notify --stdin          # 또는 같은 JSON 을 stdin 으로 받는 명령
+```
+
+```
+[pumasi] desk1 unreachable for 30s — 5 jobs still running there, no new runners placed
+[pumasi] runner linux-s-desk1-78e45f33 died while running small (2) on desk1 (exit code 137); GitHub will fail that job
+[pumasi] controller is back: was down 28s, adopted 7 runners, 0 jobs finished meanwhile
+```
+
 ## 알아 둘 것
 
 - GitHub 토큰은 노트북의 `PUMASI_GITHUB_TOKEN` 에만 있다. 호스트로는 러너 하나짜리 JIT 설정만 간다.
@@ -90,4 +108,4 @@ linux-s  2     no host with 1.0cpu/1.0G free (desk1 0.0cpu/1.0G, server1 0.0cpu/
 
 ## 문서
 
-[문제](docs/problem.md) · [설계](docs/design.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)
+[문제](docs/problem.md) · [설계](docs/design.md) · [견고함](docs/robustness.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)

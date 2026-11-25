@@ -49,6 +49,8 @@ type Runner struct {
 	StartedAt    *time.Time         `json:"startedAt,omitempty"`
 	ExitedAt     *time.Time         `json:"exitedAt,omitempty"`
 	ExitCode     *int               `json:"exitCode,omitempty"`
+	// Only in the answer to DELETE: the last lines the runner printed.
+	LogTail string `json:"logTail,omitempty"`
 }
 
 // StartRequest is POST /v1/runners.
