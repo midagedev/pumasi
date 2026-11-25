@@ -318,8 +318,15 @@ func reservedFor(s Snapshot, c Class, host string, hosts map[string]Host, alloc 
 	return ""
 }
 
-// OverMaxDuration starts the reason of a stop made because of a class's maxDuration.
-const OverMaxDuration = "job ran longer than maxDuration "
+// How the reasons of the stops begin that the controller treats differently
+// from the rest. A Stop's Reason is a sentence for people; these are its part
+// for code.
+const (
+	OverMaxDuration  = "job ran longer than maxDuration " // the class's maxDuration ended the job
+	ProvisionTimeout = "provision timeout"                // never listened
+	ExitedBeforeJob  = "exited before a job"
+	ContainerMissing = "container missing"
+)
 
 // stopRule returns the removal of a runner that no longer serves a purpose.
 func stopRule(s Snapshot, h Host, c Class, r Runner) (Stop, bool) {
@@ -346,16 +353,16 @@ func stopRule(s Snapshot, h Host, c Class, r Runner) (Stop, bool) {
 	case r.State == "done":
 		return stop("", "job completed")
 	case r.Container == "":
-		return stop(failedUnlessJob(r), "container missing on %s", r.Host)
+		return stop(failedUnlessJob(r), "%s on %s", ContainerMissing, r.Host)
 	case r.Container == "exited" && r.State == "busy":
 		return stop("", "runner exited during or after its job (code %d); result comes with JobCompleted", r.ExitCode)
 	case r.Container == "exited":
-		return stop("failed", "exited before a job (code %d)", r.ExitCode)
+		return stop("failed", "%s (code %d)", ExitedBeforeJob, r.ExitCode)
 	case c.MaxDuration > 0 && !r.JobStartedAt.IsZero() && s.Now.Sub(r.JobStartedAt) > c.MaxDuration:
 		// The one stop of a running job pumasi makes on its own: the user asked for it.
 		return stop("failed", "%s%s", OverMaxDuration, c.MaxDuration)
 	case r.State == "starting" && r.ListeningAt.IsZero() && s.ProvisionTimeout > 0 && s.Now.Sub(r.CreatedAt) > s.ProvisionTimeout:
-		return stop("failed", "provision timeout: not listening %s after start", s.ProvisionTimeout)
+		return stop("failed", "%s: not listening %s after start", ProvisionTimeout, s.ProvisionTimeout)
 	case r.State != "busy" && !r.ListeningAt.IsZero() && s.IdleTimeout > 0 && s.Now.Sub(r.ListeningAt) > s.IdleTimeout:
 		return stop("failed", "idle timeout: no job %s after listening", s.IdleTimeout)
 	}

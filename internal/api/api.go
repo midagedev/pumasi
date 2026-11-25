@@ -79,6 +79,9 @@ type Runner struct {
 	Leftover string `json:"leftover,omitempty"`
 }
 
+// LostRebooted is Runner.Lost for a runner whose host rebooted under it.
+const LostRebooted = "host rebooted"
+
 // PersonAway: a machine whose last input is more recent than this has someone
 // at it. A desktop then takes no new runners; running jobs are never touched.
 const PersonAway = 15 * time.Minute

@@ -1,0 +1,22 @@
+name: test
+# go vet and go test on the three OSes pumasi's hosts run. The agent's native
+# drivers differ per OS and most of their tests only run on their own.
+# Started by hand: `gh workflow run test.yml`.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -count=1 ./...

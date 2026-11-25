@@ -446,8 +446,21 @@ func inputIdle() *time.Duration {
 
 func yield(map[string]*tree, bool) {}
 
-// BootID is not known on Windows: a runner lost to a reboot is reported as
-// died, not as rebooted.
-func BootID() string { return "" }
+// BootID changes when the host has rebooted: the time the kernel started, as
+// the kernel keeps it. BootTime moves along when the clock is set and
+// BootTimeBias is by how much, so their difference stays. A shutdown with
+// fast startup is a hibernation of the kernel: no new boot, and the runners
+// it ended are reported as died, not as rebooted.
+func BootID() string {
+	var tod struct { // SYSTEM_TIMEOFDAY_INFORMATION
+		BootTime, CurrentTime, TimeZoneBias int64
+		TimeZoneID, Reserved                uint32
+		BootTimeBias, SleepTimeBias         uint64
+	}
+	if err := windows.NtQuerySystemInformation(windows.SystemTimeOfDayInformation, unsafe.Pointer(&tod), uint32(unsafe.Sizeof(tod)), nil); err != nil {
+		return ""
+	}
+	return strconv.FormatInt(tod.BootTime-int64(tod.BootTimeBias), 10)
+}
 
 func nativeProblem() string { return "" }

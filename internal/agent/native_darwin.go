@@ -310,8 +310,12 @@ func yield(ts map[string]*tree, present bool) {
 	}
 }
 
-// BootID changes when the host has rebooted.
+// BootID changes when the host has rebooted. kern.boottime alone moves with
+// the clock when it is set; the boot session's UUID does not.
 func BootID() string {
+	if id, err := unix.Sysctl("kern.bootsessionuuid"); err == nil && id != "" {
+		return id
+	}
 	tv, err := unix.SysctlTimeval("kern.boottime")
 	if err != nil {
 		return ""

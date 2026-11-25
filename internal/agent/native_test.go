@@ -128,3 +128,17 @@ func TestRemoveTreeGetsThroughReadOnlyDirectories(t *testing.T) {
 		t.Errorf("still there: %v", err)
 	}
 }
+
+// Without a boot id a runner that a reboot took is told as "died", and the
+// host's reboot is never reported.
+func TestBootIDIsKnownAndSteady(t *testing.T) {
+	id := BootID()
+	if id == "" {
+		t.Fatal("no boot id on this OS")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if again := BootID(); again != id {
+		t.Errorf("boot id changed without a reboot: %s, then %s", id, again)
+	}
+	t.Logf("boot id %s", id)
+}

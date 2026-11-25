@@ -27,7 +27,7 @@ type Config struct {
 	BudgetMem  int64
 	Interval   time.Duration
 	StateFile  string // runner records survive an agent restart here ("" = keep nothing)
-	BootID     string // /proc/sys/kernel/random/boot_id; a change means the host rebooted
+	BootID     string // BootID(): a change means the host rebooted
 }
 
 type Agent struct {
@@ -276,7 +276,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 
 var errOverBudget = errors.New("over budget")
 
-const lostRebooted = "host rebooted"
+const lostRebooted = api.LostRebooted
 
 // Start launches one runner. It refuses when the agent's own budget would be exceeded.
 func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, error) {

@@ -800,7 +800,7 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	if err := c.ledger.SetState(st.Runner, st.State, st.Reason); err != nil {
 		c.log.Error("ledger state", "err", err)
 	}
-	if h != nil && (strings.HasPrefix(st.Reason, "provision timeout") || strings.HasPrefix(st.Reason, "exited before a job")) {
+	if h != nil && (strings.HasPrefix(st.Reason, decide.ProvisionTimeout) || strings.HasPrefix(st.Reason, decide.ExitedBeforeJob)) {
 		c.provisionFailed(h, st.Reason)
 	}
 	switch endCause(before, st, final) {
@@ -1171,7 +1171,7 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 }
 
 // rebootReason is the agent's word for a runner whose host rebooted under it.
-const rebootReason = "host rebooted"
+const rebootReason = api.LostRebooted
 
 // reportReboots tells of each rebooted host once, with the jobs it took down.
 func (c *Controller) reportReboots(now time.Time) {

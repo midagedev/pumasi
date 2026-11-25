@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +57,43 @@ func TestUnpackRefusesLinksThatLeave(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "n", "bin", "npm")); err != nil {
 		t.Error(err)
+	}
+}
+
+// The runners' directories are not under the home (its path would be in
+// every job log) and belong to this user alone.
+func TestRunnerRootIsOutsideHomeAndPrivate(t *testing.T) {
+	want := runnerRoot()
+	_, statErr := os.Lstat(want)
+	root := RunnerRoot(t.TempDir())
+	if statErr != nil {
+		t.Cleanup(func() { os.Remove(want) }) // made by this test
+	}
+	if root != want {
+		t.Skipf("%s is someone else's on this machine; fell back to %s", want, root)
+	}
+	home, _ := os.UserHomeDir()
+	if rel, err := filepath.Rel(home, root); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Errorf("%s is under the home %s", root, home)
+	}
+	fi, err := os.Lstat(root)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Errorf("%s: %v %v", root, fi, err)
+	}
+	// A clone of the runner lands there (macOS: clonefile works across the two places).
+	src := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(filepath.Join(src, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "bin", "x"), []byte("x"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "test-"+filepath.Base(t.TempDir()))
+	t.Cleanup(func() { os.RemoveAll(dst) })
+	if err := cloneTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "bin", "x")); err != nil || string(b) != "x" {
+		t.Errorf("clone: %q %v", b, err)
 	}
 }

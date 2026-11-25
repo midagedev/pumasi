@@ -141,7 +141,7 @@ func endCause(before ledger.Runner, st decide.Stop, final *api.Runner) string {
 		return endNormal
 	case oom:
 		return endOOM
-	case strings.HasPrefix(st.Reason, "container missing"):
+	case strings.HasPrefix(st.Reason, decide.ContainerMissing):
 		return endDied
 	case final != nil && final.ExitCode != nil && *final.ExitCode != 0:
 		return endDied
