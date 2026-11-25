@@ -34,6 +34,14 @@
 
 잡 10개 중 7개가 도는 중에 `pumasi up` 을 Ctrl-C 로 끄고(`JobStarted` 메시지가 오기 전) 20초 뒤 다시 켰다. 러너 7개와 에이전트는 그대로 돌았고, 다시 켠 controller 가 이어받았다. 놓친 `JobStarted`·`JobCompleted` 는 새 메시지 세션에서 다시 왔다. 잡 10개 모두 성공, 장부 10행 모두 cpu_sec·mem_peak·provision_ms·result 있음. 그사이 `pumasi down` 은 러너 7개를 나열하고 거부했다.
 
+## 터널 끊김 실측 (2026-11-25)
+
+잡 10개(각 300초)가 도는 동안 데스크톱 호스트의 ssh 터널을 2초마다 약 170초 동안 죽였다. busy 러너에 stop 은 0건, 끊긴 동안 그 호스트엔 새 배치가 없었고(`desk1 down`), 잡 10개 모두 성공했다.
+
+- 5분 넘게 기다린 large 2개는 GitHub 이 배정을 거두고 새 job id 로 다시 배정했다(`JobAssigned` 12건 = 10 + 2, 러너 없는 `JobCompleted canceled` 2건). 묵은 배정 id 가 취소된 것이고 장부는 처음 본 시각을 이었다.
+- 같은 시각 로그의 `defer linux-l x6`·`linux-s x4` 와 `unassigned … (canceled)` 8건은 버그가 아니었다. 그때 두 번째 controller 가 같은 장부로 떠 있었고 두 번째 런(잡 10개)이 디스패치됐다가 취소됐다. 대기 수는 그 런의 잡이고, 취소 메시지 8건의 run id 도 그 런이다(events.jsonl 로 확인). 잡 이름이 같아 돌던 잡으로 보였을 뿐이라 로그에 run id 를 넣었다.
+- `controller.addr` 이 사라진 것도 두 번째 controller 가 덮어쓰고 내려가며 지운 것이다. 이제 상태 디렉터리에 flock 을 걸어 `up`·`down` 은 한 번에 하나만 돈다.
+
 ## M1 에서 배운 것
 
 - ssh 연결 다중화(ControlMaster)는 터널이 같이 죽어서 끈다.

@@ -82,6 +82,11 @@ func runController(args []string, down bool) error {
 	if err := os.MkdirAll(cfg.StateDir(), 0o700); err != nil {
 		return err
 	}
+	unlock, err := controller.Lock(cfg.StateDir())
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	l, err := ledger.Open(cfg.Ledger)
 	if err != nil {
 		return err

@@ -238,7 +238,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		// No runner took it within 5 minutes: GitHub cancels this assignment and, up to
 		// two more times, assigns the job again under a new job id (M0, M1). A job canceled
 		// by a person looks the same and is simply not assigned again.
-		c.log.Info(fmt.Sprintf("unassigned %s  %s: no runner took it, GitHub withdrew the assignment (%s)", cls, j.JobDisplayName, j.Result))
+		c.log.Info(fmt.Sprintf("unassigned %s  %s of run %d: no runner took it, GitHub withdrew the assignment (%s)", cls, j.JobDisplayName, j.WorkflowRunID, j.Result))
 		if err := c.ledger.CloseDemand(j.JobID, "unassigned-"+j.Result, orNow(j.FinishTime, now)); err != nil {
 			return err
 		}
