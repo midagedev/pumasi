@@ -32,7 +32,7 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (needs listen: in the config; --rotate makes a new token)
 
 On a host that joined:
-  pumasi doctor  check the way to the controller, docker and the agent
+  pumasi doctor  check the way to the controller, what runners need here, and the agent
   pumasi leave   remove this host from the controller and pumasi from this host
 
 Flags: -config pumasi.yaml (up, status, open, down, invite), -v (up: verbose log).

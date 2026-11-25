@@ -97,9 +97,15 @@ classes:
 ```
 $ pumasi up            # 다른 터미널에서
 $ pumasi invite
-Run this on the host that should join:
+Run this on the host that should join.
+
+Linux, macOS:
 
   curl -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.sh | sh -s -- <token>
+
+Windows (PowerShell, in a window on that machine's desktop):
+
+  & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.ps1 | Out-String))) <token>
 ```
 
 그 한 줄을 호스트에서 실행하면 호스트가 붙기 전에 하나씩 확인하고, 막힌 것을 이름으로 말한다:
@@ -120,6 +126,8 @@ joined as desk1 (server): lends 6 cpus and 9.0G, runs as the systemd user unit p
 - 연결이 끊기면 호스트가 1~30초 간격으로 다시 건다. 노트북이 꺼져 있어도 도는 잡은 그대로 돌고, 다시 `up` 하면 이어받는다.
 - controller 의 판이 바뀌면 호스트가 새 바이너리를 받아 스스로 바꿔 실행한다. 러너는 건드리지 않는다.
 - 호스트에서 `pumasi doctor` 는 같은 확인에 에이전트·연결 상태를 더해 보여 주고, `pumasi leave` 는 그 호스트에서 pumasi 를 전부 지운다. `pumasi down` 은 붙어 있는 호스트에 같은 일을 시킨다.
+- Mac 과 Windows 도 같은 줄로 붙는다. 거기서는 docker·cgroup 대신 러너 배포판을 받을 수 있는지·디스크·로그인 세션을 확인하고,
+  에이전트는 로그인한 사용자의 세션에서 돈다(Mac: LaunchAgent, Windows: 로그온 때 시작). 그래야 잡이 키체인으로 서명하고 창을 띄운다.
 - `pumasi status` 와 대시보드의 Hosts 표에 붙은 방식(`VIA`)·마지막 응답(`SEEN`)·왕복 시간(`RTT`)·에이전트 판(`AGENT`)·마지막으로 끊긴 이유(`LAST DROP`)가 나오고, 호스트 유실 알림에도 이유가 붙는다: `desk1 unreachable for 30s (keepalive timeout) — …`.
 
 ## Mac 과 Windows 호스트
@@ -141,7 +149,7 @@ Mac·Windows 호스트에서는 러너가 컨테이너가 아니라 **그 OS 의
 - **Mac 은 메모리·CPU 를 강제로 막지 못한다.** 클래스 크기는 배치할 때의 약속일 뿐이다. 넘은 러너는 `ran over its class` 사건으로 알리고 잡은 계속 돈다. 그래서 Mac 호스트의 예산은 넉넉히 남겨 잡는다.
 - **잴 수 있는 것만 남긴다.** Mac 은 cpu 초와 메모리 peak 를 재고 디스크 I/O·압박(PSI)은 비워 둔다.
 - 러너 배포판은 `image` 의 태그(`:2.338.2`)와 같은 판을 호스트가 처음 한 번 내려받는다(`~/.cache/pumasi/dist`).
-- Windows 는 Job Object 로 메모리·CPU 를 강제하지만 **아직 실물에서 확인하지 않았고**, 호스트를 붙이는 길(join)도 Linux 만 된다.
+- Windows 는 Job Object 로 메모리·CPU 를 강제하지만 **아직 실물에서 확인하지 않았다**. join 은 Mac 까지 실물로 확인했고 Windows 쪽은 코드와 크로스 빌드까지다.
 
 자세한 것은 [Mac 과 Windows 호스트](docs/platforms.md).
 

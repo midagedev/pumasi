@@ -117,14 +117,15 @@ docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전�
 
 Mac·Windows 는 `join` 으로 붙는 것을 기본으로 한다(`docs/join.md`). Windows 에 ssh 로 들어가
 PowerShell 따옴표와 싸우지 않는다. 초대 줄은 OS 별로 하나씩 나온다(sh, PowerShell).
-Mac 은 ssh `hosts:` 로도 붙는다(지금 되는 것은 이쪽이다. ssh 세션에서 뜬 에이전트는 로그인 세션의 키체인을 못 쓸 수 있다).
+Mac 은 ssh `hosts:` 로도 붙는다(ssh 세션에서 뜬 에이전트는 로그인 세션의 키체인을 못 쓸 수 있다).
+join 으로 붙은 Mac 의 에이전트는 LaunchAgent, Windows 는 로그온 때 시작하는 프로세스다 — `docs/join.md` 의 "OS 마다 다른 것".
 
 ## 순서
 
 1. ~~`Driver` 뒤에 native 드라이버(Mac) — 이 노트북을 호스트로 붙여 잡을 끝까지. 프로세스 정리, 수치, 사건.~~ 됐다.
 2. Windows — Job Object 로 같은 것. 한도 강제 확인. **드라이버·에이전트 수준 실물까지. GitHub 잡은 join 뒤.**
 3. ~~클래스 `os` 와 배치, status·대시보드의 OS 열.~~ 됐다.
-4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작.
+4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작. **Mac 은 됐다(실물). Windows 는 코드까지.**
 5. 사람이 쓰는 중이면 새 러너를 받지 않는다(M2 의 사람 우선과 합친다).
 
 ## 수용

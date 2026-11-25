@@ -20,16 +20,22 @@ classes:
 ```
 $ pumasi up
 $ pumasi invite
-Run this on the host that should join:
+Run this on the host that should join.
+
+Linux, macOS:
 
   curl -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.sh | sh -s -- <token>
+
+Windows (PowerShell, in a window on that machine's desktop):
+
+  & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.ps1 | Out-String))) <token>
 ```
 
 `listen` 이 `0.0.0.0` 이면 초대 줄의 주소는 기본 경로의 주소다. 머신에 주소가 여럿이면 나머지도 알려 준다.
 호스트는 스크립트를 받은 그 주소로 계속 붙는다.
 
-호스트 쪽은 그 한 줄이 전부다. 스크립트는 controller 에서 자기 아키텍처의 바이너리를 받아
-`~/.local/bin/pumasi` 에 두고 `pumasi join` 을 서비스로 올린다. 예산과 종류는 호스트가 말한다:
+호스트 쪽은 그 한 줄이 전부다. 스크립트는 controller 에서 자기 OS·아키텍처의 바이너리를 받아
+`~/.local/bin/pumasi`(Windows: `pumasi.exe`)에 두고 `pumasi join` 을 서비스로 올린다. 예산과 종류는 호스트가 말한다:
 
 ```
 … | sh -s -- <token> --name desk1 --cpus 6 --mem 9G --desktop
@@ -65,11 +71,26 @@ Run this on the host that should join:
 
 | 일 | ssh 방식 | join 방식 |
 |---|---|---|
-| 바이너리 전달 | up 이 올림 | 호스트가 controller 에서 받음 (`/dl/pumasi-linux-<arch>`, sha 확인) |
-| 판 맞추기 | up 이 sha 로 경로를 나눔 | 붙을 때 판(바이너리 sha256)을 말하고, 다르면 controller 가 세션을 주지 않고 자기 판을 알려 준다. 호스트가 그 판을 받아 sha 를 확인하고 자기 자신을 바꿔 실행한다(러너는 건드리지 않음). 못 바꾸면 이유를 말하며 옛 판으로 붙는다 |
-| 죽은 에이전트 다시 올리기 | controller 가 ssh 로 | 호스트의 서비스. 로그인이 끝나도 사용자 unit 이 도는 호스트(linger)면 systemd user unit, 아니면 스스로 다시 뜨는 백그라운드 프로세스(재부팅 뒤에는 안 올라온다 — 가입할 때 그렇게 말한다) |
+| 바이너리 전달 | up 이 올림 | 호스트가 controller 에서 받음 (`/dl/pumasi-<os>-<arch>`, Windows 는 `.exe`, sha 확인) |
+| 판 맞추기 | up 이 sha 로 경로를 나눔 | 붙을 때 판(바이너리 sha256)을 말하고, 다르면 controller 가 세션을 주지 않고 자기 판을 알려 준다. 호스트가 **자기 OS 의** 판을 받아 sha 를 확인하고 자기 자신을 바꿔 실행한다(러너는 건드리지 않음). 못 바꾸면 이유를 말하며 옛 판으로 붙는다 |
+| 죽은 에이전트 다시 올리기 | controller 가 ssh 로 | 호스트의 서비스(아래 표). 서비스로 못 올리는 호스트에서는 스스로 다시 뜨는 백그라운드 프로세스(재부팅 뒤에는 안 올라온다 — 가입할 때 그렇게 말한다) |
 | `down` 의 호스트 정리 | ssh 로 지움 | 세션으로 `leave` 를 시킴. 안 붙어 있는 호스트는 controller 쪽에서 잊고 "거기서 `pumasi leave`" 라고 말함 |
 | 호스트 이름 충돌 | 설정에서 드러남 | 호스트 id(가입 때 만든 난수)가 다르면 거부하고 이유를 말함 |
+
+### OS 마다 다른 것
+
+| | Linux | Mac | Windows |
+|---|---|---|---|
+| 초대 줄 | sh | sh (같은 줄) | PowerShell |
+| 러너 | docker 컨테이너 | 그 사용자의 프로세스 | 그 사용자의 프로세스(Job Object) |
+| 에이전트를 지키는 것 | systemd user unit (linger 일 때) | LaunchAgent `dev.pumasi.agent` — 화면에 로그인한 사용자 세션 | HKCU `Run` 의 `pumasi` 값 — 로그온 때 뜨는 감독 프로세스(`agent -join -supervise`) |
+| 그게 안 되면 | 스스로 다시 뜨는 프로세스 | 같음(화면에 로그인하지 않은 Mac) | — (ssh·서비스 세션이면 그렇다고 말한다) |
+| 붙기 전 확인 | docker, cgroup v2 | 러너 배포판 받기(github.com), 디스크, 로그인 세션 | 같음 |
+| 판 교체 | 같은 pid 로 exec | 같은 pid 로 exec | 파일 이름을 바꿔 두고 끝남 → 감독 프로세스가 새 판을 띄움 |
+
+Mac 과 Windows 의 에이전트가 **로그인한 사용자의 세션**에서 도는 것은 잡 때문이다: 서명은 그 사용자의 키체인을,
+브라우저 시험은 화면을 쓴다. 그래서 Windows 는 서비스(세션 0)가 아니다. Mac 의 LaunchAgent 는 가입할 때의 `PATH` 를
+물려받는다(launchd 의 기본 `PATH` 에는 그 사용자가 깐 도구가 없다).
 
 ## 연결 문제를 말로 한다
 
@@ -80,15 +101,16 @@ Run this on the host that should join:
   ok    resolve 10.0.0.5
   ok    tcp 10.0.0.5:7411 (3ms)
   ok    controller certificate matches the invite
-  FAIL  token: the controller refused it (rotated on 11-25 15:02) — run `pumasi invite` again
+  FAIL  token: the controller refused it (not the controller's token; that one was made on 11-25 15:02) — run `pumasi invite` again
   ok    docker 27.3 reachable as this user
   ok    cgroup v2 with memory and cpu controllers
   ```
-  하나라도 FAIL 이면 아무것도 등록하지 않고 끝난다. 호스트에서 `pumasi doctor` 로 언제든 다시 볼 수 있고,
+  하나라도 FAIL 이면 아무것도 등록하지 않고, 처음 가입이었으면 받은 바이너리도 지우고 끝난다. 호스트에서 `pumasi doctor` 로 언제든 다시 볼 수 있고,
   거기에는 에이전트가 도는지와 지금 붙어 있는지(아니면 언제부터 왜)가 더 나온다.
 - **status 와 대시보드의 Hosts 표**에 호스트별로: 붙은 방식(join/ssh), 마지막으로 본 시각,
   왕복 시간(스냅샷 한 번의 왕복), 에이전트 판, 마지막으로 끊긴 이유(`keepalive timeout`,
-  `connection reset`, `agent exited`). ssh 호스트도 같은 열에 나온다.
+  `connection reset`, `agent exited`). ssh 호스트도 같은 열에 나온다. 호스트가 먼저 끊고 다시 건 경우
+  (controller 가 멈춰 있었다)에는 호스트가 붙으면서 말한 이유가 남는다.
 - **사건**: 지금의 "host unreachable" 이 그대로 쓰이고 문구에 끊긴 이유가 붙는다.
   하루에 여러 번 끊겼다 붙는 호스트는 flapping 으로 한 건에 묶인다(이미 있음).
   판이 달라 스스로 바꾸지 못하면 "agent version" 사건.
@@ -115,3 +137,18 @@ Run this on the host that should join:
 5. 판이 다른 호스트 → 스스로 바꾸고 러너는 그대로.
 6. `pumasi leave`, `down --force` → 호스트에 남는 것 없음.
 7. `make chaos` 의 행들이 join 으로 붙은 호스트에서도 통과.
+8. Mac 을 초대 줄로 붙여 `os: macos` 클래스의 잡이 끝까지, 에이전트를 죽이거나 판을 바꿔도 러너는 그대로, 떼면 남는 것 없음.
+9. Windows 에서 같은 것(PowerShell 초대 줄).
+
+## 실측 (2026-11-25)
+
+| | 결과 |
+|---|---|
+| 4. 틀린 토큰 / 틀린 지문 / docker 없음 | 각각 `FAIL token`, `FAIL controller certificate`, `FAIL docker: not installed` 로 끝나고 등록되지 않음 |
+| 5. controller 판을 바꿔 올림 | 호스트가 새 판을 받아 같은 pid 로 바뀜, 도는 러너 2개 그대로, 잡 성공 (Linux·Mac) |
+| 6. `pumasi leave`, `down --force` | 러너가 떠 있으면 목록을 보이고 거부. 끝난 뒤에는 서비스·바이너리·`~/.cache/pumasi`·러너 0 (Linux·Mac) |
+| 호스트 쪽 재연결 | controller 를 40초 멈춤 → 호스트가 13초 뒤 `keepalive timeout` 으로 끊고 2·4초 간격으로 다시 걸어, 풀린 지 4초 뒤 붙음. 도는 잡은 이어받음 |
+| 에이전트를 죽임 | Linux: systemd 가 2초 뒤, Mac: launchd 가 1초 안에 다시 올리고 바로 붙음. 러너 그대로 |
+| 8. Mac(Apple silicon 노트북) | 초대 줄 → LaunchAgent, `macos` 클래스 잡 3개 + 2개 성공, 끝난 뒤 러너 디렉터리·남은 프로세스 0 |
+| 9. Windows | 코드와 크로스 빌드, 단위 테스트까지. 실물 미확인 |
+| 남의 부하로 스래싱하는 호스트 | 에이전트가 10초 넘게 못 돌아 keepalive 가 끊긴 일이 있었다(load 200, swap 가득). 사건이 이유와 함께 열리고 닫혔고 잡은 성공 |
