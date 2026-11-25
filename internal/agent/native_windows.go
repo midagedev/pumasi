@@ -432,8 +432,34 @@ func hostUsage() (HostUsage, error) {
 	}
 	ticks := func(f windows.Filetime) uint64 { return uint64(f.HighDateTime)<<32 | uint64(f.LowDateTime) }
 	h.CPUUsec = (ticks(kernel) + ticks(user) - ticks(idle)) / 10 // kernel time includes idle
+	h.InputIdle = inputIdle()
 	return h, nil
 }
+
+var (
+	user32               = windows.NewLazySystemDLL("user32.dll")
+	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
+	procGetTickCount     = kernel32.NewProc("GetTickCount")
+)
+
+// inputIdle asks Windows when a key or the pointer last moved. That is known
+// only inside the session of the person at the screen: an agent started over
+// ssh or as a service (session 0) cannot tell.
+func inputIdle() *time.Duration {
+	var session uint32
+	if windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &session) != nil || session == 0 {
+		return nil
+	}
+	info := struct{ Size, Tick uint32 }{Size: 8}
+	if r, _, _ := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&info))); r == 0 {
+		return nil
+	}
+	now, _, _ := procGetTickCount.Call()
+	d := time.Duration(uint32(now)-info.Tick) * time.Millisecond
+	return &d
+}
+
+func yield(map[string]*tree, bool) {}
 
 // BootID is not known on Windows: a runner lost to a reboot is reported as
 // died, not as rebooted.

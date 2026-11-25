@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/midagedev/pumasi/internal/api"
 )
 
 // Native runs each runner as a process tree of this OS, as the user the agent
@@ -192,7 +194,15 @@ func (n *Native) Runner(c Container) (Usage, error) {
 	return t.usage(), nil
 }
 
-func (n *Native) Host() (HostUsage, error) { return hostUsage() }
+// Host measures the machine. On the way the runners step back while someone
+// is at it (macOS: they run in the background band until the person is away).
+func (n *Native) Host() (HostUsage, error) {
+	h, err := hostUsage()
+	n.mu.Lock()
+	yield(n.trees, h.InputIdle != nil && *h.InputIdle < api.PersonAway)
+	n.mu.Unlock()
+	return h, err
+}
 
 // NativeProblem is why this host cannot run runners as processes (classes
 // with driver: native). Empty = it can. macOS and Windows always can; Linux

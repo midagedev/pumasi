@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +134,26 @@ func TestNoUserSessionNoRunner(t *testing.T) {
 	}
 	if es, _ := os.ReadDir(filepath.Join(l.native.Root, "runners")); len(es) != 0 {
 		t.Errorf("%d runner directories were made", len(es))
+	}
+}
+
+func TestSessionsIdle(t *testing.T) {
+	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
+	since := func(d time.Duration) string {
+		return "IdleSinceHint=" + strconv.FormatInt(now.Add(-d).UnixMicro(), 10) + "\n"
+	}
+	tty := "Type=tty\nActive=yes\nRemote=no\nIdleHint=no\n"
+	working := "Type=wayland\nActive=yes\nRemote=no\nIdleHint=no\nIdleSinceHint=0\n"
+	away := "Type=x11\nActive=yes\nRemote=no\nIdleHint=yes\n" + since(40*time.Minute)
+	remote := "Type=x11\nActive=yes\nRemote=yes\nIdleHint=no\n"
+	switched := "Type=wayland\nActive=no\nRemote=no\nIdleHint=no\n"
+	if d := sessionsIdle([]string{tty, remote, switched}, now); d != nil {
+		t.Errorf("no screen session: %v, want unknown", *d)
+	}
+	if d := sessionsIdle([]string{tty, away}, now); d == nil || *d != 40*time.Minute {
+		t.Errorf("away: %v", d)
+	}
+	if d := sessionsIdle([]string{away, working}, now); d == nil || *d != 0 {
+		t.Errorf("one of two is working: %v", d)
 	}
 }

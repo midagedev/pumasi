@@ -24,6 +24,9 @@ type Snapshot struct {
 	OS string `json:"os,omitempty"`
 	// The host's own reason to take no new runners right now ("memory pressure"). Empty = none.
 	Closed string `json:"closed,omitempty"`
+	// Seconds since the last keyboard or mouse input at the machine. Absent
+	// where that cannot be known (no screen, an agent outside the user's session).
+	InputIdleSec *int64 `json:"inputIdleSec,omitempty"`
 	// Why the host cannot run runners as processes (classes with driver: native):
 	// "no systemd user session for ci". Empty = it can.
 	NoNative string `json:"noNative,omitempty"`
@@ -72,6 +75,10 @@ type Runner struct {
 	// Only in the answer to DELETE: the last lines the runner printed.
 	LogTail string `json:"logTail,omitempty"`
 }
+
+// PersonAway: a machine whose last input is more recent than this has someone
+// at it. A desktop then takes no new runners; running jobs are never touched.
+const PersonAway = 15 * time.Minute
 
 // StartRequest is POST /v1/runners.
 type StartRequest struct {

@@ -288,3 +288,65 @@ func findNativeProblem() string {
 	}
 	return ""
 }
+
+func yield(map[string]*tree, bool) {}
+
+var idle struct {
+	sync.Mutex
+	at  time.Time
+	val *time.Duration
+}
+
+// inputIdle asks logind about the graphical sessions at this machine's own
+// screen. Without one (a server, WSL) nothing is known. Asked a few times a minute.
+func inputIdle() *time.Duration {
+	idle.Lock()
+	defer idle.Unlock()
+	if time.Since(idle.at) < 20*time.Second {
+		return idle.val
+	}
+	idle.at, idle.val = time.Now(), nil
+	out, err := exec.Command("loginctl", "list-sessions", "--no-legend").Output()
+	if err != nil {
+		return nil
+	}
+	var shown []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			if s, err := exec.Command("loginctl", "show-session", f[0], "-p", "Type", "-p", "Active", "-p", "Remote", "-p", "IdleHint", "-p", "IdleSinceHint").Output(); err == nil {
+				shown = append(shown, string(s))
+			}
+		}
+	}
+	idle.val = sessionsIdle(shown, time.Now())
+	return idle.val
+}
+
+// sessionsIdle reads `loginctl show-session` outputs: the shortest idle time
+// among the active graphical sessions at the local screen. A desktop sets
+// IdleHint only after minutes without input; until then the person counts as
+// there right now.
+func sessionsIdle(shown []string, now time.Time) *time.Duration {
+	var best *time.Duration
+	for _, s := range shown {
+		kv := map[string]string{}
+		for _, line := range strings.Split(s, "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+				kv[k] = v
+			}
+		}
+		if (kv["Type"] != "x11" && kv["Type"] != "wayland" && kv["Type"] != "mir") || kv["Active"] != "yes" || kv["Remote"] == "yes" {
+			continue
+		}
+		d := time.Duration(0)
+		if kv["IdleHint"] == "yes" {
+			if usec, err := strconv.ParseInt(kv["IdleSinceHint"], 10, 64); err == nil && usec > 0 {
+				d = max(0, now.Sub(time.UnixMicro(usec)))
+			}
+		}
+		if best == nil || d < *best {
+			best = &d
+		}
+	}
+	return best
+}

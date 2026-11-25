@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ type tree struct {
 	known   map[int]int64 // members at the last look: pid -> start time
 	left    string        // the members outside the process group, as written to <dir>/pids
 	leader  bool          // the shell itself is still running
+	bg      bool          // its processes were put into the background band
 	cpuUsec uint64
 	mem     int64
 	peak    int64
@@ -246,8 +248,59 @@ func hostUsage() (HostUsage, error) {
 			h.Closed = "memory pressure (critical)"
 		}
 	}
+	h.InputIdle = inputIdle()
 	h.CPUUsec, err = hostCPUUsec()
 	return h, err
+}
+
+var hidIdleRE = regexp.MustCompile(`"HIDIdleTime" = (\d+)`)
+
+// inputIdle asks the HID system how long ago a key or the pointer moved.
+func inputIdle() *time.Duration {
+	out, err := exec.Command("/usr/sbin/ioreg", "-c", "IOHIDSystem", "-d", "4").Output()
+	if err != nil {
+		return nil
+	}
+	m := hidIdleRE.FindSubmatch(out)
+	if m == nil {
+		return nil
+	}
+	ns, err := strconv.ParseInt(string(m[1]), 10, 64)
+	if err != nil {
+		return nil
+	}
+	d := time.Duration(ns)
+	return &d
+}
+
+const (
+	prioDarwinProcess = 4      // PRIO_DARWIN_PROCESS
+	prioDarwinBG      = 0x1000 // PRIO_DARWIN_BG
+)
+
+// background moves a process into or out of the band macOS keeps for work
+// nobody waits for (what `taskpolicy -b` does): low CPU priority, throttled
+// disk, efficiency cores first. Children started afterwards inherit it.
+func background(pid int, on bool) error {
+	prio := 0
+	if on {
+		prio = prioDarwinBG
+	}
+	return unix.Setpriority(prioDarwinProcess, pid, prio)
+}
+
+// yield puts every runner's processes behind the person at the machine, and
+// back when the person has gone.
+func yield(ts map[string]*tree, present bool) {
+	for _, t := range ts {
+		if !present && !t.bg {
+			continue
+		}
+		for pid := range t.known {
+			_ = background(pid, present)
+		}
+		t.bg = present
+	}
 }
 
 // BootID changes when the host has rebooted.

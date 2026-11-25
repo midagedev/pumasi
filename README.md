@@ -210,8 +210,10 @@ notify:
 - GitHub 토큰은 노트북의 `PUMASI_GITHUB_TOKEN` 에만 있다. 호스트로는 러너 하나짜리 JIT 설정만 간다.
 - ssh 호스트의 에이전트는 loopback 에서만 듣고 노트북이 `ssh -L` 로 붙는다. join 호스트의 에이전트는 어디서도 듣지 않고 노트북의 `listen` 포트로 TLS 연결 하나를 연다. 대시보드와 status 는 어느 쪽이든 loopback 에만 열린다.
 - 장부(SQLite)와 이벤트 로그는 `~/.local/state/pumasi/` 에 쌓인다. 잡마다 cpu 초·메모리 peak·기동 시간이 남는다.
-- Linux 호스트(WSL2 포함)는 Docker 러너, Mac 호스트는 프로세스 러너다. 사람 우선·VM 은 [설계](docs/design.md)의 다음 단계.
+- Linux 호스트(WSL2 포함)는 Docker 러너(클래스에 `driver: native` 를 적으면 프로세스 러너), Mac·Windows 호스트는 프로세스 러너다. VM 은 [설계](docs/design.md)의 다음 단계.
+- **사람 우선**: `desktop` 호스트는 누가 쓰고 있는 동안(마지막 키보드·마우스 입력 15분 안) 새 러너를 받지 않는다. 도는 잡은 끝까지 돈다.
+  Mac 에서는 그동안 러너가 background 우선순위로 내려간다. 설정은 없다. [사람 우선](docs/people-first.md).
 
 ## 문서
 
-[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [Mac·Windows](docs/platforms.md) · [호스트 경로](docs/host-paths.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)
+[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [Mac·Windows](docs/platforms.md) · [호스트 경로](docs/host-paths.md) · [사람 우선](docs/people-first.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)

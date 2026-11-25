@@ -69,6 +69,7 @@ type hostState struct {
 	diskTotal    int64
 	closed       string
 	noNative     string
+	inputIdle    *time.Duration
 }
 
 func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
@@ -230,7 +231,7 @@ func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta u
 	if err != nil {
 		a.log.Warn("host usage", "err", err)
 	}
-	h.psi, h.closed = hu.PSI, hu.Closed
+	h.psi, h.closed, h.inputIdle = hu.PSI, hu.Closed, hu.InputIdle
 	if n, ok := a.drv.(interface{ NativeProblem() string }); ok {
 		h.noNative = n.NativeProblem()
 	}
@@ -262,6 +263,9 @@ func (a *Agent) Snapshot() api.Snapshot {
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
 		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
+	}
+	if a.host.inputIdle != nil {
+		s.InputIdleSec = ptr(int64(a.host.inputIdle.Seconds()))
 	}
 	for _, r := range a.recs {
 		s.Runners = append(s.Runners, r.Runner)

@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/midagedev/pumasi/internal/cgroup"
 )
@@ -27,6 +28,8 @@ type HostUsage struct {
 	// Closed: the OS's own sign that the machine is short right now (macOS
 	// memory pressure, Windows commit charge). Empty = fine.
 	Closed string
+	// InputIdle: how long ago someone last touched the keyboard or mouse. nil = not known.
+	InputIdle *time.Duration
 }
 
 // Meter measures runners and the host. Linux reads cgroup v2 and PSI; the
@@ -84,5 +87,6 @@ func (m *CgroupMeter) Host() (HostUsage, error) {
 	}
 	root, err3 := m.R.RootCPUUsec()
 	h.CPUUsec = root
+	h.InputIdle = inputIdle()
 	return h, errors.Join(err1, err2, err3)
 }

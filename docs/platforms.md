@@ -126,7 +126,7 @@ join 으로 붙은 Mac 의 에이전트는 LaunchAgent, Windows 는 로그온 �
 2. Windows — Job Object 로 같은 것. 한도 강제 확인. **드라이버·에이전트 수준 실물까지. GitHub 잡은 join 뒤.**
 3. ~~클래스 `os` 와 배치, status·대시보드의 OS 열.~~ 됐다.
 4. join 초대 줄(sh·PowerShell), LaunchAgent / 로그온 시작. **Mac 은 됐다(실물). Windows 는 코드까지.**
-5. 사람이 쓰는 중이면 새 러너를 받지 않는다(M2 의 사람 우선과 합친다).
+5. ~~사람이 쓰는 중이면 새 러너를 받지 않는다.~~ 됐다 — `people-first.md`.
 
 ## 수용
 

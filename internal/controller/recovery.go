@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -99,10 +100,22 @@ func (c *Controller) closedReason(h *host) string {
 		return "quarantined"
 	case disk != "":
 		return disk
-	case h.snap != nil:
+	case h.snap == nil:
+		return ""
+	case h.snap.Closed != "":
 		return h.snap.Closed // the host's own word: macOS memory pressure, Windows commit charge
+	case personAt(cmp.Or(h.snap.Kind, h.cfg.Kind), h.snap):
+		return "in use"
 	}
 	return ""
+}
+
+// personAt: someone works at this desktop right now. People first: it takes
+// no new runners until they have been away for a while. What runs, runs on.
+// A server is never held back by its console, and a host that cannot tell
+// (no screen, an agent outside the user's session) counts as free.
+func personAt(kind string, s *api.Snapshot) bool {
+	return kind == "desktop" && s.InputIdleSec != nil && time.Duration(*s.InputIdleSec)*time.Second < api.PersonAway
 }
 
 // How a runner's end is told and whether its job may be rerun.
