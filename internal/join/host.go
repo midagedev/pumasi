@@ -171,6 +171,8 @@ type Host struct {
 	// State is told of every change: connected, or not and why.
 	State func(connected bool, why string)
 	Log   *slog.Logger
+	// Watch, when set, explains a keepalive timeout this process caused itself.
+	Watch *Watchdog
 
 	stay string
 	last string // why the previous session of this process ended
@@ -193,6 +195,7 @@ func (h *Host) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		why = h.Watch.Explain(why)
 		h.State(false, why)
 		if connected {
 			h.last = why

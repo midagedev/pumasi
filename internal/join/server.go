@@ -414,8 +414,9 @@ func (p *Peer) attach(sess *yamux.Session, version, stay, hostWhy string) {
 	case old != nil:
 		// This side had not noticed yet; only the host knows why it dialed again.
 		p.why, p.droppedAt = cmp.Or(hostWhy, WhyReplaced), time.Now()
-	case hostWhy != "" && p.why == WhyExited:
-		// The host closed the connection, but not because its agent ended.
+	case hostWhy != "" && (p.why == WhyExited || strings.HasPrefix(hostWhy, p.why+" (")):
+		// The host closed the connection, but not because its agent ended; or it
+		// knows more about a timeout both sides saw (it was stalled, or asleep).
 		p.why = hostWhy
 	}
 	if old == nil {

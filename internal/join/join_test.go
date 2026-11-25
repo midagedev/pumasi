@@ -419,6 +419,13 @@ func TestHostSaysWhyItDialedAgain(t *testing.T) {
 	if got := p.Link().Why; got != WhyExited {
 		t.Fatalf("why = %q", got)
 	}
+	// The host knows more about a timeout both sides saw.
+	p = &Peer{up: make(chan struct{})}
+	p.why = WhyKeepalive
+	p.attach(nil, "v", "", WhyKeepalive+" (the host was asleep for 5m0s)")
+	if got := p.Link().Why; got != WhyKeepalive+" (the host was asleep for 5m0s)" {
+		t.Fatalf("why = %q", got)
+	}
 	// What the controller saw itself is not overwritten.
 	p = &Peer{up: make(chan struct{})}
 	p.why = WhyKeepalive
@@ -447,5 +454,32 @@ func TestCurlAcceptsThePinAndRejectsAnother(t *testing.T) {
 	// The script is valid sh.
 	if out, err := exec.Command("sh", "-n", "join.sh").CombinedOutput(); err != nil {
 		t.Fatalf("sh -n join.sh: %v\n%s", err, out)
+	}
+}
+
+func TestWatchdogExplainsItsOwnTimeouts(t *testing.T) {
+	w := &Watchdog{}
+	t0 := time.Now()
+	w.saw(t0, t0.Add(time.Second)) // an ordinary tick
+	if got := w.Explain(WhyKeepalive); got != WhyKeepalive {
+		t.Fatalf("nothing happened, yet %q", got)
+	}
+	w.saw(t0, t0.Add(15*time.Second)) // the process did not run for 14s
+	if got := w.Explain(WhyKeepalive); !strings.Contains(got, "did not get to run for 14s") {
+		t.Fatalf("stall: %q", got)
+	}
+	if got := w.Explain(WhyReset); got != WhyReset {
+		t.Fatalf("only a timeout is explained: %q", got)
+	}
+	// Asleep: the wall clock moved 5 minutes, the monotonic clock one tick.
+	woke := t0.Add(time.Second)
+	wall := time.Unix(0, woke.UnixNano()).Add(5 * time.Minute)
+	w.sawClocks(time.Second, wall.Sub(time.Unix(0, t0.UnixNano())), time.Now())
+	if got := w.Explain(WhyKeepalive); !strings.Contains(got, "asleep for 5m0s") {
+		t.Fatalf("sleep: %q", got)
+	}
+	var none *Watchdog
+	if got := none.Explain(WhyKeepalive); got != WhyKeepalive {
+		t.Fatalf("no watchdog: %q", got)
 	}
 }

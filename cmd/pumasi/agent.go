@@ -121,7 +121,9 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 			close(left)
 		}
 	})
-	h := &join.Host{Config: hc, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Handler: mux, Log: log,
+	watch := &join.Watchdog{Log: log}
+	go watch.Run(ctx)
+	h := &join.Host{Config: hc, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Handler: mux, Log: log, Watch: watch,
 		State: func(connected bool, why string) {
 			b, _ := json.Marshal(linkState{Connected: connected, At: time.Now(), Why: why})
 			_ = os.WriteFile(p.state, b, 0o600)
