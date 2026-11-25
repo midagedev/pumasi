@@ -17,7 +17,7 @@ test:
 	$(GO) vet ./...
 	$(GO) test ./...
 
-# Provokes the failures of docs/robustness.md on real hosts; see scripts/chaos.sh.
+# Provokes the failures of docs/design.md on real hosts; see scripts/chaos.sh.
 chaos: all
 	scripts/chaos.sh
 

@@ -1,175 +1,267 @@
-# pumasi 설계 초안 (2026-11-24)
+# 지금의 설계
 
-문제는 [problem.md](problem.md), 근거 조사는 [research/scaleset-api.md](research/scaleset-api.md) · [research/landscape.md](research/landscape.md).
+코드가 지금 하는 일을 적는다. 무엇을 실물로 확인했는지는 [verified.md](verified.md), 근거 조사는 [research/](research/).
 
-## 결론 먼저
+## 풀려는 문제
 
-- **GitHub 공식 `actions/scaleset`(MIT) 위에 새로 만든다.** GARM 은 scale set 하나가 제공자 하나에 묶이고(`workers/scaleset/controller_watcher.go:84`) macOS 를 모른다. 가장 가까운 zoomies 는 Linux 컨테이너만 돌리고 AGPL 이다. 사람 활동에 비켜 주는 기능은 어디에도 없다.
-- 남이 이미 잘하는 것(러너 격리, Tart VM, Hyper-V)은 드라이버로 가져다 쓰고, **배치 결정과 사람 우선 정책**만 우리 몫으로 한다.
-- GARM 과는 경쟁하지 않는다. 나중에 GARM 외부 제공자 어댑터를 둘 수 있다.
+셀프호스트 러너를 여러 머신에 깔아 쓰면 반복해서 생기는 일이다.
 
-## 손잡이는 scale set 뿐이다
+- GitHub 은 비어 있는 러너면 **호스트 부하와 상관없이** 잡을 넣는다. 손잡이는 러너 개수뿐이다.
+- 잡 크기가 다르다. lint 한 번과 JVM·DB·브라우저를 띄우는 e2e 한 번이 똑같이 러너 1개다.
+- 잡이 남긴 컨테이너·디렉터리가 다음 잡의 자원을 갉아먹는다.
+- 사람이 쓰는 머신을 러너로 빌리면 사람도 CI 도 서로 방해한다.
 
-scaleset API 조사에서 나온 제약이 설계를 정한다.
+그래서: 잡 크기와 호스트 여유를 보고 배치하고(자리가 없으면 GitHub 큐에서 기다린다), 러너는 잡 하나로 끝내고, 사람이 앉은 머신에는 새 일을 주지 않는다.
+Kubernetes 를 요구하지 않는다.
 
-| 사실 | 근거 | 설계에 주는 뜻 |
-|---|---|---|
-| 같은 scale set 안에서는 GitHub 이 비어 있는 아무 러너에 잡을 준다. 특정 잡을 특정 러너로 보낼 수 없다 | `README.md:20`, JIT 설정이 잡이 아니라 scale set 에 묶임 `client.go:780` | **잡 크기·OS 마다 scale set 을 따로 만든다.** 이것이 유일한 분류 수단이다 |
-| `JobAvailable`·`JobAssigned` 에 레포·워크플로·잡 이름·요청 라벨이 러너가 생기기 전에 실려 온다 | `types.go:47-62` | 무엇이 기다리는지 보고 몇 개를 어디에 띄울지 정할 수 있다 |
-| scale set 은 라벨 여러 개를 가질 수 있지만 만든 뒤엔 못 바꾼다 | `client.go:571-583`, 이슈 #140 | 클래스 정의가 바뀌면 이름에 버전을 붙여 새로 만든다 (`linux-l-v2`) |
-| 러너 목록 조회 API 가 없다. 죽은 러너는 우리가 지울 때까지 남는다 | scaleset-api.md Q5 | **컨트롤러가 러너 장부를 저장하고** 에이전트 heartbeat 로 주기적으로 맞춘다 |
-| `maxCapacity=0` 이면 대기 중인 잡이 안 보인다 | 이슈 #133 | 자리가 없다고 0 을 보고하지 않는다. 용량 상한은 넉넉히 두고, **러너를 안 띄우는 것으로** 기다리게 한다 |
-| 아직 `6.0-preview` | scaleset-api.md Q6 | API 를 얇은 내부 인터페이스 뒤에 감춘다 |
+## GitHub 이 주는 손잡이는 scale set 뿐이다
+
+GitHub 공식 `actions/scaleset` 클라이언트 위에 만든다. 그 API 의 성질이 설계를 정한다.
+
+| 사실 | 설계에 주는 뜻 |
+|---|---|
+| scale set 안에서는 GitHub 이 비어 있는 아무 러너에 잡을 준다. 특정 잡을 특정 러너로 보낼 수 없다 | **클래스(크기·OS)마다 scale set 을 따로 만든다.** 유일한 분류 수단이다 |
+| 잡이 배정되면 레포·워크플로·잡 이름이 러너가 생기기 전에 온다 | 무엇이 기다리는지 보고 몇 개를 어디에 띄울지 정한다 |
+| scale set 의 라벨은 `[pumasi-<클래스>, self-hosted]` 로 고정한다 | `runs-on: [self-hosted, pumasi-<클래스>]` |
+| 러너 목록 조회 API 가 없다. 죽은 러너의 등록은 지울 때까지 남는다 | **controller 가 러너 장부(SQLite)를 든다.** 에이전트의 스냅샷으로 맞춘다 |
+| 용량을 0 으로 보고하면 대기 잡이 안 보인다 | 용량은 늘 넉넉히 보고하고, **러너를 안 띄우는 것으로** 기다리게 한다 |
+| 아무도 안 받은 배정은 5분 뒤 거둬졌다 다시 오고, 세 번 뒤에는 메시지가 끊긴다 | 미룬 수요를 장부에 들고 있다가 자리가 나면 메시지 없이 스스로 띄운다 |
+| 잡을 든 러너의 등록 삭제는 GitHub 이 거절한다 | 떠 있는 러너를 지우기 전에 **등록 삭제를 먼저 청한다**(아래 견고함) |
+| 러너가 죽어도 GitHub 은 약 10분 뒤에야 잡을 실패로 닫고, 다시 돌리지 않는다 | 러너의 죽음은 에이전트가 직접 보고, 다시 돌리기는 `rerun:` 으로 |
 
 ## 구성
 
 ```
                  GitHub (scale set API)
-                        │  listener (클래스별 1개)
+                        │  listener (클래스마다 하나)
               ┌─────────▼──────────┐
-              │   controller        │  늘 켜진 서버 1대
-              │  - 클래스 정의       │
-              │  - 러너 장부 (SQLite)│
-              │  - 배치 결정 Decide  │
+              │   controller        │  pumasi up
+              │  클래스 · 장부 · Decide │  listen :7411
               └───▲───────────▲─────┘
-        outbound  │           │  outbound (에이전트가 먼저 연결)
-          ┌───────┴──┐   ┌────┴──────┐   ...
-          │ agent     │   │ agent      │
-          │ Linux 서버 │   │ Mac 노트북  │
-          │ driver:   │   │ driver:    │
-          │  docker   │   │  native/tart│
+                  │ TLS 연결 하나씩 (호스트가 건다)
+          ┌───────┴──┐   ┌────┴──────┐
+          │ agent     │   │ agent      │   호스트마다 하나, 그 사용자의 서비스
+          │ docker    │   │ native     │   러너 = 컨테이너 또는 프로세스
           └───────────┘   └────────────┘
 ```
 
-- **controller**: 클래스마다 listener 를 돌려 수요(대기 잡 수와 라벨)를 받고, 에이전트들이 보낸 호스트 상태로 배치를 정해 "이 호스트에 이 클래스 러너 하나"를 지시한다. JIT 설정은 controller 가 만들어 넘긴다(에이전트는 GitHub 자격을 갖지 않는다).
-- **agent**: 호스트마다 하나. 에이전트가 controller 로 먼저 연결한다(NAT·사내망·Tailscale 어디서든). 보고하는 것과 하는 것은 아래.
-- **driver**: 러너를 실제로 띄우는 방법. 호스트 OS·신뢰 수준에 따라 고른다.
+- **controller** — 클래스마다 listener 로 수요를 받고, 호스트들의 스냅샷으로 배치를 정해 "이 호스트에 이 클래스 러너 하나"를 시킨다.
+  러너 하나짜리 JIT 설정을 만들어 넘긴다. GitHub 토큰은 controller 에만 있다.
+- **agent** — 호스트마다 하나. 러너를 띄우고 지우고, 호스트와 러너의 수치를 답한다. GitHub 자격이 없다.
+- 바이너리는 하나다(`pumasi`). 호스트는 자기 OS 의 판을 controller 에서 받는다.
 
-## 클래스
+## 클래스와 배치
 
-클래스 = scale set 하나 = 잡 크기·OS·신뢰 범위 묶음. 예:
+클래스 = scale set 하나 = 러너의 크기·OS·드라이버. 키는 README 의 표.
 
-| 클래스 | 자원 | 허용 호스트 | 비고 |
-|---|---|---|---|
-| `linux-s` | 2코어 / 4G | 서버 + 노는 데스크톱 | lint·단위 테스트·진단. 짧다 |
-| `linux-l` | 8코어 / 16G, docker 사용 | 서버만 | compose 스택을 띄우는 e2e |
-| `macos` | 4코어 / 8G | Mac | Mac 이 꼭 필요한 잡만 |
-| `windows` | 4코어 / 8G | Windows | |
-| `deploy` | 4코어 / 8G | 신뢰 서버만 | 배포 비밀값을 쓰는 잡은 여기로만 |
-
-워크플로는 `runs-on: pumasi-linux-l` 처럼 클래스를 고른다. 크기가 다른 잡이 같은 슬롯 1개로 계산되던 문제가 여기서 풀린다.
-
-## 에이전트가 보고하는 것
-
-- 사양: 코어·메모리·OS·아키텍처, 쓸 수 있는 드라이버
-- 지금 여유: 러너가 아닌 프로세스의 CPU·메모리 사용(사람 몫), 디스크 여유
-- **사람 활동**: 마지막 입력 후 경과 시간, 화면 잠금 여부
-- 돌고 있는 러너와 그 상태, 캐시 상태(어떤 레포의 캐시가 따뜻한지)
-- 신뢰 수준(설정값): `trusted-server` / `desktop`
-
-사람 활동 신호를 OS 별로 어떻게 읽는지는 아직 확인 전이다(열린 질문 3).
-
-## 배치 결정
-
-zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결정마다 사유 문자열을 남긴다. 같은 스냅샷이면 같은 결정 → 테스트와 재생이 쉽다.
+배치는 순수 함수 `Decide(snapshot) -> Plan` 이고 결정마다 사유 문자열을 남긴다(대기 사유가 그것이다).
 
 1. **수요**: 클래스별 대기 잡 수 − 이미 뜨고 있거나 노는 그 클래스 러너 수.
-2. **자격**: 클래스 허용 호스트이고, 사람 상태가 `available` 이고, `여유 − 예약분 ≥ 클래스 크기` 인 호스트만.
-3. **순위**: 늘 켜진 서버 먼저 → 그 레포 캐시가 따뜻한 호스트 → 여유가 큰 호스트. 데스크톱은 서버가 꽉 찼을 때만.
-4. **자리가 없으면 아무것도 안 한다.** 잡은 GitHub 큐에서 기다린다. 이게 "다 받아 놓고 같이 느려지는" 지금 문제의 반대다.
-5. 노는 러너는 기본 0 개(min-idle 0). 잡이 오면 띄운다 → 러너 기동 시간만큼 늦어지는 대가가 있다. 클래스별로 min-idle 을 줄 수 있게 한다.
+2. **자격**: 클래스의 OS·`hosts`·`mounts` 에 맞고, 닫혀 있지 않고(연결 끊김, 격리, 디스크 부족, 사람이 쓰는 중, CPU 압박(PSI) 40% 이상, 호스트가 스스로 닫음),
+   `예산 − 쓰는 중 − 다른 클래스의 reserve ≥ 클래스 크기` 인 호스트.
+3. **순위**: server 먼저, 그다음 desktop. 같은 종류 안에서는 여유가 큰 쪽.
+4. **자리가 없으면 아무것도 안 한다.** 잡은 GitHub 큐에서 기다리고, 10분(`waitAlert`)이 넘으면 사건이 된다.
+5. 노는 러너는 두지 않는다. 잡이 오면 띄우고(기동 수 초), 잡을 못 받은 러너는 5분 뒤 지운다.
 
-## 사람 우선 (HTCondor owner 정책)
+호스트의 예산이 유일한 상한이다. 클래스별 러너 수 상한은 없다.
 
-호스트 상태는 셋이다.
+## 호스트가 붙는 법
 
-| 상태 | 조건 (기본값, 설정 가능) | 새 러너 | 도는 잡 |
+**호스트가 controller 로 연결을 연다.** 길은 이것 하나다. controller 는 `listen` 포트 하나를 열고, 에이전트는 어떤 포트도 열지 않는다.
+
+- **연결 하나.** 호스트가 TLS 로 붙고 그 위에 스트림을 여러 개 얹는다(yamux). controller 는 그 스트림으로 에이전트의 HTTP 계약(`/v1/snapshot`, `/v1/runners`)을 부른다.
+- **끊기면 호스트가 다시 건다**, 1초부터 30초까지 늘려 가며. keepalive 10초, 20초 응답이 없으면 양쪽이 버린다. controller 가 내려가 있어도 러너와 잡은 그대로 돈다.
+- **초대 줄**이 하는 일: controller 에서 자기 OS 의 바이너리를 받아 `~/.local/bin/pumasi` 에 두고, 붙기 전 확인을 하고, 에이전트를 그 사용자의 서비스로 올린다.
+  호스트가 말하는 것은 이름·예산·종류뿐이다(기본: hostname, 머신의 절반, Mac·Windows·화면 세션이 있는 Linux 는 desktop).
+- **`hosts: - ssh: X`** 는 같은 일을 controller 가 대신 한다: ssh 로 들어가 초대 줄을 그 호스트의 이름·예산·종류로 실행한다(스크립트는 stdin 으로).
+  ssh 는 그때와, 안 붙어 있는 그 호스트를 `down` 이 치울 때(`pumasi leave` 실행)만 쓴다. 그 호스트의 에이전트가 계속 안 붙으면 1분마다 초대 줄을 다시 실행한다.
+- **판 맞추기.** 호스트는 붙을 때 자기 판(바이너리 sha256)을 말한다. 다르면 controller 의 판을 받아 sha 를 확인하고 자기 자신을 바꿔 실행한다. 러너는 건드리지 않는다.
+  못 바꾸면 이유를 말하며 옛 판으로 붙고 `agent version` 사건이 열린다.
+
+### 서로를 믿는 방법
+
+- controller 는 처음 뜰 때 TLS 키와 인증서를 만든다(상태 디렉터리의 `join.key`·`join.crt`).
+- **호스트 → controller**: 초대 줄에 인증서의 공개키 지문이 있다(`--pinnedpubkey`). 에이전트도 그 지문으로만 붙는다. 호스트는 시키는 이미지를 실행하므로 이 확인이 필요하다.
+- **controller → 호스트**: 초대 토큰. `pumasi invite` 때마다 새로 만들고 기본은 호스트 하나·1시간이다. 인자가 아니라 환경(`PUMASI_TOKEN`)으로 가서 프로세스 목록에 남지 않는다.
+  호스트는 가입할 때 자기 id 와 비밀값을 만들어 보내고 controller 는 그 해시만 적는다(`hosts.json`). 그 뒤 연결은 id 와 비밀값으로 한다.
+- **이미 가입한 호스트는 토큰 없이 다시 가입한다**(이름·예산·종류를 바꿀 때). 토큰의 1회 제한은 새 호스트에만 걸린다.
+- 설정의 `hosts:` 에 있는 이름은 예약이다. 그 이름으로는 controller 가 그 호스트에게 준 토큰으로만 가입한다.
+- `listen` 포트는 가입·바이너리 내려받기·세션만 받는다. 대시보드와 status 는 loopback 에만 열린다.
+
+### OS 마다 다른 것
+
+| | Linux | Mac | Windows |
 |---|---|---|---|
-| `available` | 입력 없음 15분 이상 **그리고** 사람 몫 CPU 사용 < 20% | 받음 | — |
-| `owner-active` | 입력이 있었거나 사람 몫 부하가 높음 | **안 받음** | 끝날 때까지 둔다 |
-| `draining` | 수동 지정 (재부팅·작업 예정) | 안 받음 | 끝날 때까지 둔다 |
+| 초대 줄 | sh | sh (같은 줄) | PowerShell |
+| 붙기 전 확인 | docker, cgroup v2 | 러너 배포판 받기, 디스크, 로그인 세션 | 같음 |
+| 에이전트를 지키는 것 | systemd user unit (linger 일 때) | LaunchAgent `dev.pumasi.agent` | HKCU `Run` 값 — 로그온 때 뜨는 감독 프로세스 |
+| 그게 안 되면 | 스스로 다시 뜨는 프로세스(재부팅 뒤에는 안 올라온다 — 가입할 때 말한다) | 같음(화면에 로그인하지 않은 Mac) | — |
+| 판 교체 | 같은 pid 로 exec | 같은 pid 로 exec | 파일을 바꿔 두고 끝남 → 감독 프로세스가 새 판을 띄움 |
 
-- 도는 잡을 중간에 죽이지 않는다. GitHub 에는 HTCondor 의 preempt·이주 같은 게 없어서, 죽이면 실패한 잡만 남는다. 그래서 데스크톱에는 짧은 클래스(`linux-s`)만 허용하는 것이 기본값이다.
-- 돌고 있는 러너는 CPU 우선순위를 낮춰서(Linux `nice`/cgroup `cpu.weight`, macOS `taskpolicy`) 사람이 돌아온 뒤 끝날 때까지의 방해를 줄인다.
+Mac·Windows 의 에이전트가 **로그인한 사용자의 세션**에서 도는 것은 잡 때문이다: 서명은 그 사용자의 키체인을, 브라우저 시험은 화면을 쓴다. 그래서 Windows 는 서비스(세션 0)가 아니다.
+ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전트도 죽는다 — 그 머신의 창에서 붙인다.
 
-## 드라이버
+### 떼기
 
-| 드라이버 | 격리 | 쓰는 곳 | 주의 |
+- 호스트에서 `pumasi leave`: 에이전트·러너(컨테이너, native 러너의 scope, 안쪽 docker 용 이미지)·`~/.cache/pumasi`·러너 루트·바이너리·서비스를 지우고 controller 에 알린다.
+  러너가 떠 있으면 목록을 보이고 거부한다(`--force`).
+- `pumasi down`: 붙어 있는 호스트에 같은 일을 시키고 scale set 을 지운다. 안 붙어 있는 호스트는 `hosts:` 의 것이면 ssh 로 `leave` 를 실행하고, 스스로 붙은 것이면 "거기서 `pumasi leave`" 라고 말한다.
+- controller 가 잊은 호스트의 러너는 장부에서 `host … is not configured` 로 닫힌다.
+
+## 러너
+
+러너는 잡 하나로 끝난다. 작업 디렉터리·도구 캐시도 그 러너의 것이다.
+
+| | docker (Linux 기본) | native — Linux | native — Mac | native — Windows |
+|---|---|---|---|---|
+| 러너 | 컨테이너 | systemd user scope 안의 프로세스 | 프로세스 그룹 + 자손 추적 | 이름 붙은 Job Object |
+| 한도 | cgroup: CPU·메모리 | 같음(`CPUQuota`, `MemoryMax`, swap 0) | **없다** | Job Object: 넘는 할당이 실패 |
+| 한도를 넘으면 | 그 프로세스만 죽고 OOM 사건 | 같음 | `ran over its class` 사건, 잡은 계속 | 거절 횟수를 세어 같은 사건 |
+| 수치 | cpu 초, 메모리 peak, I/O, 압박(PSI) | 같음(io 는 위임된 호스트만) | cpu 초, 메모리 peak(5초 샘플) | cpu 초, 메모리 peak, I/O |
+| 남은 자식 정리 | 컨테이너 삭제 | `cgroup.kill` | 그룹에 SIGTERM → SIGKILL, 벗어난 자식도 추적 | Job 종료 |
+| 에이전트가 죽어도 | 러너는 돈다. 새 에이전트가 이어받고 수치도 이어진다 | 같음(scope 는 systemd 의 것) | 같음 | 같음(같은 로그온 세션에서) |
+| 호스트의 것 | 안 보인다(`mounts` 로 붙인 것만) | 전부 보인다 | 전부 보인다 | 전부 보인다 |
+
+- **러너가 잡을 받았는지는 에이전트가 먼저 안다.** 러너 출력의 `Running job` 줄을 읽어 busy 를 알린다(GitHub 의 메시지는 30초쯤 늦다).
+- **JIT 설정은 환경 변수로 넘긴다**(인자는 `ps` 에 보인다). 에이전트의 환경에서 자격처럼 보이는 것(`*TOKEN*`, `*SECRET*`, `PUMASI_*`)은 러너에 넘기지 않는다.
+- **러너 판**은 `image` 의 태그다(`ghcr.io/actions/actions-runner:2.338.2`). 컨테이너는 그 이미지를 쓰고, native 는 태그에서 판 번호를 읽어 같은 판의 배포판을
+  처음 한 번 받는다(`~/.cache/pumasi/dist`, sha256 을 GitHub release 의 digest 와 대조한 뒤에만 푼다). **태그가 `:latest` 면 native 러너는 뜨지 못한다.** 러너의 자체 업데이트는 꺼져 있어 판은 사람이 올린다.
+
+### 컨테이너 러너에 호스트를 붙이기
+
+- **`mounts`** — `docker run --mount type=bind` 로 같은 경로에 붙인다(`:ro` = 읽기 전용; 없는 경로를 docker 가 root 로 만들지 않는다).
+  호스트는 물어 온 경로 중 있는 것을 답하고, 모두 있는 호스트에만 놓인다. 없으면 `no host has /srv/ci-cache`. 컨테이너 안의 사용자(`runner`, uid 1001)가 쓸 수 있게 하는 것은 호스트의 일이다.
+  native 클래스에 적으면 붙이지 않고(이미 보인다) 놓을 호스트만 가린다.
+- **작업 디렉터리는 첫 쓰기 가능 mount 안에 둔다**(`<mount>/.pumasi-work/<러너>`, 끝나면 지운다). 컨테이너의 overlay 와 mount, 서로 다른 mount 사이에서는
+  `link()` 가 `EXDEV` 라 pnpm·uv·ccache 의 hard link 가 조용히 복사로 바뀐다. mount 가 모두 `:ro` 면 컨테이너 안에 둔다.
+- **`docker: inside`** — 러너 컨테이너 안에 docker 데몬을 띄운다. 잡의 `docker run`·`services:`·compose 가 거기 생기므로 클래스 한도와 수치 안이고,
+  잡이 남긴 컨테이너·볼륨·네트워크·이미지는 러너와 함께 사라진다. 대가는 둘이다. 러너 컨테이너가 **privileged** 다 — 컨테이너 격리를 믿고 낯선 레포를 받는 클래스에는 쓰지 않는다.
+  그리고 **이미지를 러너마다 새로 받는다**(안쪽 저장소는 러너와 함께 지우는 볼륨). 러너 사이에 저장소를 남기면 잡마다 10초쯤 아끼지만 앞 잡의 것이 다음 잡에 보이고 디스크 정리 규칙이 따로 든다 — 남기지 않는다.
+  기본 러너 이미지에 iptables 가 없어서 호스트마다 처음 한 번 얹은 이미지를 짓는다(`pumasi-inner-docker:<판>`). compose 플러그인은 잡이 받는다. native 클래스에는 못 적는다.
+
+### native 러너
+
+- **Linux**: `systemd-run --user --scope --unit=pumasi-<러너>` 안의 `run.sh`. systemd-run 이 자신을 scope 에 넣고 나서 러너의 셸이 되므로 러너는 무엇을 띄우기 전부터 한도 아래다.
+  띄울 수 없는 호스트는 스스로 말한다(systemd user 세션 없음, cpu·memory 미위임, linger 꺼짐) — 그 호스트에는 native 클래스를 놓지 않고 대기 사유에 그 말이 나온다.
+  잡이 호스트 docker 로 띄운 컨테이너는 이 cgroup 밖이다.
+- **러너 루트는 홈 밖이다**: Linux `/var/tmp/pumasi-<uid>`, Mac `/Users/Shared/pumasi-<uid>`, Windows `C:\pm\<SID 끝자리>`. 잡 로그에 호스트 사용자의 홈 경로가 나오지 않고
+  Windows 에서는 경로가 짧다(260자 한계). 그 자리가 이미 남의 것이면 `~/.cache/pumasi/runners` 를 쓴다.
+- **배포판은 복제한다**: Mac 은 APFS clone, Linux·Windows 는 읽기 전용 하드 링크(다른 파일시스템이면 복사). 러너들이 파일을 함께 쓰므로 쓰기 권한을 떼어 두고,
+  쓰기 가능으로 돌아와 있으면 손댄 것으로 보고 새로 받는다.
+- **지우지 못한 것은 치워 두고 알린다.** 잡이 쓰기 권한을 뗀 디렉터리는 권한을 되돌려 지운다. 잡이 컨테이너로 남긴 root 의 파일처럼 그 사용자가 못 지우는 것은
+  러너 디렉터리째 `<러너 루트>/.trash/` 로 옮기고 `leftover` 사건이 경로와 이유를 말한다. 지우는 것은 사람이 한다.
+- **Mac 의 호스트 여유**: 남이 쓰는 CPU 는 Mach `host_statistics`, 메모리는 `kern.memorystatus_level`. 커널의 memory pressure 가 warning 이상이면 호스트가 스스로 닫는다.
+- **Windows**: Job 에 이름을 붙이고 러너의 셸이 Job 핸들을 물려받는다 — 에이전트가 죽어도 Job 이 살고 새 에이전트가 이름으로 다시 연다. 이름은 로그온 세션 안의 것이라 다른 세션의 에이전트는 못 찾는다.
+  `shell: bash` 는 WSL 이 깔린 머신에서 WSL 의 bash 로 풀리고, `shell: powershell` 은 실행 정책 `Restricted` 에 막힌다(`shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}`) — pumasi 가 아니라 Windows 러너의 성질이다.
+- **재부팅 판정**은 호스트의 boot id 로 한다(Linux boot_id, Mac `kern.bootsessionuuid`, Windows 커널 시작 시각). **Windows 의 빠른 시작(fast startup)으로 껐다 켠 것은 새 부팅이 아니다** — 그때 끝난 러너는 `rebooted` 가 아니라 `died` 로 나온다.
+
+### 고정 러너에서 옮길 때 달라지는 것
+
+- 워크스페이스에 남겨 둔 것(`clean: false`, `node_modules`)에 기대던 잡은 매번 처음부터 한다.
+- `setup-node`·`setup-java` 는 러너마다 다시 받는다.
+- 러너 이름이 매번 다르다. 러너 이름으로 캐시 디렉터리를 나누던 워크플로우는 클래스나 잡 이름으로 나눈다.
+- GitHub API 로 센 빈 러너 수는 늘 0 이다.
+- 순서: 라벨 하나 = `driver: native` + `hosts:` 클래스 하나로 시작(워크플로우는 `runs-on` 만 바뀐다) → 잡 사이에 넘기는 것이 없는 클래스부터 `hosts:` 를 푼다 → 호스트를 안 쓰는 잡은 컨테이너 클래스로.
+
+## 사람 우선
+
+데스크톱은 누군가의 책상이다. 그 사람이 앉아 있는 동안에는 새 러너를 받지 않는다. 도는 잡은 건드리지 않는다.
+
+- 에이전트는 "마지막 키보드·마우스 입력이 몇 초 전인가"만 말한다. Mac 은 `HIDIdleTime`, Windows 는 `GetLastInputInfo`(사용자 세션 안에서만 읽힌다),
+  Linux 는 logind 화면 세션의 `IdleHint`. 알 수 없으면 비우고, 신호를 모르는 호스트는 열려 있다.
+- `desktop` 호스트의 마지막 입력이 **15분** 안이면 그 호스트는 닫힌다(STATE 와 대기 사유에 `in use`). server 는 닫지 않는다. 설정은 없다.
+- Mac 에이전트는 사람이 있는 동안 러너의 프로세스를 background 대역으로 내린다(`PRIO_DARWIN_BG`). Mac 은 CPU 한도가 없어서 이것이 유일한 수단이다. Linux·Windows 는 한도가 강제되므로 하지 않는다.
+- 남이 쓰는 CPU·메모리는 사람 여부와 무관하게 빈 자리 계산에서 빠진다.
+
+## 견고함
+
+원칙 셋.
+
+1. **상태는 다시 만들 수 있다.** 진실은 호스트의 러너(에이전트가 본다)와 GitHub 이다. 장부는 그 둘에서 복원된다. controller 는 언제 죽어도 된다.
+2. **도는 잡은 건드리지 않는다.** 예외는 사용자가 명시한 것(`down --force`, `leave --force`, 클래스의 `maxDuration`)뿐이다.
+   떠 있는 러너를 지우는 모든 경로(idle timeout, 기동 시간 초과, 장부에 없는 러너, Ctrl-C)는 **GitHub 에 그 러너의 등록 삭제를 먼저 청한다.** GitHub 은 잡을 든 러너의 삭제를 거절하므로,
+   방금 잡을 받아 아직 idle 로 보이는 러너도 지워지지 않는다. 거절되면 그 러너를 busy 로 되살리고, GitHub 에 물을 수 없으면 그 회차에는 지우지 않는다.
+3. **조용히 실패하지 않는다.** 스스로 고친 것도 못 고친 것도 사건으로 남기고 알린다.
+
+**사건**은 장부의 한 행이고 `key` 가 같으면 같은 사건이다(`host-unreachable/server1`). 열릴 때, 30분마다, 닫힐 때 알린다. 5분 안에 열렸다 닫히기를 세 번 넘기면 flapping 한 번으로 묶는다.
+알림 전송이 실패해도 배치는 멈추지 않고 다음 회차에 다시 보낸다.
+
+| 장애 | 감지 | 하는 것 | 알림 |
 |---|---|---|---|
-| `docker` | 컨테이너 1개 = 러너 1개, 끝나면 삭제 | Linux 서버·데스크톱, WSL2 | e2e 처럼 잡 안에서 docker 가 필요하면 dind 또는 sysbox. 호스트 docker 소켓을 넘기면 격리가 깨진다 |
-| `native` | 러너마다 새 작업 디렉터리, 끝나면 삭제 | Mac, Windows | 격리가 약하다. 대신 Mac 동시 VM 제한(아래)에 안 걸린다 |
-| `tart` | APFS 복제 macOS VM | Mac | macOS 라이선스가 Mac 한 대당 macOS VM 동시 2개까지만 허용한다 → Mac 한 대당 이 클래스 2개가 상한 |
-| `kata` | `docker run --runtime kata` — 컨테이너 사용법 그대로, 격리는 경량 VM | Linux (KVM) | 컨테이너 드라이버에서 런타임만 바꾸는 중간 단계 |
-| `microvm` | Firecracker·Cloud Hypervisor, 잡마다 커널 따로 | Linux (KVM) | VM 안에 dockerd 를 띄워 잡 안 docker 문제가 사라진다. e2e(`linux-l`) 후보 |
-| `hyperv` | VM 복제 | Windows 서버 | 나중 |
+| controller 죽음 | 서비스 관리자 | 다시 떠서 잠금 → 호스트를 기다림 → 러너 이어받기. 놓친 메시지는 스냅샷과 GitHub 잡 상태로 메운다 | `controller is back: was down …, adopted N runners, N jobs finished meanwhile` |
+| 에이전트 죽음 | 세션 끊김 | 호스트의 서비스가 다시 올린다. 러너는 그대로, 수치는 디스크에 있어 이어진다 | 2분 넘게 안 붙으면 사건 |
+| 호스트 연결 끊김 | keepalive·스냅샷 실패 | 새 배치 중단, 러너는 용량에 그대로 계산, 돌아오면 스냅샷으로 맞춤 | `hostLostAfter`(2분) 넘으면 사건(끊긴 이유와 함께), 돌아오면 해제 |
+| 호스트 재부팅 | boot id 가 바뀜 | 그 러너를 lost 로 닫고 등록 삭제. 돌던 잡은 인프라 실패 | 사건 + 잃은 잡 목록 |
+| 러너가 못 뜸 | `provisionTimeout`(3분), 조기 종료 | 등록 삭제를 청한 뒤 지우고 다시 배치 | 같은 호스트에서 연속 3번이면 격리 |
+| 호스트 격리 | 연속 기동 실패 3번 | 새 배치 중단, 5분마다 점검, 통과하면 복귀 | 격리·복귀 각각 |
+| 잡 도중 러너가 죽음 | 종료 코드 ≠ 0 인데 잡 완료 없음 | 등록 삭제(GitHub 이 놓을 때까지 재시도). 인프라 실패 | 사건 + 잡·호스트·종료 코드 |
+| 메모리 한도 | cgroup `oom_kill`, Job Object 거절 | 없음(코드·클래스 크기의 문제) | `hit the <클래스> … memory limit` |
+| 잡이 오래 기다림 | 처음 본 시각 + `waitAlert`(10분) | 재평가는 계속 | 사건 + 사유, 시작되면 해제 |
+| 잡이 오래 돎 | 클래스 `maxDuration` | 설정했을 때만 러너 정지 | 넘는 순간 사건 |
+| 디스크 부족 | 러너가 놓이는 디스크의 여유 < `diskMinFree`(10%) | 새 배치 중단, 끝난 pumasi 컨테이너·안 쓰는 러너 이미지 정리 | 사건, 회복되면 해제 |
+| 지우지 못한 파일 | 러너를 지울 때 | 러너 디렉터리를 `.trash/` 로 | `leftover` 사건 |
+| GitHub API 실패 | 호출 오류 | 백오프로 재시도. 401·403 은 멈춤 | 2분 넘으면 사건, 401·403 은 즉시 |
+| 장부가 깨짐 | 열기·무결성 검사 | 옆으로 치우고 빈 장부에서 시작, 스냅샷과 GitHub 으로 복원 | 사건(이력은 잃는다) |
+| 주인 없는 러너 | 장부에 없는 pumasi 러너 | 등록 삭제가 받아들여진 것만 지움 | 로그 |
+| controller 둘 | 상태 디렉터리 잠금 | 두 번째가 바로 끝남 | 오류 한 줄 |
 
-기본 방향: 짧고 많은 잡(`linux-s`)은 컨테이너, compose 스택을 띄우는 잡(`linux-l`)은 `kata` → `microvm` 순으로 비교한다. Mac·Windows 는 VM 이 사실상 유일하다.
+**다시 돌리기** — 실패의 원인이 우리 쪽이면(호스트 재부팅, 러너가 밖에서 죽음) `rerun: 1` 일 때 그 run 의 실패한 잡을 한 번 다시 돌린다(기본 0 = 알리기만).
+코드 실패·메모리 한도·`maxDuration` 초과는 다시 돌리지 않는다.
 
-호스트의 정리 작업도 드라이버 몫이다. 컨테이너 안에서 virtiofs 너머로 지우지 말고 호스트에서 직접 지운다(실측: 수십 분 → 20초).
+**알림** — `notify.webhook`(JSON POST, Slack·Teams 수신 웹훅이면 그 형식) 또는 `notify.command`(같은 JSON 을 stdin 으로). `level`: `problem`(기본) · `recovered`(스스로 고친 것도) · `all`.
 
-## 캐시
+장애 표의 행은 `make chaos`(`scripts/chaos.sh`)가 실제 호스트에서 일으켜 본다.
 
-러너는 일회용이고 캐시는 호스트에 남는다. 에이전트가 `cache/<레포>/{pnpm-store,gradle,…}` 를 들고, 드라이버가 러너에 마운트한다. 쓰기 경합을 막는 단위(레포별 잠금 또는 읽기 전용 스냅샷 + 쓰기 오버레이)는 M4 에서 정한다. 배치 순위에 캐시가 따뜻한지가 들어간다.
+## 운영
 
-## 장부와 맞추기
+- **상태 디렉터리** `~/.local/state/pumasi/`: 장부(`pumasi.db`), 이벤트 로그, TLS 키, 가입한 호스트, 초대 토큰. 한 디렉터리에 controller 하나.
+- **대시보드**: controller 가 loopback 에 내는 한 페이지(정적 파일 셋을 바이너리에 넣었다). 5초마다 `/api/state`·`/api/jobs`·`/api/series` 를 읽는다. 읽기 전용. `/metrics` 는 Prometheus 용.
+- **status 의 호스트 열**: `SEEN`(마지막 응답), `RTT`(스냅샷 왕복), `AGENT`(에이전트의 판), `LAST DROP`(마지막으로 끊긴 이유: `keepalive timeout`, `connection reset`, `agent exited`).
+- **`diskMinFree`** 기본 10%. 디스크가 늘 차 있는 머신(노트북)을 호스트로 쓰면 이 값에 걸려 러너가 놓이지 않는다 — 사건이 그렇게 말한다. 설정에서 낮출 수 있다.
 
-- controller 의 SQLite 에 러너 행: `id, class, host, state(requested|starting|idle|busy|done|lost), jit_name, created_at, job(run_id, repo, job_name)`.
-- `JobStarted`/`JobCompleted` 의 `runnerName` 으로 어느 호스트가 잡을 받았는지 채운다.
-- 에이전트 heartbeat 가 끊긴 호스트의 러너는 `lost` 로 두고 `RemoveRunner` 를 시도한다. `JobStillRunningError` 면 다음 주기에 다시.
-- 러너를 띄우다 실패해도 GitHub 에 알릴 방법이 없다(이슈 #124). 장부에서 다른 호스트로 다시 띄운다.
+### controller 를 상시로 띄우기
 
-## 메트릭 — VM 이든 컨테이너든 같은 모양으로
+`up` 은 죽었다 다시 떠도 이어받으므로 서비스 관리자에게 "죽으면 다시 띄워라"만 시킨다. Mac 에서는 로그인한 사용자의 LaunchAgent 로:
 
-원칙: **러너 하나 = 측정 단위 하나.** 격리 방식이 달라도 에이전트가 호스트 쪽 경계에서 같은 지표를 같은 이름으로 낸다. 게스트 안 에이전트 없이도 숫자가 나와야 한다.
+```xml
+<!-- ~/Library/LaunchAgents/dev.pumasi.controller.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>dev.pumasi.controller</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string><string>-c</string>
+		<string>PUMASI_GITHUB_TOKEN=$(gh auth token) exec /path/to/dist/pumasi up -config /path/to/pumasi.yaml</string>
+	</array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>10</integer>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>StandardOutPath</key><string>/path/to/pumasi-up.log</string>
+	<key>StandardErrorPath</key><string>/path/to/pumasi-up.log</string>
+	<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict>
+</plist>
+```
 
-| OS | 측정 경계 | 읽는 것 |
-|---|---|---|
-| Linux | 러너마다 cgroup v2 하나. 컨테이너는 원래 cgroup 이고, `kata`·`microvm` 은 VMM 프로세스를 러너 전용 cgroup 에 넣는다 | `cpu.stat`, `memory.current`·`memory.peak`, `io.stat`, PSI(`cpu`·`memory`·`io.pressure`) |
-| macOS | 러너 프로세스 트리 (Tart VM 은 Virtualization 프로세스) | `proc_pid_rusage` — CPU 시간, `phys_footprint`, 디스크 I/O |
-| Windows | 러너마다 Job Object | `QueryInformationJobObject` 회계 정보 |
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.pumasi.controller.plist   # 올리기
+launchctl bootout gui/$(id -u)/dev.pumasi.controller                                  # 내리기 (러너와 잡은 그대로)
+```
 
-지표는 세 층이다.
+- 토큰은 plist 에 적지 않고 뜰 때마다 읽는다. `gh` 에 계정이 여럿이면 `gh auth token -u <계정>` 으로 고정한다.
+- `dist/` 는 통째로 둔다(호스트가 거기서 자기 판을 받는다).
+- `ProcessType` 은 `Interactive`. 안 적으면 launchd 가 바쁜 머신에서 CPU·IO 를 뒤로 미룰 수 있다.
+- 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮춘다(zsh: nice 5). `up` 은 그럴 때 경고 한 줄을 낸다.
+- Linux 에서는 systemd user unit(`Restart=always`)이 같은 일을 한다.
 
-| 층 | 예 | 라벨 |
-|---|---|---|
-| 러너(잡) 자원 | CPU 초, 메모리 peak, I/O 바이트, 압력 대기 시간, 네트워크 바이트 | host, class, driver, runner, repo, workflow, job, run_id |
-| 잡 수명 | 큐 대기(`queueTime`→러너 배정), 기동 시간(배치 결정→러너 Listening), 실행 시간, 결과 | class, repo, workflow, job |
-| 호스트·결정 | 클래스별 남은 자리, 사람 상태, 호스트 PSI, 배치 결정과 사유, 자리 없어 미룬 수 | host, class |
+## 하지 않는 것
 
-- 러너↔잡 연결은 `JobStarted` 의 `runnerName` 으로 한다. `JobAssigned` 에 repo·workflow·job 이름이 온다(M0 실측).
-- 에이전트는 Prometheus(OpenMetrics) 엔드포인트를 연다. controller 는 잡이 끝날 때 요약 한 줄(peak 메모리, CPU 초, 대기·기동·실행 시간, 결과)을 장부에 남긴다 → 이력.
-- 쓰임:
-  1. **부하 판단은 load average 대신 PSI.** "load 74" 보다 "CPU 를 기다린 시간 비율"이 배치 판단에 맞다.
-  2. **클래스 크기를 이력으로 맞춘다.** 워크플로·잡별 실측 peak 로 "이 잡은 `linux-s` 로 충분 / `linux-l` 이 필요"를 추천한다. 슬롯 1개 = 잡 1개 문제를 숫자로 푼다.
-  3. **실패를 환경 탓과 코드 탓으로 가른다.** 잡이 실패한 시각의 호스트 PSI·러너 메모리 peak·사람 상태를 잡 옆에 붙여 보여 준다.
-
-## 단계
-
-| 단계 | 내용 | 끝났다는 기준 |
-|---|---|---|
-| **M0 검증 스파이크** | scale set 1개, Linux 호스트 1대, `docker` 드라이버로 잡 하나를 끝까지 | 아래 열린 질문 1·2·4 를 실제로 확인해 적는다 |
-| M1 (끝, [실측](m1-results.md)) | 여러 Linux 호스트 + 용량 배치 + 장부·맞추기 + 러너 cgroup 메트릭·잡 수명 지표 | 서버 2대에 `linux-s`·`linux-l` 를 섞어 넣어도 클래스 크기 합이 호스트 용량을 넘지 않고, 잡마다 peak 메모리·CPU 초가 장부에 남는다 |
-| M2 | 사람 우선 (Linux 데스크톱, Mac) | 입력이 생기면 새 러너가 그 호스트에 안 뜬다 |
-| M3 | Mac `native`·`tart`, Windows `native` | 세 OS 에서 잡 하나씩 |
-| M4 | 따뜻한 캐시, 잡 안 docker (e2e) | compose 스택 e2e 한 벌이 `linux-l` 에서 통과 |
-| 이후 | 결정 로그 대시보드, GARM 어댑터, Gitea | — |
-
-## M0 실측 (2026-11-24)
-
-컨트롤러는 노트북, 러너는 Linux 서버 1대에 `ssh <host> docker run` 으로 띄웠다(PAT 는 서버에 두지 않고 JIT 설정만 stdin 으로 넘김). 원본 이벤트는 스파이크 프로그램(`cmd/pumasi-m0`, M1 뒤 삭제)이 남긴 JSON lines.
-
-| 질문 | 결과 | 설계에 주는 뜻 |
-|---|---|---|
-| `runs-on` 매칭 | 잡 라벨이 **전부** scale set 라벨 안에 있으면 그 scale set 으로 온다. `pumasi-m0` · `pumasi-extra` · `[pumasi-m0, pumasi-extra]` 모두 통과. **`[self-hosted, pumasi-m0]` 은 scale set 에 메시지조차 오지 않고 대기만 한다** — scale set 에는 `self-hosted` 가 자동으로 붙지 않는다 | 기존 `runs-on: [self-hosted, X]` 워크플로를 옮기려면 워크플로를 고치거나 클래스 라벨에 `self-hosted` 를 넣어야 한다(넣는 쪽은 미확인) |
-| github.com 메시지 순서 | `JobAvailable` 없이 `JobAssigned` 가 바로 온다(`runnerRequestId=0`). repo·workflow·job 이름·요청 라벨이 실려 있다 | 수요 = `JobAssigned` 기준. 잡 단위 정보로 배치 판단 가능 |
-| 러너가 조용히 죽으면 | 폐기된 러너 버전(2.329.0)은 접속 직후 **종료 코드 0** 으로 끝났다. GitHub 은 약 5분 뒤 그 배정을 끝내고(`JobCompleted`) 다시 배정했다 | 컨테이너·VM 종료를 에이전트가 직접 감시해 즉시 다시 띄운다. 러너 버전은 최신을 따라간다 |
-| 잡 도중 호스트 사망 | 러너를 강제 종료한 뒤 **약 9분 43초** 만에 잡이 `failure` 로 끝났다("self-hosted runner lost communication"). 그동안 메시지 없음. 자동 재시도 없음. 끝난 뒤에도 등록 러너 수가 1 로 남음 | 데스크톱에 긴 잡을 보내지 않는 정책이 맞다. 죽은 등록은 장부로 찾아 `RemoveRunner` |
-| 러너 없이 대기 | `JobAssigned` → 5분 뒤 `JobCompleted`(빈 결과) + 재배정, 이것이 **3번**(10:46 · 10:51 · 10:56). 그 뒤 **35분간 메시지 없음**, 잡은 계속 `queued`. 46분 뒤 컨트롤러를 다시 시작하자 세션 첫 통계(`totalAssignedJobs=1`)로 러너를 띄웠고 잡을 가져가 성공 | "자리가 없으면 큐에서 기다린다"는 성립한다. 단 **재배정 3번 뒤엔 새 메시지가 없으므로**, 미룬 수요를 장부에 들고 있다가 자리가 나면 컨트롤러가 스스로 러너를 띄워야 한다(메시지를 기다리면 영원히 안 온다). 24시간 큐 한도는 미확인 |
-| `self-hosted` 라벨 | 라벨 `[self-hosted, pumasi-m0]` 인 scale set 을 만들 수 있고, `runs-on: [self-hosted, pumasi-m0]` 잡을 받아 성공 | **기존 워크플로를 안 고치고 옮길 수 있다.** 클래스 라벨 = 기존 러너 라벨 그대로 |
-| 러너 기동 시간 | 한가한 호스트에서 컨테이너 시작 → 잡 시작 약 8초. 부하가 큰 호스트(load 70+)에서는 **약 2분 40초**(GitHub 연결 조회가 회당 30초 가까이) | 기동 시간은 호스트 상태의 신호다. 잡 수명 지표에 넣고 배치 순위에도 쓴다 |
-
-## 남은 열린 질문
-
-1. OS 별 사람 활동 신호: macOS(HID idle), Linux(logind `IdleHint` / X·Wayland), Windows(`GetLastInputInfo` 는 사용자 세션 안에서만 읽힌다).
-2. 잡 안 docker: `kata` 와 `microvm` 중 무엇이 e2e 클래스에 맞는가 (기동 시간, 캐시 마운트, 메모리).
-3. 미룬 수요를 오래 들고 있을 때 GitHub 쪽 한도(큐 24시간 등)와, 3번 재배정이 끝난 잡을 통계 말고 다시 확인할 방법.
+- NAT 를 뚫는 중계. 호스트가 `listen` 주소에 닿아야 한다.
+- 호스트가 클래스나 이미지를 정하는 것.
+- 웹에서 호스트를 붙이고 떼는 버튼, 대기열의 우선순위(`reserve` 하나로 한다), 클래스별 러너 수 상한.
+- 잡을 다른 호스트로 옮기기, 사람이 돌아왔다고 도는 잡을 멈추기.
+- 러너 사이에 도구 캐시·docker 이미지 저장소를 남기기.
+- VM 드라이버(Tart, microVM), GitHub 이외의 CI, 클라우드 인스턴스 만들기.

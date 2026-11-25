@@ -1,5 +1,5 @@
 name: long
-# One long job (docs/robustness.md): it must outlive a controller restart and a
+# One long job (docs/design.md): it must outlive a controller restart and a
 # host whose connection is cut while it runs.
 on:
   workflow_dispatch:

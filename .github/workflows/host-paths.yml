@@ -1,5 +1,5 @@
 name: host-paths
-# Acceptance for docs/host-paths.md: jobs that use the host's directories.
+# Acceptance for docs/design.md: jobs that use the host's directories.
 #   native  two jobs of a native class: the first writes into a host directory
 #           and uses the host's docker, the second reads what the first wrote
 #   oom     a job that takes more memory than its class

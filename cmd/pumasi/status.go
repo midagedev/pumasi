@@ -64,7 +64,7 @@ func printStatus(w io.Writer, s controller.State) {
 		fmt.Fprintln(w)
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tKIND\tOS\tCPUS\tMEMORY\tCPU PRESSURE\tRUNNERS\tSTATE\tVIA\tSEEN\tRTT\tAGENT\tLAST DROP")
+	fmt.Fprintln(tw, "HOST\tKIND\tOS\tCPUS\tMEMORY\tCPU PRESSURE\tRUNNERS\tSTATE\tSEEN\tRTT\tAGENT\tLAST DROP")
 	for _, h := range s.Hosts {
 		pressure, state := "-", "unknown"
 		if h.CPUPressure != nil {
@@ -84,8 +84,8 @@ func printStatus(w io.Writer, s controller.State) {
 			seen = (time.Duration(*h.SeenSeconds) * time.Second).String() + " ago"
 			rtt = fmt.Sprintf("%.0fms", h.RTTMs)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%g/%g\t%s/%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), h.UsedCPUs, h.BudgetCPUs,
-			gib(h.UsedMem), gib(h.BudgetMem), pressure, h.Runners, state, h.Via, seen, rtt, dash(h.Agent), dash(h.LastDrop))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%g/%g\t%s/%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), h.UsedCPUs, h.BudgetCPUs,
+			gib(h.UsedMem), gib(h.BudgetMem), pressure, h.Runners, state, seen, rtt, dash(h.Agent), dash(h.LastDrop))
 	}
 	tw.Flush()
 

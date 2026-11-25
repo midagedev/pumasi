@@ -164,12 +164,9 @@ func TestJoinedHostIsAHostLikeAnyOther(t *testing.T) {
 	if err != nil || len(st.Hosts) != 2 {
 		t.Fatalf("state %+v %v", st.Hosts, err)
 	}
-	if hs := st.Hosts[1]; hs.Name != "desk1" || hs.Via != "join" || hs.Kind != "desktop" || hs.BudgetCPUs != 2 ||
+	if hs := st.Hosts[1]; hs.Name != "desk1" || hs.Kind != "desktop" || hs.BudgetCPUs != 2 ||
 		hs.Reachable == nil || !*hs.Reachable || hs.SeenSeconds == nil || hs.Agent != "abc123" {
 		t.Fatalf("host state %+v", hs)
-	}
-	if st.Hosts[0].Via != "ssh" {
-		t.Fatalf("host state %+v", st.Hosts[0])
 	}
 
 	// The host drops: the incident says why, and ends when it is back.

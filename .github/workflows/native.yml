@@ -1,5 +1,5 @@
 name: native
-# Acceptance load for native (process) runners, see docs/platforms.md: short
+# Acceptance load for native (process) runners, see docs/design.md: short
 # jobs on one OS's class, each leaving child processes behind that must be gone
 # once the job is over.
 on:

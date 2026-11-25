@@ -130,7 +130,7 @@ func runController(args []string, down bool) error {
 	if n := niceness(); n > 0 && !down {
 		// A shell lowers its background jobs (zsh: nice 5); the listener and the
 		// hosts' keepalives then wait behind everything else on a busy machine.
-		log.Warn(fmt.Sprintf("this controller runs at nice %d (started with & from a shell?): on a busy machine it falls behind; run it in the foreground or as a service (docs/robustness.md)", n))
+		log.Warn(fmt.Sprintf("this controller runs at nice %d (started with & from a shell?): on a busy machine it falls behind; run it in the foreground or as a service (docs/design.md)", n))
 	}
 	if !*verbose {
 		// The listener logs every long poll at info level.

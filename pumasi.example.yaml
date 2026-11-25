@@ -1,30 +1,19 @@
 # Copy to pumasi.yaml, then: make && PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi up
-url: https://github.com/OWNER/REPO   # repo, org or enterprise
+url: https://github.com/OWNER/REPO         # repo, org or enterprise
+listen: 0.0.0.0:7411                       # where hosts connect (the default); `pumasi invite` prints the line that joins one
 
-classes:                             # a class is a runner size; jobs pick one with
-  - {name: linux-s, cpus: 1, memory: 1G}   #   runs-on: [self-hosted, pumasi-linux-s]
-  - {name: linux-l, cpus: 2, memory: 3G}
-#  - {name: macos, cpus: 4, memory: 8G, os: macos}   # placed only on macOS hosts, where runners are
-#                                                    #   processes of the host's user (see README)
-# Jobs that use the host itself (README: 기존 고정 러너에서 옮기기):
-#  - {name: cache, cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}   # the container sees this host path
-#  - {name: build, cpus: 4, memory: 8G, driver: native}            # a process of the host's user, in a cgroup
-#  - {name: release, cpus: 4, memory: 8G, driver: native, hosts: [server1]}   # only on that host
+classes:                                   # a class is a runner size: runs-on: [self-hosted, pumasi-<name>]
+  - {name: small, cpus: 1, memory: 1G}
+# - {name: e2e,   cpus: 4, memory: 8G, docker: inside, maxDuration: 2h}   # the job's own docker daemon, inside the limits
+# - {name: cache, cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}           # a host path, only on hosts that have it
+# - {name: build, cpus: 4, memory: 8G, driver: native, hosts: [server1]}  # a process of the host's user, on that host only
+# - {name: deploy, cpus: 2, memory: 4G, reserve: 1}                       # room other classes may not take
+# - {name: macos, cpus: 4, memory: 8G, os: macos}                         # os: macos | windows, on hosts of that OS
 
-hosts:                               # optional: ssh destinations (aliases from ~/.ssh/config) with Docker;
-                                     #   `up` runs the invite line there, the host then connects to `listen`
-  - ssh: server1
-    budget: {cpus: 4, memory: 6G}    # the most pumasi may use on this host
-  - ssh: desk1
-    desktop: true                    # someone works here: used after the servers
-    shell: wsl -e sh -s              # Windows host running WSL
-    budget: {cpus: 6, memory: 9G}
+# hosts:                                   # optional: `up` runs the invite line there over ssh for you
+#   - {ssh: server1, budget: {cpus: 4, memory: 6G}}
+#   - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}          # someone works there: used last, theirs first
 
-# listen: 0.0.0.0:7411              # where hosts connect (this is the default); every host must reach it.
-#                                    #   `pumasi invite` prints the line to run on a host that is not in hosts:
-
-# rerun: 1                           # optional: after a failure on pumasi's side (host reboot, runner killed)
-#                                    #   rerun that run's failed jobs once; default 0 = only tell
-# notify:                            # optional: problems (and their end) as one line each
-#   webhook: https://hooks.example/…  # JSON POST {text, key, kind, subject, state, detail}
-#   command: my-notify --stdin        # or a command that gets the same JSON on stdin
+# rerun: 1                                 # rerun a run's failed jobs once after a failure on pumasi's side
+# notify: {webhook: https://hooks.example/…}   # or command: my-notify --stdin; problems and their end, one line each
+# image: ghcr.io/actions/actions-runner:2.338.2   # the runner version; keep a version tag, not :latest

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# chaos: provoke the failures of docs/robustness.md on real hosts and check
+# chaos: provoke the failures of docs/design.md on real hosts and check
 # what pumasi does about each: the job's result, the incident it opens, the
 # notification it sends and the incident's end.
 #
