@@ -362,6 +362,9 @@ func removeRunners(ctx context.Context, p hostPaths) (int, error) {
 	}
 	// Native runners of a class with driver: native live in their own scopes.
 	scopes := sweepScopes()
+	if c, ok := drv.(interface{ Clean(context.Context) }); ok {
+		c.Clean(ctx) // what the driver made besides runners (Linux: the docker: inside image)
+	}
 	// The runners' own place, outside p.dir. What cannot be deleted there
 	// (files of root that a job left) stays, and stays said.
 	root := agent.RunnerRoot(p.dir)

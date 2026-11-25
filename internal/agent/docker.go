@@ -172,6 +172,8 @@ exec /home/runner/run.sh`
 // measured at its own cgroup, one above.
 const innerLeaf = "pumasi-runner"
 
+const innerImageRepo = "pumasi-inner-docker"
+
 var innerImageMu sync.Mutex
 
 // innerImage is image with what dockerd needs besides itself. The stock
@@ -188,7 +190,7 @@ func innerImage(ctx context.Context, image string) (string, error) {
 		return "", fmt.Errorf("docker image inspect %s: %w", image, err)
 	}
 	id, user, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
-	tag := "pumasi-inner-docker:" + strings.TrimPrefix(id, "sha256:")[:12]
+	tag := innerImageRepo + ":" + strings.TrimPrefix(id, "sha256:")[:12]
 	if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", tag).Run() == nil {
 		return tag, nil
 	}
@@ -204,6 +206,15 @@ func innerImage(ctx context.Context, image string) (string, error) {
 		return "", fmt.Errorf("image for docker: inside: %s", lastLine(out))
 	}
 	return tag, nil
+}
+
+// Clean removes the images pumasi built on this host (docker: inside). The
+// runner image itself was pulled, not made, and stays in docker's cache.
+func (d Docker) Clean(ctx context.Context) {
+	out, _ := exec.CommandContext(ctx, "docker", "images", "-q", "--filter", "reference="+innerImageRepo).Output()
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		_ = exec.CommandContext(ctx, "docker", append([]string{"rmi"}, ids...)...).Run()
+	}
 }
 
 // removeWorkDir deletes a runner's work directory on the host. What the job
