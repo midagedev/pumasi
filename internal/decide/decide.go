@@ -4,6 +4,7 @@ package decide
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -19,6 +20,8 @@ type Class struct {
 	MemBytes   int64
 	MaxRunners int
 	Hosts      []string // empty = every host
+	// Reserve: room for this many runners of the class is kept from other classes.
+	Reserve int
 	// Native: the runner is a process of the host's user, not a container.
 	Native bool
 	// Paths the host must have (the class's mounts).
@@ -207,28 +210,22 @@ func Decide(s Snapshot) Plan {
 		for _, hn := range hostNames {
 			h := hosts[hn]
 			freeCPU, freeMem := free(h, alloc[hn])
+			ok, reason := takes(s, c, h)
 			switch {
-			case len(c.Hosts) > 0 && !slices.Contains(c.Hosts, hn):
+			case !ok && reason == "":
 				continue
-			case (h.Up || h.OS != "") && osOf(h.OS) != osOf(c.OS):
-				continue // a job that asks for an OS never runs on another one
-			case !h.Up:
-				why = append(why, hn+" down")
+			case !ok && strings.HasPrefix(reason, lacks):
+				lacking = strings.TrimPrefix(reason, lacks)
 				continue
-			case h.Closed != "":
-				why = append(why, hn+" "+h.Closed)
-				continue
-			case c.Native && h.NoNative != "":
-				why = append(why, hn+": "+h.NoNative)
-				continue
-			case missing(c.Paths, h.Paths) != "":
-				lacking = missing(c.Paths, h.Paths)
-				continue
-			case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
-				why = append(why, fmt.Sprintf("%s cpu pressure %.0f", hn, h.PSICPU))
+			case !ok:
+				why = append(why, reason)
 				continue
 			case freeCPU+1e-9 < c.CPUs || freeMem < float64(c.MemBytes):
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
+				continue
+			}
+			if r := reservedFor(s, c, hn, hosts, alloc, live); r != "" {
+				why = append(why, hn+" reserved for "+r)
 				continue
 			}
 			slots := math.Min(freeCPU/c.CPUs, freeMem/float64(c.MemBytes))
@@ -259,6 +256,66 @@ func Decide(s Snapshot) Plan {
 		live[c.Name]++
 	}
 	return p
+}
+
+const lacks = "lacks "
+
+// takes reports whether a host may get runners of a class at all, apart from
+// room. When not, reason says why for the people waiting ("" = not worth
+// telling: another class's host, another OS).
+func takes(s Snapshot, c Class, h Host) (ok bool, reason string) {
+	switch {
+	case len(c.Hosts) > 0 && !slices.Contains(c.Hosts, h.Name):
+		return false, ""
+	case (h.Up || h.OS != "") && osOf(h.OS) != osOf(c.OS):
+		return false, "" // a job that asks for an OS never runs on another one
+	case !h.Up:
+		return false, h.Name + " down"
+	case h.Closed != "":
+		return false, h.Name + " " + h.Closed
+	case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
+		return false, fmt.Sprintf("%s cpu pressure %.0f", h.Name, h.PSICPU)
+	case c.Native && h.NoNative != "":
+		return false, h.Name + ": " + h.NoNative
+	case missing(c.Paths, h.Paths) != "":
+		return false, lacks + missing(c.Paths, h.Paths)
+	}
+	return true, ""
+}
+
+// room is how many more runners of a class fit on the hosts that take it.
+func room(s Snapshot, c Class, hosts map[string]Host, alloc map[string][2]float64) int {
+	n := 0
+	for name, h := range hosts {
+		if ok, _ := takes(s, c, h); ok {
+			cpu, mem := free(h, alloc[name])
+			n += int(math.Min((cpu+1e-9)/c.CPUs, mem/float64(c.MemBytes)))
+		}
+	}
+	return n
+}
+
+// reservedFor names the class whose reserve a runner of c on host would eat
+// into ("" = none). A class with reserve: N is promised room for N runners;
+// those it already has count. Another class is held back only where its
+// runner would take that room away, not when the room is not there anyway.
+func reservedFor(s Snapshot, c Class, host string, hosts map[string]Host, alloc map[string][2]float64, live map[string]int) string {
+	var with map[string][2]float64
+	for _, r := range s.Classes {
+		need := r.Reserve - live[r.Name]
+		if r.Name == c.Name || need <= 0 {
+			continue
+		}
+		if with == nil {
+			with = maps.Clone(alloc)
+			a := with[host]
+			with[host] = [2]float64{a[0] + c.CPUs, a[1] + float64(c.MemBytes)}
+		}
+		if before := room(s, r, hosts, alloc); room(s, r, hosts, with) < min(need, before) {
+			return r.Name
+		}
+	}
+	return ""
 }
 
 // OverMaxDuration starts the reason of a stop made because of a class's maxDuration.

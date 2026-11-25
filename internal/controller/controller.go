@@ -670,7 +670,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	for _, cl := range c.classes {
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
-			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts)})
+			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve})
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
 			for i := perClass[cl.cfg.Name]; i < cl.stats.TotalAssignedJobs-cl.stats.TotalRunningJobs; i++ {

@@ -65,6 +65,9 @@ type Class struct {
 	// Hosts binds the class to these hosts (empty = every host). Jobs that hand
 	// each other files in a host directory need the same machine.
 	Hosts []string `yaml:"hosts"`
+	// Reserve keeps room for this many runners of the class: other classes may
+	// not take it (deploy jobs that must not queue behind builds).
+	Reserve int `yaml:"reserve"`
 	// Driver: docker (a container per runner) or native (a process of the
 	// host's user, which sees the host's paths, credentials and docker).
 	// Default: docker on linux, native on macos and windows.
@@ -284,6 +287,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
 		}
 		switch {
+		case cl.Reserve < 0:
+			return fmt.Errorf("class %s: reserve must not be negative", cl.Name)
 		case cl.Driver != "docker" && cl.Driver != "native":
 			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
 		case cl.Driver == "docker" && cl.OS != "linux":

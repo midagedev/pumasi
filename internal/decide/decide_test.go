@@ -400,3 +400,48 @@ func TestNativeClassNeedsAHostThatCan(t *testing.T) {
 		t.Errorf("plan %+v", p)
 	}
 }
+
+func TestReserveKeepsRoomForItsClass(t *testing.T) {
+	deploy := Class{Name: "deploy", CPUs: 2, MemBytes: 2 * gb, MaxRunners: 10, Reserve: 1}
+	// The desktop's budget (6 cpus) holds six linux-s, but two cpus are deploy's.
+	s := snap([]Host{desktop()}, demand("linux-s", 6), nil)
+	s.Classes = []Class{classS, deploy}
+	p := Decide(s)
+	if len(p.Start) != 4 || len(p.Defer) != 1 || p.Defer[0].Count != 2 || !strings.Contains(p.Defer[0].Reason, "desk1 reserved for deploy") {
+		t.Fatalf("plan %+v, want four linux-s and two waiting behind deploy's reserve", p)
+	}
+	// The deploy job itself takes the room at once.
+	s.Demand = append(s.Demand, demand("deploy", 1)...)
+	if got := starts(Decide(s)); len(got) != 5 || !strings.Contains(strings.Join(got, " "), "deploy@desk1") {
+		t.Errorf("starts %v, want the deploy runner among them", got)
+	}
+	// While a deploy runner is up the reserve is in use: the others may fill the rest.
+	s.Demand = demand("linux-s", 6)
+	s.Runners = []Runner{{Name: "deploy-1", Class: "deploy", Host: "desk1", State: "busy", JobKnown: true, Container: "running", Working: true, CreatedAt: t0}}
+	if p := Decide(s); len(p.Start) != 4 || strings.Contains(p.Defer[0].Reason, "reserved") {
+		t.Errorf("plan %+v, want four linux-s beside the running deploy and no word of a reserve", p)
+	}
+}
+
+func TestReserveOnBoundHostLeavesOthersFree(t *testing.T) {
+	deploy := Class{Name: "deploy", CPUs: 2, MemBytes: 2 * gb, MaxRunners: 10, Reserve: 2, Hosts: []string{"server1"}}
+	// The server's budget is 4 cpus: all of it is deploy's. linux-s goes to the desktop only.
+	s := snap([]Host{server(), desktop()}, demand("linux-s", 7), nil)
+	s.Classes = []Class{classS, deploy}
+	p := Decide(s)
+	for _, st := range p.Start {
+		if st.Host != "desk1" {
+			t.Errorf("start %+v on the reserved server", st)
+		}
+	}
+	if len(p.Start) != 6 || !strings.Contains(p.Defer[0].Reason, "server1 reserved for deploy") {
+		t.Errorf("plan %+v", p)
+	}
+	// A reserve nobody can honour anyway (its host is down) holds nobody back.
+	down := server()
+	down.Up = false
+	s.Hosts = []Host{down, desktop()}
+	if p := Decide(s); len(p.Start) != 6 || strings.Contains(p.Defer[0].Reason, "reserved") {
+		t.Errorf("plan %+v", p)
+	}
+}
