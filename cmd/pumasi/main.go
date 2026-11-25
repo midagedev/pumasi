@@ -108,11 +108,18 @@ func runController(args []string, down bool) error {
 		c.ListenerLog = slog.New(newLineHandler(os.Stdout, slog.LevelWarn))
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() { // a second Ctrl-C quits without cleaning up
-		<-ctx.Done()
-		stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		cancel()
+		// A second Ctrl-C skips the tidy shutdown but still takes the ssh tunnels along.
+		<-sig
+		c.Close()
+		fmt.Fprintln(os.Stderr, "pumasi: interrupted again, quitting now")
+		os.Exit(130)
 	}()
 	if down {
 		return c.Down(ctx, *force)

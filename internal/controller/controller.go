@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -47,11 +48,15 @@ type Controller struct {
 	lastDefer map[string]deferRec
 	runCheck  map[int64]time.Time
 	status    Status // last round, for `pumasi status`
+	distDir   string
+	adopted   bool // the first round has reported what it found on the hosts
 }
 
 type host struct {
 	cfg       config.Host
-	started   bool // this controller started its agent
+	started   bool        // its agent was started or found running
+	ensuring  atomic.Bool // an agent restart is in flight
+	ensuredAt time.Time   // last restart attempt
 	tr        Transport
 	agent     *api.Client
 	snap      *api.Snapshot
@@ -128,6 +133,7 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 	if err := c.EnsureScaleSets(ctx); err != nil {
 		return err
 	}
+	c.distDir = distDir
 	defer c.shutdown()
 	if err := c.startAgents(ctx, distDir); err != nil {
 		return err
@@ -303,7 +309,23 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		c.log.Error("ledger runners", "err", err)
 		return
 	}
-	snap := c.decideSnapshot(now, c.syncRunners(live))
+	runners := c.syncRunners(live)
+	if !c.adopted {
+		c.adopted = true
+		n, busy := 0, 0
+		for _, r := range runners {
+			if r.State != "" && r.Container != "" && r.Container != "starting" {
+				n++
+				if r.State == "busy" {
+					busy++
+				}
+			}
+		}
+		if n > 0 {
+			c.log.Info(fmt.Sprintf("adopted %d runners left on the hosts (%d running jobs)", n, busy))
+		}
+	}
+	snap := c.decideSnapshot(now, runners)
 	plan := decide.Decide(snap)
 
 	for _, st := range plan.Stop {
@@ -340,8 +362,9 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 				}
 				h.snap = nil
 				if h.downSince.Equal(now) {
-					c.log.Warn(fmt.Sprintf("host %s unreachable", h.cfg.Name), "err", err)
+					c.log.Warn(fmt.Sprintf("host %s unreachable; its running jobs are left alone", h.cfg.Name), "err", err)
 				}
+				c.reviveAgent(ctx, h, now)
 				return
 			}
 			if !h.downSince.IsZero() {
@@ -735,6 +758,27 @@ func (c *Controller) startAgents(ctx context.Context, distDir string) error {
 		return errors.New("no usable host")
 	}
 	return nil
+}
+
+// reviveAgent restarts the agent of a host that has not answered for a while
+// (the tunnel reconnects by itself; this covers a dead agent or a rebooted
+// host). Starting an agent never touches containers.
+func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
+	if now.Sub(h.downSince) < 20*time.Second || now.Sub(h.ensuredAt) < time.Minute || !h.ensuring.CompareAndSwap(false, true) {
+		return
+	}
+	h.ensuredAt = now
+	go func() {
+		defer h.ensuring.Store(false)
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		did, err := ensureAgent(cctx, h.cfg, c.distDir)
+		if err != nil {
+			c.log.Warn(fmt.Sprintf("host %s: agent not restarted", h.cfg.Name), "err", err)
+			return
+		}
+		c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, did))
+	}()
 }
 
 func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
