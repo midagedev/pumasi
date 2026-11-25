@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -21,12 +23,13 @@ const (
 
 // tree is one runner's processes, held by a Job Object: every process the
 // runner starts is in the job, the job holds them to the class's memory and
-// CPU, counts what they use, and takes them all along when it ends.
+// CPU, counts what they use, and ends them all when pumasi terminates it.
 //
-// The job is closed with the agent (KILL_ON_JOB_CLOSE), so unlike on Linux
-// and macOS a runner does not outlive its agent: an agent that stops ends its
-// runners, and the controller reports them as died.
+// The job has a name and no kill-on-close: it lives as long as a process is
+// in it, so a running job survives its agent and the next agent opens the job
+// again by name. Only Remove ends it.
 type tree struct {
+	dir             string
 	job, proc, port windows.Handle
 	pid             int
 	born            int64
@@ -73,27 +76,62 @@ const (
 	cpuRateEnable, cpuRateHardCap      = 0x1, 0x4
 	msgProcessMemLimit, msgJobMemLimit = 9, 10
 	stillActive                        = 259
+	jobAllAccess                       = 0x1F001F
 )
+
+// jobName is the Job Object of a runner directory. The name lives in the
+// logon session's namespace: an agent started in another session does not
+// find it and reports the runner as exited.
+func jobName(dir string) *uint16 {
+	p, _ := windows.UTF16PtrFromString("pumasi-" + filepath.Base(dir))
+	return p
+}
+
+// procBorn is a process's creation time, which tells it from a reused pid.
+func procBorn(h windows.Handle) int64 {
+	var created, exited, kernel, user windows.Filetime
+	if windows.GetProcessTimes(h, &created, &exited, &kernel, &user) != nil {
+		return 0
+	}
+	return int64(created.HighDateTime)<<32 | int64(created.LowDateTime)
+}
+
+// watch has the job tell through a completion port when it refuses memory at the limit.
+func (t *tree) watch() error {
+	port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		return fmt.Errorf("completion port: %w", err)
+	}
+	assoc := jobPort{Port: port}
+	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectAssociateCompletionPortInformation,
+		uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc))); err != nil {
+		windows.CloseHandle(port)
+		return fmt.Errorf("job port: %w", err)
+	}
+	t.port = port
+	return nil
+}
 
 var (
 	kernel32               = windows.NewLazySystemDLL("kernel32.dll")
 	procGetProcessMemory   = kernel32.NewProc("K32GetProcessMemoryInfo")
 	procGlobalMemoryStatus = kernel32.NewProc("GlobalMemoryStatusEx")
 	procGetSystemTimes     = kernel32.NewProc("GetSystemTimes")
+	procOpenJobObject      = kernel32.NewProc("OpenJobObjectW")
 )
 
 func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err error) {
-	t = &tree{}
+	t = &tree{dir: dir}
 	defer func() {
 		if err != nil {
-			t.close()
+			t.kill()
 		}
 	}()
-	if t.job, err = windows.CreateJobObject(nil, nil); err != nil {
+	if t.job, err = windows.CreateJobObject(nil, jobName(dir)); err != nil {
 		return nil, fmt.Errorf("job object: %w", err)
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{JobMemoryLimit: uintptr(s.MemBytes)}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_JOB_MEMORY
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_JOB_MEMORY
 	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		return nil, fmt.Errorf("job limits: %w", err)
@@ -104,14 +142,8 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 		uintptr(unsafe.Pointer(&rate)), uint32(unsafe.Sizeof(rate))); err != nil {
 		return nil, fmt.Errorf("job cpu rate: %w", err)
 	}
-	// The job tells through this port when it refuses memory at the limit.
-	if t.port, err = windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1); err != nil {
-		return nil, fmt.Errorf("completion port: %w", err)
-	}
-	assoc := jobPort{Port: t.port}
-	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectAssociateCompletionPortInformation,
-		uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc))); err != nil {
-		return nil, fmt.Errorf("job port: %w", err)
+	if err = t.watch(); err != nil {
+		return nil, err
 	}
 
 	null, err := os.Open(os.DevNull)
@@ -129,7 +161,9 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 	si := windows.StartupInfo{Flags: windows.STARTF_USESTDHANDLES,
 		StdInput: windows.Handle(null.Fd()), StdOutput: windows.Handle(log.Fd()), StdErr: windows.Handle(log.Fd())}
 	si.Cb = uint32(unsafe.Sizeof(si))
-	cmdline, err := windows.UTF16PtrFromString(`cmd.exe /d /c run.cmd`)
+	// The shell around run.cmd leaves the exit code in a file: a later agent
+	// may find the process gone and has nobody to ask.
+	cmdline, err := windows.UTF16PtrFromString(`cmd.exe /d /v:on /c "call run.cmd & echo !errorlevel!> ..\exit"`)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +188,7 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 		return nil, fmt.Errorf("run.cmd: %w", err)
 	}
 	defer windows.CloseHandle(pi.Thread)
-	t.proc, t.pid = pi.Process, int(pi.ProcessId)
+	t.proc, t.pid, t.born = pi.Process, int(pi.ProcessId), procBorn(pi.Process)
 	if err = windows.AssignProcessToJobObject(t.job, t.proc); err != nil {
 		_ = windows.TerminateProcess(t.proc, 1)
 		return nil, fmt.Errorf("assign to job: %w", err)
@@ -165,9 +199,23 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 	return t, nil
 }
 
-// adoptTree: a runner of an earlier agent died with that agent's job handle.
-// What is left is its directory, reported as exited.
-func adoptTree(string, meta) *tree { return &tree{} }
+// adoptTree takes over a runner started by an earlier agent: its job by name,
+// its shell by pid if that is still the same process.
+func adoptTree(dir string, m meta) *tree {
+	t := &tree{dir: dir, pid: m.Pid, born: m.Born}
+	if h, _, _ := procOpenJobObject.Call(jobAllAccess, 0, uintptr(unsafe.Pointer(jobName(dir)))); h != 0 {
+		t.job = windows.Handle(h)
+		_ = t.watch() // the earlier agent's port is gone with it
+	}
+	if h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(m.Pid)); err == nil {
+		if t.job != 0 && procBorn(h) == m.Born {
+			t.proc = h
+		} else {
+			windows.CloseHandle(h)
+		}
+	}
+	return t
+}
 
 func refreshTrees(ts map[string]*tree) {
 	for _, t := range ts {
@@ -232,6 +280,11 @@ func (t *tree) alive() bool {
 }
 
 func (t *tree) exitCode() (int, bool) {
+	if b, err := os.ReadFile(filepath.Join(t.dir, "exit")); err == nil {
+		if code, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+			return code, true
+		}
+	}
 	var code uint32
 	if t.proc == 0 || windows.GetExitCodeProcess(t.proc, &code) != nil || code == stillActive {
 		return 0, false
@@ -241,12 +294,18 @@ func (t *tree) exitCode() (int, bool) {
 
 func (t *tree) usage() Usage { return t.u }
 
+// kill ends every process in the job and waits until the job is empty.
 func (t *tree) kill() {
 	if t.job != 0 {
 		_ = windows.TerminateJobObject(t.job, 1)
-	}
-	if t.proc != 0 {
-		_, _ = windows.WaitForSingleObject(t.proc, 5000)
+		for i := 0; i < 50; i++ {
+			var acct jobAccounting
+			if windows.QueryInformationJobObject(t.job, windows.JobObjectBasicAndIoAccountingInformation,
+				uintptr(unsafe.Pointer(&acct)), uint32(unsafe.Sizeof(acct)), nil) != nil || acct.Active == 0 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	t.close()
 }
@@ -359,6 +418,6 @@ func hostUsage() (HostUsage, error) {
 	return h, nil
 }
 
-// BootID is not known on Windows: runners there never outlive a reboot
-// unnoticed, they are reported as died.
+// BootID is not known on Windows: a runner lost to a reboot is reported as
+// died, not as rebooted.
 func BootID() string { return "" }

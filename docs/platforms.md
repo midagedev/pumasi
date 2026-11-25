@@ -61,8 +61,12 @@ docker 드라이버와 같은 `Driver` 인터페이스 뒤에 있고, 에이전�
   디스크 I/O 는 살아 있는 프로세스 것만 나와서 비워 둔다. 러너가 뜨자마자 죽으면 한 번도 못 잰다.
 - **Mac 호스트의 여유**: 남이 쓰는 CPU 는 Mach `host_statistics`, 메모리는 `kern.memorystatus_level`(`memory_pressure` 가 보이는 값).
   커널의 memory pressure 가 warning 이상이면 호스트가 스스로 닫는다(status 의 STATE 에 그 말이 나온다).
-- **Windows 의 러너는 에이전트와 같이 죽는다**(`KILL_ON_JOB_CLOSE`). 에이전트가 내려가면 그 러너는 "died" 사건이 된다 —
-  Linux·Mac 과 다른 점이다. 이름 붙인 Job 을 다시 여는 방식으로 바꿀 수 있지만, 고아가 남지 않는 쪽을 먼저 골랐다.
+- **Windows 의 러너도 에이전트가 죽어도 산다.** Job 에 이름을 붙이고 `KILL_ON_JOB_CLOSE` 를 쓰지 않는다. Job 은 안에 프로세스가
+  있는 동안 살아 있고, 새 에이전트가 이름으로 다시 연다. 끝낼 때만 `TerminateJobObject` 로 전부 정리한다.
+  (표의 `KILL_ON_JOB_CLOSE` 는 처음 설계였다 — "도는 잡은 죽이지 않는다"와 어긋나서 버렸다.)
+  이름은 로그온 세션 안의 것이라, 다른 세션에서 뜬 에이전트는 그 러너를 못 찾고 exited 로 본다.
+- **러너 배포판은 sha256 을 확인하고서만 푼다.** GitHub release API 가 주는 asset digest 와 대조하고, 못 받거나 다르면
+  이유를 말하고 러너를 띄우지 않는다(호스트 사용자 권한으로 도는 바이너리다).
 - **Windows 의 메모리 한도**: 넘는 할당은 실패한다(죽이지 않는다). Job 이 completion port 로 알려 오는 횟수를 세어 Linux 의 OOM 과 같은 사건으로 낸다.
 
 ### 실측 (Mac, Apple silicon 노트북, ssh 로 붙임)

@@ -3,7 +3,13 @@
 package agent
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,5 +58,45 @@ func TestInsideRefusesEscapes(t *testing.T) {
 		if _, err := inside("/x/dist", name); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+func TestAssetDigest(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	body := `{"assets":[{"name":"actions-runner-osx-arm64-2.338.2.tar.gz","digest":"sha256:` + sum + `"},{"name":"old.zip","digest":null}]}`
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status != http.StatusOK {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+		}
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	defer func(old string) { releaseAPI = old }(releaseAPI)
+	releaseAPI = srv.URL + "/v"
+
+	if got, err := assetDigest("2.338.2", "actions-runner-osx-arm64-2.338.2.tar.gz"); err != nil || got != sum {
+		t.Errorf("digest %q %v", got, err)
+	}
+	// No digest, no such file, no answer: each is a refusal that says why.
+	if _, err := assetDigest("2.338.2", "old.zip"); err == nil || !strings.Contains(err.Error(), "without a sha256") {
+		t.Errorf("err %v", err)
+	}
+	if _, err := assetDigest("2.338.2", "missing.zip"); err == nil || !strings.Contains(err.Error(), "no file") {
+		t.Errorf("err %v", err)
+	}
+	status = http.StatusForbidden
+	if _, err := assetDigest("2.338.2", "old.zip"); err == nil || !strings.Contains(err.Error(), "hourly limit") {
+		t.Errorf("err %v", err)
+	}
+	// A download that does not match is never unpacked.
+	status = http.StatusOK
+	dir := filepath.Join(t.TempDir(), "dist", "x")
+	if err := fetchDist("2.338.2", "old.zip", dir); err == nil {
+		t.Error("no digest: want an error")
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Error("something was unpacked")
 	}
 }

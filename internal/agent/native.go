@@ -4,6 +4,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -336,7 +338,7 @@ func (n *Native) dist(ctx context.Context, image string) (string, error) {
 		f = &distFetch{done: make(chan struct{})}
 		n.dists[name] = f
 		go func() {
-			f.err = fetchDist("https://github.com/actions/runner/releases/download/v"+version+"/"+name+distExt, dir)
+			f.err = fetchDist(version, name+distExt, dir)
 			n.mu.Lock()
 			delete(n.dists, name)
 			n.mu.Unlock()
@@ -355,7 +357,48 @@ func (n *Native) dist(ctx context.Context, image string) (string, error) {
 	}
 }
 
-func fetchDist(url, dir string) error {
+// releaseAPI is where GitHub lists a runner release's files with their digests.
+var releaseAPI = "https://api.github.com/repos/actions/runner/releases/tags/v"
+
+// assetDigest asks GitHub for the sha256 of one file of a runner release.
+// The runner is run as the host's user, so a file that cannot be checked is
+// not run.
+func assetDigest(version, file string) (string, error) {
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(releaseAPI + version)
+	if err != nil {
+		return "", fmt.Errorf("its sha256 could not be fetched: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		why := resp.Status
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			why += ": GitHub's hourly limit for requests without a token from this address is used up, try again later"
+		}
+		return "", fmt.Errorf("its sha256 could not be fetched from %s%s (%s)", releaseAPI, version, why)
+	}
+	var rel struct {
+		Assets []struct{ Name, Digest string }
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&rel); err != nil {
+		return "", fmt.Errorf("its sha256 could not be read: %w", err)
+	}
+	for _, a := range rel.Assets {
+		if a.Name == file {
+			if sum, ok := strings.CutPrefix(a.Digest, "sha256:"); ok && len(sum) == 64 {
+				return sum, nil
+			}
+			return "", fmt.Errorf("GitHub lists %s without a sha256 (digest %q)", file, a.Digest)
+		}
+	}
+	return "", fmt.Errorf("release v%s has no file %s", version, file)
+}
+
+func fetchDist(version, file, dir string) error {
+	want, err := assetDigest(version, file)
+	if err != nil {
+		return err
+	}
+	url := "https://github.com/actions/runner/releases/download/v" + version + "/" + file
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return err
 	}
@@ -373,9 +416,13 @@ func fetchDist(url, dir string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
-	size, err := io.Copy(arc, resp.Body)
+	sum := sha256.New()
+	size, err := io.Copy(io.MultiWriter(arc, sum), resp.Body)
 	if err != nil {
 		return err
+	}
+	if got := hex.EncodeToString(sum.Sum(nil)); got != want {
+		return fmt.Errorf("%s has sha256 %s, GitHub lists %s: not unpacked", url, got, want)
 	}
 	tmp, err := os.MkdirTemp(filepath.Dir(dir), "unpack-*")
 	if err != nil {
