@@ -152,6 +152,8 @@ Mac 과 Windows 의 에이전트가 **로그인한 사용자의 세션**에서 �
 | 5. controller 판을 바꿔 올림 | 호스트가 새 판을 받아 같은 pid 로 바뀜, 도는 러너 2개 그대로, 잡 성공 (Linux·Mac) |
 | 6. `pumasi leave`, `down --force` | 러너가 떠 있으면 목록을 보이고 거부. 끝난 뒤에는 서비스·바이너리·`~/.cache/pumasi`·러너 0 (Linux·Mac) |
 | 호스트 쪽 재연결 | controller 를 40초 멈춤 → 호스트가 13초 뒤 `keepalive timeout` 으로 끊고 2·4초 간격으로 다시 걸어, 풀린 지 4초 뒤 붙음. 도는 잡은 이어받음 |
+| join 일원화 뒤 (같은 날 밤) | `hosts: - ssh:` 호스트 하나(Linux, controller 가 초대 줄을 대신 실행) + 초대 줄을 직접 실행한 Mac 하나로 수용 1~7 다시 통과. 닿지 못하는 `listen` 주소면 `up` 이 "cannot reach this controller at …" 로 끝남. 한 번 쓴 토큰·모르는 토큰은 `FAIL token`, 토큰은 호스트의 프로세스 인자·파일에 남지 않음. 안 붙어 있는 ssh 호스트는 `down` 이 ssh 로 치움 |
+| 45분 잡 | Linux(컨테이너)·Mac(프로세스) 각각 하나: 도는 동안 controller kill -9(LaunchAgent 가 다시 띄움)·판 교체 재시작·에이전트 60초 멈춤(keepalive timeout)·controller 머신 load 120 을 넣었고 잡은 성공 |
 | 에이전트를 죽임 | Linux: systemd 가 2초 뒤, Mac: launchd 가 1초 안에 다시 올리고 바로 붙음. 러너 그대로 |
 | 8. Mac(Apple silicon 노트북) | 초대 줄 → LaunchAgent, `macos` 클래스 잡 3개 + 2개 성공, 끝난 뒤 러너 디렉터리·남은 프로세스 0 |
 | 9. Windows | 코드와 크로스 빌드, 단위 테스트까지. 실물 미확인 |
