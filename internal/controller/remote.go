@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,13 +52,17 @@ func (l *sshLink) Running(ctx context.Context) ([]string, error) { return runnin
 func (l *sshLink) Clean(ctx context.Context) (string, error) {
 	// A runner that is a process tree is best ended by its agent, which knows
 	// the processes that left the runner's group. The script below gets the rest.
+	byAgent := 0
 	if snap, err := l.api.Snapshot(ctx); err == nil && snap.OS != "" && snap.OS != "linux" {
 		for _, r := range snap.Runners {
-			_, _ = l.api.Delete(ctx, r.Name)
+			if _, err := l.api.Delete(ctx, r.Name); err == nil {
+				byAgent++
+			}
 		}
 	}
 	out, err := cleanHost(ctx, l.h)
-	return lastLine(out), err
+	n, _ := strconv.Atoi(lastLine(out))
+	return strconv.Itoa(n + byAgent), err
 }
 
 // Everything pumasi puts on a host lives here: the agent binary, its pid file and its log.
@@ -211,7 +216,8 @@ up=
 for m in "$d"/runners/*/pumasi.json; do
   [ -f "$m" ] || continue
   p=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$m")
-  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then up="$up $p:$(basename "$(dirname "$m")")"; fi
+  # The pid must still be that runner's shell: a dead runner's pid may be someone else's by now.
+  if [ -n "$p" ] && ps -o args= -p "$p" 2>/dev/null | grep -q "/.cache/pumasi/runners/"; then up="$up $p:$(basename "$(dirname "$m")")"; fi
 done
 `
 
