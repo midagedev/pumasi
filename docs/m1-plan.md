@@ -18,6 +18,8 @@
 | `pumasi-controller` | 노트북 (GitHub 자격은 여기만) | 클래스마다 listener, SQLite 장부, `Decide`, 주기적 재평가 |
 | `pumasi-agent` | 각 Linux 호스트 (WSL 포함) | 127.0.0.1 HTTP API: 상태 보고, 러너 시작·정지, `/metrics` |
 
+M1 뒤에 둘은 바이너리 하나(`pumasi up` · `pumasi agent`)가 됐고, 에이전트는 `pumasi up` 이 ssh 로 올린다.
+
 전송: M1 은 controller 가 호스트마다 `ssh -L` 로 에이전트 포트에 붙는다(사내망·ProxyCommand 그대로 쓰고, 에이전트를 밖으로 열지 않는다). 에이전트가 먼저 연결하는 방식은 뒤로 미룬다. 전송은 인터페이스 뒤에 둔다.
 
 ## 에이전트 API (JSON)

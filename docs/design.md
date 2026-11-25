@@ -148,7 +148,7 @@ zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결�
 | 단계 | 내용 | 끝났다는 기준 |
 |---|---|---|
 | **M0 검증 스파이크** | scale set 1개, Linux 호스트 1대, `docker` 드라이버로 잡 하나를 끝까지 | 아래 열린 질문 1·2·4 를 실제로 확인해 적는다 |
-| M1 | 여러 Linux 호스트 + 용량 배치 + 장부·맞추기 + 러너 cgroup 메트릭·잡 수명 지표 | 서버 2대에 `linux-s`·`linux-l` 를 섞어 넣어도 클래스 크기 합이 호스트 용량을 넘지 않고, 잡마다 peak 메모리·CPU 초가 장부에 남는다 |
+| M1 (끝, [실측](m1-results.md)) | 여러 Linux 호스트 + 용량 배치 + 장부·맞추기 + 러너 cgroup 메트릭·잡 수명 지표 | 서버 2대에 `linux-s`·`linux-l` 를 섞어 넣어도 클래스 크기 합이 호스트 용량을 넘지 않고, 잡마다 peak 메모리·CPU 초가 장부에 남는다 |
 | M2 | 사람 우선 (Linux 데스크톱, Mac) | 입력이 생기면 새 러너가 그 호스트에 안 뜬다 |
 | M3 | Mac `native`·`tart`, Windows `native` | 세 OS 에서 잡 하나씩 |
 | M4 | 따뜻한 캐시, 잡 안 docker (e2e) | compose 스택 e2e 한 벌이 `linux-l` 에서 통과 |
@@ -156,7 +156,7 @@ zoomies 의 방식을 빌린다: `Decide(snapshot) -> Plan` 순수 함수, 결�
 
 ## M0 실측 (2026-11-24)
 
-컨트롤러는 노트북, 러너는 Linux 서버 1대에 `ssh <host> docker run` 으로 띄웠다(PAT 는 서버에 두지 않고 JIT 설정만 stdin 으로 넘김). 원본 이벤트는 `cmd/pumasi-m0` 가 남긴 JSON lines.
+컨트롤러는 노트북, 러너는 Linux 서버 1대에 `ssh <host> docker run` 으로 띄웠다(PAT 는 서버에 두지 않고 JIT 설정만 stdin 으로 넘김). 원본 이벤트는 스파이크 프로그램(`cmd/pumasi-m0`, M1 뒤 삭제)이 남긴 JSON lines.
 
 | 질문 | 결과 | 설계에 주는 뜻 |
 |---|---|---|
