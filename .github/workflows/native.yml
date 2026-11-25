@@ -14,6 +14,9 @@ on:
       seconds:
         description: "burn duration per job"
         default: "30"
+      megabytes:
+        description: "memory each job holds (the process uses about twice that)"
+        default: "300"
       parallel:
         description: "jobs at once"
         default: "5"
@@ -28,7 +31,7 @@ jobs:
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
     timeout-minutes: 15
     steps:
-      - name: burn one cpu, hold ~300M, leave children behind
+      - name: burn one cpu, hold memory, leave children behind
         shell: bash
         run: |
           echo "runner=$RUNNER_NAME os=$RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
@@ -37,5 +40,5 @@ jobs:
           # and has left the process group, so only pumasi can end it.
           sleep 600 &
           RUNNER_TRACKING_ID= nohup perl -MPOSIX -e 'POSIX::setsid(); sleep 601' > /dev/null 2>&1 &
-          perl -e '$x = "x" x (300 << 20); $e = time + $ARGV[0]; 1 while time < $e' ${{ inputs.seconds }}
+          perl -e '$x = "x" x ($ARGV[1] << 20); $e = time + $ARGV[0]; 1 while time < $e' ${{ inputs.seconds }} ${{ inputs.megabytes }}
           echo "done runner=$RUNNER_NAME"
