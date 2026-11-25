@@ -72,8 +72,14 @@ linux-l  1     no host with 2.0cpu/3.0G free (desk1 0.0cpu/1.0G, server1 0.0cpu/
 linux-s  2     no host with 1.0cpu/1.0G free (desk1 0.0cpu/1.0G, server1 0.0cpu/1.0G)
 ```
 
-Ctrl-C 는 러너와 에이전트를 지우고 scale set 은 남긴다(다음 `up` 이 바로 뜬다).
-`pumasi down` 은 호스트의 pumasi 컨테이너·에이전트·`~/.cache/pumasi` 와 GitHub 의 scale set 까지 지운다.
+**도는 잡은 죽이지 않는다.** Ctrl-C(또는 노트북이 꺼져도)는 잡이 없는 러너만 지우고, 잡을 돌리는 러너와 에이전트는 호스트에 그대로 둔다.
+다시 `pumasi up` 하면 그 러너들을 이어받고, 그사이 끝난 잡의 결과와 cpu·메모리도 장부에 들어온다. 터널이 끊겨도 잡을 가진 러너는 지우지 않는다.
+
+```
+12:10:32 stopped  7 jobs still running on the hosts; `pumasi up` picks them up again (0 idle runners removed)
+```
+
+`pumasi down` 만 전부 지운다: 호스트의 pumasi 컨테이너·에이전트·`~/.cache/pumasi`, GitHub 의 scale set. 러너가 떠 있으면 목록을 보이고 거부한다(`--force` 로 강행).
 
 ## 알아 둘 것
 

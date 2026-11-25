@@ -329,6 +329,11 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 			defer cancel()
 			s, err := h.agent.Snapshot(cctx)
+			if err == nil && s.SampledAt.IsZero() {
+				// Before its first sample the agent lists no runners; acting on that
+				// would read every runner on the host as missing.
+				err = errors.New("agent has not sampled yet")
+			}
 			if err != nil {
 				if h.downSince.IsZero() {
 					h.downSince = now
@@ -363,6 +368,18 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 		for _, ar := range h.snap.Runners {
 			seen[ar.Name] = true
 			lr, ok := byName[ar.Name]
+			working := ar.JobStartedAt != nil && ar.State == "running"
+			if !ok && working {
+				// Written off while its host was unreachable, yet it took a job.
+				if revived, err := c.ledger.Revive(ar.Name); err != nil {
+					c.log.Error("ledger revive", "err", err)
+				} else if revived {
+					if lr, err = c.ledger.Runner(ar.Name); err == nil {
+						ok = true
+						c.log.Info(fmt.Sprintf("adopt %s  written off earlier, found running a job", ar.Name))
+					}
+				}
+			}
 			if ok {
 				c.recordUsage(ar)
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
@@ -390,7 +407,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 				}
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
-				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State}
+				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working}
 			if ar.ExitCode != nil {
 				dr.ExitCode = *ar.ExitCode
 			}
@@ -495,6 +512,13 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			removed = true
 			if final.State != "unknown" {
 				c.recordUsage(final)
+			}
+			// If JobCompleted was missed while the controller was away, the exit code
+			// is all there is; a late message still replaces it.
+			if final.JobStartedAt != nil && final.ExitCode != nil && final.ExitedAt != nil {
+				if err := c.ledger.CloseFromExit(st.Runner, *final.ExitCode, *final.ExitedAt); err != nil {
+					c.log.Error("ledger close", "err", err)
+				}
 			}
 		}
 	}
@@ -688,6 +712,12 @@ func (c *Controller) startAgents(ctx context.Context, distDir string) error {
 			cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 			defer cancel()
 			did, err := ensureAgent(cctx, h.cfg, distDir)
+			for try := 0; err != nil && try < 2 && cctx.Err() == nil; try++ {
+				// ssh hops fail now and then (seen: a WSL host timing out once); the steps are idempotent.
+				c.log.Warn(fmt.Sprintf("host %s: retrying", h.cfg.Name), "err", err)
+				time.Sleep(3 * time.Second)
+				did, err = ensureAgent(cctx, h.cfg, distDir)
+			}
 			if err != nil {
 				errs[i] = err
 				c.log.Error(fmt.Sprintf("host %s not usable", h.cfg.Name), "err", err)
@@ -709,49 +739,51 @@ func (c *Controller) startAgents(ctx context.Context, distDir string) error {
 
 func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
 
-// shutdown runs after Ctrl-C, on its own deadline: remove our runners, stop the
-// agents we started, close the tunnels.
+// shutdown runs after Ctrl-C, on its own deadline. A controller going away must
+// never cost a running job: agents and busy runners stay, and the next
+// `pumasi up` adopts them. Only runners without a job are removed.
 func (c *Controller) shutdown() {
 	if !slices.ContainsFunc(c.hosts, func(h *host) bool { return h.started }) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	c.log.Info("stopping: removing runners and agents (scale sets stay; `pumasi down` deletes them)")
 	c.refreshHosts(ctx, c.now())
-	n := 0
+	removed, running := 0, 0
+	live, _ := c.ledger.LiveRunners()
 	for _, h := range c.hosts {
 		if h.snap == nil {
+			for _, r := range live {
+				if r.Host == h.cfg.Name && r.State == "busy" {
+					running++
+				}
+			}
 			continue
 		}
 		for _, r := range h.snap.Runners {
+			if r.JobStartedAt != nil {
+				// Running a job, or finished one whose numbers the next `up` collects.
+				if r.State == "running" {
+					running++
+				}
+				continue
+			}
 			if _, err := h.agent.Delete(ctx, r.Name); err != nil {
 				c.log.Error("remove runner", "runner", r.Name, "err", err)
 				continue
 			}
 			_ = c.ledger.SetState(r.Name, "", "controller stopped")
 			_ = c.ledger.MarkRemoved(r.Name, c.now())
-			n++
+			removed++
 		}
 	}
-	c.forgetLiveRunners("controller stopped")
 	c.unregister(ctx)
-	var wg sync.WaitGroup
-	for _, h := range c.hosts {
-		if !h.started {
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := stopAgent(ctx, h.cfg); err != nil {
-				c.log.Error(fmt.Sprintf("host %s: agent not stopped", h.cfg.Name), "err", err)
-			}
-		}()
-	}
-	wg.Wait()
 	c.Close()
-	c.log.Info(fmt.Sprintf("stopped  %d runners removed", n))
+	if running > 0 {
+		c.log.Info(fmt.Sprintf("stopped  %d jobs still running on the hosts; `pumasi up` picks them up again (%d idle runners removed)", running, removed))
+		return
+	}
+	c.log.Info(fmt.Sprintf("stopped  no jobs running, %d idle runners removed; agents stay up, `pumasi down` removes everything", removed))
 }
 
 // forgetLiveRunners marks runners whose container we could not see removed as lost.
@@ -765,7 +797,14 @@ func (c *Controller) forgetLiveRunners(reason string) {
 // Down removes everything pumasi left behind: on every host the agent, the
 // containers labelled pumasi and the cache directory; on GitHub the remaining
 // registrations and the classes' scale sets. It needs no running agent.
-func (c *Controller) Down(ctx context.Context) error {
+// Runner containers that are still up may be running jobs, so Down refuses
+// while there are any unless force is set.
+func (c *Controller) Down(ctx context.Context, force bool) error {
+	if !force {
+		if err := c.refuseIfRunning(ctx); err != nil {
+			return err
+		}
+	}
 	errs := make([]error, len(c.hosts))
 	var wg sync.WaitGroup
 	for i, h := range c.hosts {
@@ -803,6 +842,46 @@ func (c *Controller) Down(ctx context.Context) error {
 		c.log.Info(fmt.Sprintf("class %s  scale set %s deleted", cl.Name, cl.ScaleSet))
 	}
 	return errors.Join(errs...)
+}
+
+// refuseIfRunning asks every host for its running pumasi containers.
+func (c *Controller) refuseIfRunning(ctx context.Context) error {
+	lines := make([][]string, len(c.hosts))
+	errs := make([]error, len(c.hosts))
+	var wg sync.WaitGroup
+	for i, h := range c.hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+			names, err := runningContainers(cctx, h.cfg)
+			if err != nil {
+				errs[i] = fmt.Errorf("cannot check %s for running jobs: %w", h.cfg.Name, err)
+				return
+			}
+			for _, n := range names {
+				what := "state unknown to the ledger"
+				if r, err := c.ledger.Runner(n); err == nil {
+					what = r.State
+					if r.Job != "" {
+						what += ", job " + r.Job
+					}
+				}
+				lines[i] = append(lines[i], fmt.Sprintf("  %s on %s (%s)", n, h.cfg.Name, what))
+			}
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("%w\nnothing was removed; `pumasi down --force` skips this check", err)
+	}
+	all := slices.Concat(lines...)
+	if len(all) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d runners are still up and may be running jobs:\n%s\nnothing was removed; `pumasi down --force` stops them too",
+		len(all), strings.Join(all, "\n"))
 }
 
 // EventLog appends JSON lines (listener messages, decisions, starts) for later analysis.

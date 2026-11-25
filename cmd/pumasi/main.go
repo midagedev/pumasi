@@ -22,8 +22,10 @@ import (
 const usage = `pumasi places self-hosted GitHub Actions runners across your machines.
 
   pumasi up      start agents on the hosts and serve jobs until Ctrl-C
+                 (running jobs survive Ctrl-C; the next up picks them up)
   pumasi status  hosts, runners and waiting jobs (--json for machines)
   pumasi down    remove everything pumasi created on the hosts and on GitHub
+                 (refuses while jobs run, unless --force)
 
 Flags: -config pumasi.yaml (all commands), -v (up: verbose log).
 up and down read the GitHub token from PUMASI_GITHUB_TOKEN.
@@ -61,6 +63,7 @@ func runController(args []string, down bool) error {
 	fs := flag.NewFlagSet("pumasi", flag.ContinueOnError)
 	cfgPath := fs.String("config", "pumasi.yaml", "config file")
 	verbose := fs.Bool("v", false, "verbose log")
+	force := fs.Bool("force", false, "down: also stop runners that are running jobs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -112,7 +115,7 @@ func runController(args []string, down bool) error {
 		stop()
 	}()
 	if down {
-		return c.Down(ctx)
+		return c.Down(ctx, *force)
 	}
 	dist := filepath.Dir(exe)
 	if m, _ := filepath.Glob(filepath.Join(dist, "pumasi-linux-*")); len(m) == 0 {

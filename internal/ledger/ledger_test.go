@@ -90,3 +90,44 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("usage %v %v", cpu, peak)
 	}
 }
+
+// A controller that was away misses JobCompleted: the exit code closes the row,
+// and a late message still wins. A written-off runner found working comes back.
+func TestCloseFromExitAndRevive(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	t0 := time.Date(2026, 11, 25, 1, 0, 0, 0, time.UTC)
+	result := func(name string) (state, res string) {
+		l.db.QueryRow(`SELECT state, COALESCE(result,'') FROM runners WHERE name=?`, name).Scan(&state, &res)
+		return
+	}
+	for _, n := range []string{"a", "b"} {
+		if err := l.InsertRunner(n, "linux-s", "server1", t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.MarkBusy("a", t0)
+	l.CloseFromExit("a", 0, t0.Add(time.Hour))
+	if s, r := result("a"); s != "done" || r != "exit-0" {
+		t.Fatalf("closed from exit: %s %s", s, r)
+	}
+	l.JobCompleted("a", Job{ID: "j"}, "succeeded", t0.Add(time.Hour))
+	if _, r := result("a"); r != "succeeded" {
+		t.Fatalf("late message should win: %s", r)
+	}
+
+	l.SetState("b", "lost", "host unreachable")
+	if ok, _ := l.Revive("b"); !ok {
+		t.Fatal("not revived")
+	}
+	live, _ := l.LiveRunners()
+	if s, _ := result("b"); s != "busy" || len(live) != 2 {
+		t.Fatalf("revived: %s live %+v", s, live)
+	}
+	if ok, _ := l.Revive("a"); ok {
+		t.Fatal("a finished runner must not be revived")
+	}
+}

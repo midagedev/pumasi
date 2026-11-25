@@ -53,6 +53,8 @@ type Runner struct {
 	// Agent view: "" when the agent (up) does not report it, else starting | created | running | exited.
 	Container string
 	ExitCode  int
+	// Working: the agent sees this container running a job right now.
+	Working bool
 }
 
 // Demand is one job waiting for a runner of its class.
@@ -220,13 +222,20 @@ func stopRule(s Snapshot, h Host, r Runner) (Stop, bool) {
 		return Stop{Runner: r.Name, Host: r.Host, State: state, Reason: fmt.Sprintf(format, args...)}, true
 	}
 	switch {
+	case r.State == "" && r.Working:
+		return Stop{}, false // unknown to the ledger, but never kill a running job
 	case r.State == "":
 		return stop("", "not in the ledger")
+	case h.Name == "":
+		// The host left the config: nothing can reach the container, only the ledger row goes.
+		return stop("lost", "host %s is not configured", r.Host)
 	case !h.Up:
-		if h.Name == "" || h.DownFor > s.HostLostAfter {
+		// A tunnel that is down says nothing about the job. Only runners without a
+		// job are written off; busy ones wait for the agent's next snapshot.
+		if (r.State == "starting" || r.State == "idle") && h.DownFor > s.HostLostAfter {
 			return stop("lost", "host %s unreachable for %s", r.Host, h.DownFor.Round(time.Second))
 		}
-		return Stop{}, false // judge it when the agent answers again
+		return Stop{}, false
 	case r.State == "done":
 		return stop("", "job completed")
 	case r.Container == "":

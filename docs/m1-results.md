@@ -30,6 +30,10 @@
 - **잡을 돌리던 러너를 죽임**: 잡은 실패(M0 와 같다, 재시도 없음). 등록은 GitHub 이 잡을 실패 처리할 때까지 "busy" 라 지울 수 없고, 9분 30초 뒤 삭제됐다.
 - 결함: `JobStarted` 가 늦게 오는 사이에 죽으면 controller 는 "잡 받기 전에 죽었다"로 보고 대체 러너를 하나 더 띄웠다. 그 러너는 5분 빈 채로 있다가 idle timeout 으로 정리됐다. 고침: 에이전트가 러너 출력의 `Running job` 줄을 읽어 busy 를 먼저 알린다. 다시 쟀다(2026-11-25, `pumasi up` 으로 잡 10개): 10개 모두 controller 가 busy 를 GitHub 의 `JobStarted` 메시지보다 먼저 봤다(32.7~33.5초 앞). 같은 회차 기동 시간은 서버 중앙값 7.6초(7.3~9.2, n=6) · 데스크톱 4.7초(4.6~4.9, n=4).
 
+## controller 를 껐다 켜도 잡이 산다 (2026-11-25)
+
+잡 10개 중 7개가 도는 중에 `pumasi up` 을 Ctrl-C 로 끄고(`JobStarted` 메시지가 오기 전) 20초 뒤 다시 켰다. 러너 7개와 에이전트는 그대로 돌았고, 다시 켠 controller 가 이어받았다. 놓친 `JobStarted`·`JobCompleted` 는 새 메시지 세션에서 다시 왔다. 잡 10개 모두 성공, 장부 10행 모두 cpu_sec·mem_peak·provision_ms·result 있음. 그사이 `pumasi down` 은 러너 7개를 나열하고 거부했다.
+
 ## M1 에서 배운 것
 
 - ssh 연결 다중화(ControlMaster)는 터널이 같이 죽어서 끈다.

@@ -274,3 +274,23 @@ func (l *Ledger) LastDefer(class string) string {
 	_ = l.db.QueryRow(`SELECT reason FROM decisions WHERE action='defer' AND class=? ORDER BY id DESC LIMIT 1`, class).Scan(&reason)
 	return reason.String
 }
+
+// Revive brings back a runner that was written off (host unreachable) and
+// turned out to be running a job. It reports whether a row was revived.
+func (l *Ledger) Revive(name string) (bool, error) {
+	res, err := l.db.Exec(`UPDATE runners SET state='busy', reason='found running a job', removed_at=NULL
+	  WHERE name=? AND state IN ('lost','failed')`, name)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// CloseFromExit ends a busy runner whose JobCompleted message never came (the
+// controller was away): the result is the container's exit code as the agent
+// saw it. A later JobCompleted still overwrites it with GitHub's result.
+func (l *Ledger) CloseFromExit(name string, exitCode int, at time.Time) error {
+	return l.exec(`UPDATE runners SET state='done', result=?, finished_at=COALESCE(finished_at, ?)
+	  WHERE name=? AND state='busy' AND result IS NULL`, fmt.Sprintf("exit-%d", exitCode), ts(at), name)
+}

@@ -194,7 +194,12 @@ func TestDecideStops(t *testing.T) {
 		{"idle within timeout", server(), listening, 4 * time.Minute, ""},
 		{"idle timeout", server(), listening, 6 * time.Minute, "failed|idle timeout"},
 		{"host briefly down", shortDown, r("busy", ""), time.Minute, ""},
-		{"host lost", longDown, r("busy", ""), time.Minute, "lost|host server1 unreachable"},
+		{"host lost: idle runner written off", longDown, r("idle", ""), time.Minute, "lost|host server1 unreachable"},
+		{"host lost: starting runner written off", longDown, r("starting", ""), time.Minute, "lost|host server1 unreachable"},
+		{"host lost: busy runner kept", longDown, r("busy", ""), time.Minute, ""},
+		{"host lost: finished runner waits for the agent", longDown, r("done", ""), time.Minute, ""},
+		{"host removed from config", Host{}, r("busy", ""), time.Minute, "lost|host server1 is not configured"},
+		{"orphan running a job is kept", server(), working(r("", "running")), time.Minute, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,6 +214,29 @@ func TestDecideStops(t *testing.T) {
 				t.Errorf("stop %q, want prefix %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func working(r Runner) Runner {
+	r.Working = true
+	return r
+}
+
+// A host whose tunnel is down gets nothing new, and its busy runners still hold their capacity.
+func TestUnreachableHostKeepsBusyRunners(t *testing.T) {
+	down := server()
+	down.Up = false
+	down.DownFor = time.Hour
+	busy := Runner{Name: "r", Class: "linux-l", Host: "server1", State: "busy", JobKnown: true, CreatedAt: t0}
+	p := Decide(snap([]Host{down}, demand("linux-s", 1), []Runner{busy}))
+	if len(p.Stop) != 0 || len(p.Start) != 0 || len(p.Defer) != 1 {
+		t.Fatalf("plan %+v", p)
+	}
+	// Back up: the runner is still there and counts against the 4 cpu budget (2 used, 2 free).
+	busy.Container = "running"
+	p = Decide(snap([]Host{server()}, demand("linux-l", 2), []Runner{busy}))
+	if len(p.Stop) != 0 || len(p.Start) != 1 || len(p.Defer) != 1 {
+		t.Fatalf("plan after reconnect %+v", p)
 	}
 }
 

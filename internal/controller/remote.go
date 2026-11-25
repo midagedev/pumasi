@@ -31,7 +31,8 @@ func runRemote(ctx context.Context, h config.Host, script string) (string, error
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(strings.ReplaceAll(string(out), "\r", ""))
+	// A Windows hop reports its own errors in UTF-16; dropping NULs keeps them readable.
+	text := strings.TrimSpace(strings.NewReplacer("\r", "", "\x00", "").Replace(string(out)))
 	if err != nil {
 		return text, fmt.Errorf("ssh %s: %w: %s", h.SSH, err, lastLine(text))
 	}
@@ -62,11 +63,18 @@ rm -f "$d/agent.pid"
 // host does not have it, then (re)start the agent with the host's budget.
 // It returns what it did, for the log.
 func ensureAgent(ctx context.Context, h config.Host, distDir string) (string, error) {
-	out, err := runRemote(ctx, h, `uname -m; ls `+remoteDir+` 2>/dev/null || true`)
+	// Line 1: machine. Line 2: command line of the agent the pid file names, if alive. Rest: cache listing.
+	out, err := runRemote(ctx, h, `uname -m
+d=`+remoteDir+`
+p=$(cat "$d/agent.pid" 2>/dev/null || true)
+if [ -n "$p" ] && [ -r "/proc/$p/cmdline" ]; then tr '\0' ' ' < "/proc/$p/cmdline"; fi
+echo
+ls "$d" 2>/dev/null || true`)
 	if err != nil {
 		return "", err
 	}
-	machine, have, _ := strings.Cut(out, "\n")
+	machine, rest, _ := strings.Cut(out, "\n")
+	running, have, _ := strings.Cut(rest, "\n")
 	arch := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[strings.TrimSpace(machine)]
 	if arch == "" {
 		return "", fmt.Errorf("%s: unsupported machine %q (uname -m)", h.Name, machine)
@@ -80,6 +88,14 @@ func ensureAgent(ctx context.Context, h config.Host, distDir string) (string, er
 	sha := hex.EncodeToString(sum[:])
 	name := "pumasi-" + sha[:12]
 
+	agentArgs := fmt.Sprintf("agent -listen 127.0.0.1:%d -host %s -budget-cpus %g -budget-mem %d -pidfile",
+		h.AgentPort, h.Name, h.Budget.CPUs, int64(h.Budget.Memory))
+	// Same build, same settings: leave it alone. It has been sampling its runners
+	// all along and holds the final numbers of those that finished meanwhile.
+	if strings.Contains(running, "/.cache/pumasi/"+name+" "+agentArgs+" ") {
+		return "agent already running", nil
+	}
+
 	did := "agent started"
 	if !strings.Contains("\n"+have+"\n", "\n"+name+"\n") {
 		if _, err := runRemote(ctx, h, uploadScript(bin, sha, name)); err != nil {
@@ -90,7 +106,7 @@ func ensureAgent(ctx context.Context, h config.Host, distDir string) (string, er
 	start := fmt.Sprintf(`set -e
 %s
 find "$d" -maxdepth 1 -name 'pumasi-*' ! -name %s -delete
-setsid nohup "$d/%s" agent -listen 127.0.0.1:%d -host %s -budget-cpus %g -budget-mem %d -pidfile "$d/agent.pid" > "$d/agent.log" 2>&1 < /dev/null &
+setsid nohup "$d/%s" %s "$d/agent.pid" > "$d/agent.log" 2>&1 < /dev/null &
 i=0
 while [ ! -s "$d/agent.pid" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
 sleep 0.3
@@ -98,7 +114,7 @@ if ! kill -0 "$(cat "$d/agent.pid" 2>/dev/null)" 2>/dev/null; then
   echo "agent did not stay up: $(tail -n 3 "$d/agent.log" | tr '\n' ' ')"
   exit 1
 fi
-`, stopAgentScript, name, name, h.AgentPort, h.Name, h.Budget.CPUs, int64(h.Budget.Memory))
+`, stopAgentScript, name, name, agentArgs)
 	if _, err := runRemote(ctx, h, start); err != nil {
 		return "", fmt.Errorf("start agent: %w", err)
 	}
@@ -138,10 +154,13 @@ func (l *lineWrapper) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// stopAgent stops the agent on a host and leaves the cached binary for the next `up`.
-func stopAgent(ctx context.Context, h config.Host) error {
-	_, err := runRemote(ctx, h, stopAgentScript)
-	return err
+// runningContainers lists the pumasi containers that are up on a host.
+func runningContainers(ctx context.Context, h config.Host) ([]string, error) {
+	out, err := runRemote(ctx, h, `docker ps --filter label=pumasi --format '{{.Names}}'`)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
 }
 
 // cleanHost removes everything pumasi left on a host: the agent, every
