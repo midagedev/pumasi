@@ -194,6 +194,11 @@ func (n *Native) Runner(c Container) (Usage, error) {
 
 func (n *Native) Host() (HostUsage, error) { return hostUsage() }
 
+// NativeProblem is why this host cannot run runners as processes (classes
+// with driver: native). Empty = it can. macOS and Windows always can; Linux
+// needs a systemd user session that may limit cpu and memory.
+func NativeProblem() string { return nativeProblem() }
+
 func (n *Native) DataDir(context.Context) string { return n.Root }
 
 func (n *Native) Check(ctx context.Context, image string) error {

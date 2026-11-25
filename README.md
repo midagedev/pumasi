@@ -149,9 +149,43 @@ Mac·Windows 호스트에서는 러너가 컨테이너가 아니라 **그 OS 의
 - **Mac 은 메모리·CPU 를 강제로 막지 못한다.** 클래스 크기는 배치할 때의 약속일 뿐이다. 넘은 러너는 `ran over its class` 사건으로 알리고 잡은 계속 돈다. 그래서 Mac 호스트의 예산은 넉넉히 남겨 잡는다.
 - **잴 수 있는 것만 남긴다.** Mac 은 cpu 초와 메모리 peak 를 재고 디스크 I/O·압박(PSI)은 비워 둔다.
 - 러너 배포판은 `image` 의 태그(`:2.338.2`)와 같은 판을 호스트가 처음 한 번 내려받는다(`~/.cache/pumasi/dist`).
-- Windows 는 Job Object 로 메모리·CPU 를 강제하지만 **아직 실물에서 확인하지 않았다**. join 은 Mac 까지 실물로 확인했고 Windows 쪽은 코드와 크로스 빌드까지다.
+- Windows 는 Job Object 로 메모리·CPU 를 강제한다(넘는 할당은 실패한다). 드라이버는 Windows 11 실물에서 확인했다. join 은 Mac 까지 실물로 확인했고 Windows 쪽은 코드와 크로스 빌드까지라, Windows 의 GitHub 잡은 아직이다.
 
 자세한 것은 [Mac 과 Windows 호스트](docs/platforms.md).
+
+## 기존 고정 러너에서 옮기기
+
+오래 떠 있는 셀프호스트 러너의 워크플로우는 호스트의 것을 쓴다: 공용 캐시 디렉터리, 앞 잡이 남긴 산출물,
+호스트 사용자의 자격(`~/.npmrc`, ssh 키), 호스트의 docker. 워크플로우를 고치지 않고 옮기려고 클래스에 세 가지를 적을 수 있다.
+
+```yaml
+classes:
+  - {name: linux-s, cpus: 1, memory: 1G}                                   # 컨테이너. 호스트의 것은 안 보인다
+  - {name: cache,   cpus: 2, memory: 3G, mounts: [/srv/ci-cache, "/srv/keys:ro"]}
+  - {name: build,   cpus: 4, memory: 8G, driver: native}                   # 호스트 사용자의 프로세스
+  - {name: release, cpus: 4, memory: 8G, driver: native, hosts: [server1]} # 그 호스트에만
+```
+
+- **`driver: native`** — 러너를 컨테이너가 아니라 에이전트를 띄운 사용자의 프로세스로 띄운다. 호스트의 경로·자격·docker 가
+  고정 러너와 똑같이 보인다. Linux 에서는 러너를 systemd user scope(cgroup)에 넣으므로 CPU·메모리 한도, 수치, OOM 사건,
+  잡이 남긴 프로세스 정리는 컨테이너 러너와 같다. 그 사용자에게 systemd user 세션(`loginctl enable-linger <사용자>`)과
+  cpu·memory 위임이 있어야 한다 — 없으면 한도 없이 띄우지 않고, 대기 사유에 호스트가 말한 이유가 나온다.
+  안 적으면 linux 는 `docker`, macos·windows 는 `native` 다.
+- **`mounts`** — 컨테이너 러너에 호스트 경로를 같은 경로로 붙인다(`:ro` = 읽기 전용). 그 경로가 모두 있는 호스트에만 놓이고,
+  어디에도 없으면 `no host has /srv/ci-cache` 로 기다린다. 컨테이너 안의 사용자(`runner`, uid 1001)가 쓸 수 있게 하는 것은 호스트의 일이다.
+  native 클래스에 적으면 붙이지는 않고(이미 보인다) 놓을 호스트만 가린다.
+- **`hosts`** — 클래스를 그 호스트에만 놓는다. 앞 잡이 호스트 디렉터리에 쓴 것을 다음 잡이 읽으려면 둘이 같은 머신에 떨어져야 하는데,
+  GitHub 은 그것을 정하게 해 주지 않는다. 묶인 호스트가 차면 다른 호스트가 비어 있어도 기다린다.
+
+옮기는 순서:
+
+1. 고정 러너의 라벨 하나를 클래스 하나로 만든다. 우선 `driver: native`, 그 라벨이 머신 한 대였으면 `hosts:` 로 묶는다.
+   워크플로우는 `runs-on` 만 바뀐다.
+2. 잡 사이에 넘기는 것이 없는 클래스부터 `hosts:` 를 풀어 여러 머신으로 넓힌다. 캐시는 머신마다 생긴다.
+3. 호스트의 것을 안 쓰는 잡은 컨테이너 클래스로 옮긴다. 캐시 디렉터리만 필요하면 `mounts`.
+
+native 러너의 격리는 Mac·Windows 와 같이 약하다(위 절). 잡이 호스트 docker 로 띄운 컨테이너는 러너의 cgroup 밖이라
+한도에도 수치에도 안 잡힌다. 자세한 것은 [호스트의 디렉터리를 쓰는 잡](docs/host-paths.md).
 
 ## 대시보드와 알림
 
@@ -180,4 +214,4 @@ notify:
 
 ## 문서
 
-[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [Mac·Windows](docs/platforms.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)
+[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [Mac·Windows](docs/platforms.md) · [호스트 경로](docs/host-paths.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)

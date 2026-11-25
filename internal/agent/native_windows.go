@@ -438,3 +438,5 @@ func hostUsage() (HostUsage, error) {
 // BootID is not known on Windows: a runner lost to a reboot is reported as
 // died, not as rebooted.
 func BootID() string { return "" }
+
+func nativeProblem() string { return "" }

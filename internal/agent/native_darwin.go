@@ -258,3 +258,5 @@ func BootID() string {
 	}
 	return strconv.FormatInt(tv.Sec, 10)
 }
+
+func nativeProblem() string { return "" }

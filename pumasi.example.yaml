@@ -6,6 +6,10 @@ classes:                             # a class is a runner size; jobs pick one w
   - {name: linux-l, cpus: 2, memory: 3G}
 #  - {name: macos, cpus: 4, memory: 8G, os: macos}   # placed only on macOS hosts, where runners are
 #                                                    #   processes of the host's user (see README)
+# Jobs that use the host itself (README: 기존 고정 러너에서 옮기기):
+#  - {name: cache, cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}   # the container sees this host path
+#  - {name: build, cpus: 4, memory: 8G, driver: native}            # a process of the host's user, in a cgroup
+#  - {name: release, cpus: 4, memory: 8G, driver: native, hosts: [server1]}   # only on that host
 
 hosts:                               # ssh destinations (aliases from ~/.ssh/config) with Docker
   - ssh: server1
