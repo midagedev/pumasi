@@ -131,6 +131,21 @@ ssh 세션에서 초대 줄을 실행해 붙였다(창이 없는 세션 0). 클�
 | 잡 도중 에이전트를 `taskkill` | supervisor 가 5초 안에 다시 띄우고 Job 을 이어받아 잡은 성공. cpu 초가 이어진다(43.6초) |
 | `leave` | Run 값·`%USERPROFILE%\.cache\pumasi`·exe·프로세스 0 |
 
+### 실측 — 러너 루트, 함께 쓰는 배포판, 잔여물, 재부팅 판정 (WSL2 Ubuntu 와 Windows 11, join 으로 붙임)
+
+| | 결과 |
+|---|---|
+| 러너 루트(Linux native) | 잡 로그의 작업 디렉터리가 `/var/tmp/pumasi-1000/<러너>/runner/_work/…`. 끝난 뒤 루트는 비었다 |
+| 러너 루트(Windows) | `C:\pm\1002` 에 생기고 잡 둘이 성공, 끝난 뒤 비었다. `leave` 가 `C:\pm` 까지 지운다 |
+| 배포판(Linux, 683M·9,388 파일) | 하드 링크 복제 0.22초, 복사 0.53초, reflink 는 ext4 가 거절. 받아 푼 뒤 쓰기 가능한 공유 파일 0 |
+| 배포판(Windows, 246M·272 파일) | 하드 링크 0.03 ~ 0.14초, 복사 0.24 ~ 3.4초. 읽기 전용 링크는 쓰기로 열리지 않고, 링크를 지워도 원본의 속성은 그대로다 |
+| 쓰기 가능으로 남아 있던 옛 배포판 | 다음 러너가 손댄 것으로 보고 새로 받았다(그 러너만 10.4초, 다음부터 2.4초) |
+| 잡이 쓰기 권한을 뗀 디렉터리 | 러너와 함께 지워진다 |
+| 잡이 컨테이너로 남긴 root 의 디렉터리 | 러너는 지워지고 디렉터리는 `.trash/<러너>-…` 로, `leftover` 사건이 경로와 `permission denied` 를 말한다 |
+| 재부팅 판정(BootID) | Windows: `Win32_OperatingSystem.LastBootUpTime` 과 같은 값, 실행마다 같다. Mac: `kern.bootsessionuuid`. 재부팅 자체는 해 보지 않았다 |
+
+Mac 의 러너 루트(`/Users/Shared/pumasi-<uid>`)는 그 자리에 디렉터리를 만들고 clone 하는 테스트까지만 했다(GitHub 잡은 아직).
+
 워크플로우를 쓸 때 걸리는 것(pumasi 가 아니라 Windows 러너의 성질이다):
 
 - `shell: bash` 는 WSL 이 깔린 머신에서 `C:\Windows\System32\bash.exe`(WSL)로 풀려 실패한다. Git Bash 를 쓰려면 PATH 앞에 두거나 `shell:` 에 전체 경로를 적는다.
