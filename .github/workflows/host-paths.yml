@@ -1,0 +1,88 @@
+name: host-paths
+# Acceptance for docs/host-paths.md: jobs that use the host's directories.
+#   native  two jobs of a native class: the first writes into a host directory
+#           and uses the host's docker, the second reads what the first wrote
+#   oom     a job that takes more memory than its class
+#   mounts  a job of a container class with mounts: [<dir>/rw, <dir>/ro:ro]
+#   plain   a job that needs nothing of the host (any class)
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "native | oom | mounts | plain"
+        default: "plain"
+      class:
+        description: "class (scale set pumasi-<class>)"
+        default: "build"
+      dir:
+        description: "mounts: the directory holding rw/ and ro/ (same path on the host and in the container)"
+        default: "/tmp/pumasi-test"
+      megabytes:
+        description: "oom: megabytes the job asks for"
+        default: "1500"
+
+jobs:
+  write:
+    if: inputs.test == 'native'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: write into a host directory, use the host's docker, leave children behind
+        shell: bash
+        run: |
+          d="$HOME/.cache/pumasi-test/handoff"
+          mkdir -p "$d"
+          echo "${{ github.run_id }} $RUNNER_NAME" > "$d/note"
+          echo "runner=$RUNNER_NAME wrote the note"
+          echo "host docker: $(docker version --format '{{.Server.Version}}')"
+          docker run --rm --entrypoint sh ghcr.io/actions/actions-runner:2.338.2 -c 'echo "hello from a container of the host docker"'
+          # Left behind on purpose; the second hides from the runner's own cleanup.
+          sleep 600 &
+          RUNNER_TRACKING_ID= nohup setsid sleep 601 > /dev/null 2>&1 &
+          perl -e '$x = "x" x (200 << 20); $e = time + 20; 1 while time < $e'
+  read:
+    if: inputs.test == 'native'
+    needs: write
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: read what the job before wrote
+        shell: bash
+        run: |
+          read -r run runner < "$HOME/.cache/pumasi-test/handoff/note"
+          echo "runner=$RUNNER_NAME reads a note of run $run written by $runner"
+          test "$run" = "${{ github.run_id }}"
+          test "$runner" != "$RUNNER_NAME"
+  oom:
+    if: inputs.test == 'oom'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: take more memory than the class has
+        shell: bash
+        run: |
+          perl -e '$x = "x" x ($ARGV[0] << 20); sleep 5; print "held it\n"' ${{ inputs.megabytes }}
+  mounts:
+    if: inputs.test == 'mounts'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: read and write the mounts at the host's path
+        shell: bash
+        run: |
+          d="${{ inputs.dir }}"
+          echo "seed on the host: $(cat "$d/ro/seed")"
+          echo "${{ github.run_id }} $RUNNER_NAME" > "$d/rw/from-container"
+          cat "$d/rw/from-container"
+          if touch "$d/ro/x" 2>/dev/null; then echo "the read-only mount took a write"; exit 1; fi
+          echo "read-only mount refused the write"
+  plain:
+    if: inputs.test == 'plain'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: nothing of the host
+        shell: bash
+        run: |
+          echo "runner=$RUNNER_NAME"
+          perl -e '$e = time + 10; 1 while time < $e'
