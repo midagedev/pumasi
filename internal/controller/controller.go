@@ -55,15 +55,16 @@ type Controller struct {
 	mu sync.Mutex // guards class.stats and inflight
 	// Runners whose start request the agent has not answered yet (zero), or
 	// answered at that time: a snapshot asked for before then cannot show them.
-	inflight  map[string]time.Time
-	starts    sync.WaitGroup
-	lastDefer map[string]deferRec
-	runCheck  map[int64]time.Time
-	status    Status // last round, for `pumasi status`
-	distDir   string
-	adopted   bool // the first round has reported what it found on the hosts
-	book      *incidentBook
-	lastAlive time.Time // when an earlier controller last ran (zero = never)
+	inflight   map[string]time.Time
+	starts     sync.WaitGroup
+	lastDefer  map[string]deferRec
+	runCheck   map[int64]time.Time
+	status     Status // last round, for `pumasi status`
+	distDir    string
+	adopted    bool // the first round has reported what it found on the hosts
+	warmRounds int  // rounds the adoption report waited for an agent's first sample
+	book       *incidentBook
+	lastAlive  time.Time // when an earlier controller last ran (zero = never)
 	// Runners closed in this round because their host rebooted, per host.
 	rebootLost map[string][]ledger.Runner
 	rerunCheck map[int64]time.Time
@@ -424,7 +425,12 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		return
 	}
 	runners := c.syncRunners(ctx, live)
-	if !c.adopted {
+	// An agent that restarted together with the controller (a new build) has not
+	// sampled yet and lists no runners: what was adopted is told once it has.
+	warming := slices.ContainsFunc(c.hosts, func(h *host) bool { return h.quiet && !h.downSince.IsZero() })
+	if warming && c.warmRounds < 6 {
+		c.warmRounds++
+	} else if !c.adopted {
 		c.adopted = true
 		n, busy := 0, 0
 		for _, r := range runners {
