@@ -55,6 +55,9 @@ type Controller struct {
 	lastAlive time.Time // when an earlier controller last ran (zero = never)
 	// Runners closed in this round because their host rebooted, per host.
 	rebootLost map[string][]ledger.Runner
+	rerunCheck map[int64]time.Time
+	// LedgerMoved names the damaged ledger that was set aside at startup ("" = none).
+	LedgerMoved string
 }
 
 type host struct {
@@ -64,10 +67,17 @@ type host struct {
 	reviveBad atomic.Int32
 	quiet     bool      // unreachable only because the agent has not sampled yet
 	ensuredAt time.Time // last restart attempt
-	tr        Transport
-	agent     *api.Client
-	snap      *api.Snapshot
-	downSince time.Time
+	// Guarded by Controller.mu: runners in a row that failed to start here, and
+	// since when the host is closed for new runners because of it.
+	closed      string // why the last round placed nothing here ("" = open); Evaluate's goroutine only
+	provFails   int
+	quarantined time.Time
+	probedAt    time.Time
+	probing     atomic.Bool
+	tr          Transport
+	agent       *api.Client
+	snap        *api.Snapshot
+	downSince   time.Time
 }
 
 type class struct {
@@ -91,7 +101,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 		return nil, fmt.Errorf("github client: %w", err)
 	}
 	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
-		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
+		kick: make(chan struct{}, 1), inflight: map[string]bool{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
 		c.hosts = append(c.hosts, &host{cfg: hc, tr: tr,
@@ -146,6 +156,11 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		c.lastAlive = fi.ModTime()
 	}
 	go c.book.deliver(ctx)
+	if c.LedgerMoved != "" {
+		c.book.report("problem", "ledger-rebuilt/"+filepath.Base(c.LedgerMoved), "ledger-rebuilt", "ledger", fmt.Sprintf(
+			"the ledger was damaged and set aside as %s; started from an empty one, history is lost", filepath.Base(c.LedgerMoved)),
+			"runners are adopted from the hosts, waiting jobs from GitHub")
+	}
 	defer func() { // last notifications, on a deadline of their own
 		fctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -352,7 +367,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		c.log.Error("ledger runners", "err", err)
 		return
 	}
-	runners := c.syncRunners(live)
+	runners := c.syncRunners(ctx, live)
 	if !c.adopted {
 		c.adopted = true
 		n, busy := 0, 0
@@ -397,6 +412,8 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	c.setStatus(plan.Defer)
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
+	c.probeQuarantined(ctx, now)
+	c.checkReruns(ctx, now)
 }
 
 func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
@@ -437,7 +454,7 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 }
 
 // syncRunners copies agent observations into the ledger and joins both views.
-func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
+func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []decide.Runner {
 	byName := map[string]ledger.Runner{}
 	for _, r := range live {
 		byName[r.Name] = r
@@ -463,8 +480,14 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 					}
 				}
 			}
+			if !ok && ar.Lost == "" {
+				lr, ok = c.adopt(ctx, h, ar)
+			}
 			if ok {
 				c.recordUsage(ar)
+				if ar.OOMKills > 0 && lr.OOMKills == 0 {
+					c.reportOOM(lr, ar)
+				}
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
 					if !lr.PostedAt.IsZero() {
@@ -475,6 +498,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 					}
 					lr.ListeningAt = *ar.ListeningAt
 					c.log.Info(fmt.Sprintf("ready %s  %.1fs", ar.Name, float64(ms)/1000))
+					c.provisionOK(h)
 					if lr.State == "starting" {
 						lr.State = "idle"
 					}
@@ -490,7 +514,10 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 				}
 			}
 			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
-				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost}
+				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost, JobStartedAt: lr.StartedAt}
+			if ar.JobStartedAt != nil && ok {
+				dr.JobStartedAt = *ar.JobStartedAt
+			}
 			if ar.ExitCode != nil {
 				dr.ExitCode = *ar.ExitCode
 			}
@@ -514,7 +541,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 
 func (c *Controller) recordUsage(r api.Runner) {
 	u := ledger.Usage{CPUSec: r.CPUSec, MemPeak: r.MemPeak, IOBytes: r.IOBytes, ExitCode: r.ExitCode,
-		PSICPUSec: r.PressureSec["cpu"], PSIMemSec: r.PressureSec["memory"], PSIIOSec: r.PressureSec["io"]}
+		PSICPUSec: r.PressureSec["cpu"], PSIMemSec: r.PressureSec["memory"], PSIIOSec: r.PressureSec["io"], OOMKills: r.OOMKills}
 	if err := c.ledger.SetUsage(r.Name, u); err != nil {
 		c.log.Error("ledger usage", "runner", r.Name, "err", err)
 	}
@@ -533,6 +560,8 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
 			dh.BudgetCPUs = minPositive(dh.BudgetCPUs, a.BudgetCPUs)
 			dh.BudgetMem = int64(minPositive(float64(dh.BudgetMem), float64(a.BudgetMem)))
+			h.closed = c.closedReason(h)
+			dh.Closed = h.closed
 		}
 		s.Hosts = append(s.Hosts, dh)
 	}
@@ -550,7 +579,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	defer c.mu.Unlock()
 	for _, cl := range c.classes {
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
-			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts})
+			MaxRunners: cl.cfg.MaxRunners, Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration})
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
 			for i := perClass[cl.cfg.Name]; i < cl.stats.TotalAssignedJobs-cl.stats.TotalRunningJobs; i++ {
@@ -585,31 +614,31 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
 	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
 	before, _ := c.ledger.Runner(st.Runner)
-	rebooted := st.Reason == rebootReason
-	died := before.State == "busy" && strings.HasPrefix(st.Reason, "container missing")
-	code := "unknown"
+	h := c.hostByName(st.Host)
+	var final *api.Runner
 	removed := false
-	if h := c.hostByName(st.Host); h != nil && h.snap != nil {
+	if h != nil && h.snap != nil {
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		final, err := h.agent.Delete(cctx, st.Runner)
+		f, err := h.agent.Delete(cctx, st.Runner)
 		cancel()
 		if err != nil {
 			c.log.Error("delete runner", "runner", st.Runner, "err", err)
 		} else {
 			removed = true
-			if final.State != "unknown" {
-				c.recordUsage(final)
+			if f.State != "unknown" {
+				final = &f
+				c.recordUsage(f)
+				if f.OOMKills > 0 && before.OOMKills == 0 && before.Name != "" {
+					c.reportOOM(before, f)
+				}
 			}
-			if final.LogTail != "" {
-				_ = c.ledger.SetLogTail(st.Runner, final.LogTail)
+			if f.LogTail != "" {
+				_ = c.ledger.SetLogTail(st.Runner, f.LogTail)
 			}
 			// If JobCompleted was missed while the controller was away, the exit code
 			// is all there is; a late message still replaces it.
-			if before.State == "busy" && final.ExitCode != nil && *final.ExitCode != 0 {
-				died, code = true, fmt.Sprint(*final.ExitCode)
-			}
-			if final.JobStartedAt != nil && final.ExitCode != nil && final.ExitedAt != nil {
-				if err := c.ledger.CloseFromExit(st.Runner, *final.ExitCode, *final.ExitedAt); err != nil {
+			if f.JobStartedAt != nil && f.ExitCode != nil && f.ExitedAt != nil {
+				if err := c.ledger.CloseFromExit(st.Runner, *f.ExitCode, *f.ExitedAt); err != nil {
 					c.log.Error("ledger close", "err", err)
 				}
 			}
@@ -618,16 +647,27 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	if err := c.ledger.SetState(st.Runner, st.State, st.Reason); err != nil {
 		c.log.Error("ledger state", "err", err)
 	}
-	if rebooted {
+	if h != nil && (strings.HasPrefix(st.Reason, "provision timeout") || strings.HasPrefix(st.Reason, "exited before a job")) {
+		c.provisionFailed(h, st.Reason)
+	}
+	switch endCause(before, st, final) {
+	case endRebooted:
 		c.rebootLost[st.Host] = append(c.rebootLost[st.Host], before)
-	} else if died {
-		job := before.Job
-		if job == "" {
-			job = "its job"
+	case endMaxDuration:
+		c.book.report("problem", "max-duration/"+st.Runner, "max-duration", st.Runner, fmt.Sprintf(
+			"%s on %s ran longer than the %s maxDuration; the runner was stopped and GitHub will fail the job",
+			jobName(before), st.Host, before.Class), "runner stopped; not rerun")
+	case endDied:
+		code := "unknown"
+		if final != nil && final.ExitCode != nil {
+			code = fmt.Sprint(*final.ExitCode)
+		}
+		action := "container removed; registration is removed when GitHub lets go"
+		if a := c.requestRerun(before, fmt.Sprintf("runner %s died on %s", st.Runner, st.Host)); a != "" {
+			action += "; " + a
 		}
 		c.book.report("problem", "runner-died/"+st.Runner, "runner-died", st.Runner, fmt.Sprintf(
-			"runner %s died while running %s on %s (exit code %s); GitHub will fail that job", st.Runner, job, st.Host, code),
-			"container removed; registration is removed when GitHub lets go")
+			"runner %s died while running %s on %s (exit code %s); GitHub will fail that job", st.Runner, jobName(before), st.Host, code), action)
 	}
 	if removed {
 		if err := c.ledger.MarkRemoved(st.Runner, now); err != nil {
@@ -682,6 +722,12 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	if err != nil {
 		// The registration stays until unregister removes it.
 		fail("agent start: " + err.Error())
+		// The agent answered and could not start it: the host's doing. Over budget
+		// (409) and an unreachable agent are not.
+		var se *api.StatusError
+		if errors.As(err, &se) && se.Code != http.StatusConflict {
+			c.provisionFailed(h, err.Error())
+		}
 		return
 	}
 	c.ev.Write("runner-started", map[string]any{"runner": name, "host": s.Host, "class": s.Class,
@@ -889,8 +935,15 @@ func (c *Controller) reportReboots(now time.Time) {
 			detail = fmt.Sprintf("host %s rebooted: %d runners lost with %d running jobs (%s); GitHub will fail those jobs",
 				host, len(rs), len(jobs), strings.Join(jobs, ", "))
 		}
-		c.book.report("problem", fmt.Sprintf("host-rebooted/%s/%d", host, now.Unix()), "host-rebooted", host, detail,
-			"runners closed as lost, registrations removed")
+		action := "runners closed as lost, registrations removed"
+		for _, r := range rs {
+			if r.State == "busy" && r.Result == "" {
+				if a := c.requestRerun(r, fmt.Sprintf("host %s rebooted under %s", host, jobName(r))); a != "" && !strings.Contains(action, a) {
+					action += "; " + a
+				}
+			}
+		}
+		c.book.report("problem", fmt.Sprintf("host-rebooted/%s/%d", host, now.Unix()), "host-rebooted", host, detail, action)
 	}
 	clear(c.rebootLost)
 }

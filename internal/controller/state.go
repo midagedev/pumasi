@@ -27,6 +27,10 @@ type HostState struct {
 	CPUPressure *float64 `json:"cpuPressure"`
 	Runners     int      `json:"runners"`
 	Reachable   *bool    `json:"reachable"` // nil = unknown, no controller running
+	// Closed: why the host, though reachable, gets no new runners ("quarantined", "disk 4% free").
+	Closed string `json:"closed"`
+	// Free share of docker's disk in percent; nil when unknown.
+	DiskFreePct *float64 `json:"diskFreePct"`
 }
 
 type RunnerState struct {
@@ -78,6 +82,11 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			if up {
 				p := snap.PSI["cpu"]
 				hs.CPUPressure = &p
+				hs.Closed = live.Closed[h.Name]
+				if snap.DiskTotal > 0 {
+					d := 100 * float64(snap.DiskFree) / float64(snap.DiskTotal)
+					hs.DiskFreePct = &d
+				}
 			}
 		}
 		out.Hosts = append(out.Hosts, hs)

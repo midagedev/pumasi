@@ -47,12 +47,13 @@ function renderState(s) {
     el("li", {}, i.detail, el("span", { className: "age", textContent: "open " + dur((Date.now() - new Date(i.openedAt)) / 1000) }))));
 
   fill("hosts", s.hosts.map((h) => {
-    const state = h.reachable === null ? "unknown" : h.reachable ? (h.quarantined ? "quarantined" : "ok") : "unreachable";
+    const state = h.reachable === null ? "unknown" : h.reachable ? (h.closed || "ok") : "unreachable";
     return el("tr", {},
       td(h.name), td(h.kind, "muted opt"),
       bar(h.usedCpus, h.budgetCpus, h.usedCpus + "/" + h.budgetCpus),
       bar(h.usedMem, h.budgetMem, gib(h.usedMem) + "/" + gib(h.budgetMem)),
       td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num"),
+      td(h.diskFreePct === null ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(String(h.runners), "num"),
       td(state, state === "ok" ? "muted" : "problem"));
   }));
@@ -70,6 +71,7 @@ function renderState(s) {
 // Results: GitHub's word for a job; a runner that never got one shows why it ended.
 function resultCell(j) {
   if (j.result === "succeeded") return td("succeeded", "muted");
+  if (j.oomKills) return td((j.result || j.state) + " · out of memory", "problem");
   if (j.result) return td(j.result, "problem");
   return td(j.state === "done" ? "-" : j.state + (j.reason ? ": " + j.reason : ""), j.state === "failed" || j.state === "lost" ? "problem wrap" : "muted");
 }

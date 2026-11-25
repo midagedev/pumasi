@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -59,6 +60,14 @@ CREATE TABLE IF NOT EXISTS outbox(
   at TEXT NOT NULL, payload TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, error TEXT, sent_at TEXT
 );
+CREATE TABLE IF NOT EXISTS reruns(
+  run_id INTEGER PRIMARY KEY,      -- workflow run with a job lost to an infrastructure failure
+  repo TEXT NOT NULL,
+  reason TEXT,
+  requested_at TEXT NOT NULL,
+  pending INTEGER NOT NULL DEFAULT 1,
+  count INTEGER NOT NULL DEFAULT 0 -- rerun-failed-jobs calls made for this run
+);
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, class TEXT, host TEXT, action TEXT NOT NULL, runner TEXT, reason TEXT
@@ -98,7 +107,7 @@ func Open(path string) (*Ledger, error) {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	// Columns added after the first release; "duplicate column" means it is there.
-	for _, col := range []string{"runners ADD COLUMN log_tail TEXT"} {
+	for _, col := range []string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER"} {
 		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("schema: %w", err)
@@ -108,6 +117,108 @@ func Open(path string) (*Ledger, error) {
 }
 
 func (l *Ledger) Close() error { return l.db.Close() }
+
+// Check runs SQLite's integrity check; an error means the file cannot be trusted.
+func (l *Ledger) Check() error {
+	var res string
+	if err := l.db.QueryRow(`PRAGMA quick_check`).Scan(&res); err != nil {
+		return err
+	}
+	if res != "ok" {
+		return errors.New("integrity check: " + res)
+	}
+	return nil
+}
+
+// OpenOrRebuild opens the ledger. A file that does not open or fails its
+// integrity check is moved aside (with its -wal and -shm) and an empty ledger
+// takes its place; movedTo names the copy that was set aside.
+func OpenOrRebuild(path string, now time.Time) (l *Ledger, movedTo string, err error) {
+	l, err = Open(path)
+	if err == nil {
+		if err = l.Check(); err == nil {
+			return l, "", nil
+		}
+		l.Close()
+	}
+	broken := err
+	movedTo = path + ".broken-" + now.Format("20060102-150405")
+	if err := os.Rename(path, movedTo); err != nil {
+		return nil, "", fmt.Errorf("ledger %s is damaged (%v) and cannot be moved aside: %w", path, broken, err)
+	}
+	for _, ext := range []string{"-wal", "-shm"} {
+		_ = os.Rename(path+ext, movedTo+ext)
+	}
+	l, err = Open(path)
+	return l, movedTo, err
+}
+
+// InsertAdopted records a runner found on a host that the ledger does not know
+// (the ledger was rebuilt). Its job, if any, is known only by the runner.
+func (l *Ledger) InsertAdopted(name, class, host string, runnerID int64, created, listening, jobStarted time.Time) error {
+	state := "starting"
+	if !listening.IsZero() {
+		state = "idle"
+	}
+	if !jobStarted.IsZero() {
+		state = "busy"
+	}
+	var id any
+	if runnerID != 0 {
+		id = runnerID
+	}
+	return l.exec(`INSERT OR IGNORE INTO runners(name, class, host, state, reason, runner_id, created_at, posted_at, listening_at, started_at)
+	  VALUES(?,?,?,?,'adopted from the host',?,?,?,?,?)`, name, class, host, state, id, ts(created), ts(created), ts(listening), ts(jobStarted))
+}
+
+// Rerun is a workflow run waiting to have its failed jobs run again.
+type Rerun struct {
+	RunID       int64
+	Repo        string
+	Reason      string
+	RequestedAt time.Time
+}
+
+// RequestRerun queues a run unless it has been rerun max times already. It
+// reports whether the run is (now or already) queued.
+func (l *Ledger) RequestRerun(repo string, runID int64, reason string, at time.Time, max int) (bool, error) {
+	if err := l.exec(`INSERT INTO reruns(run_id, repo, reason, requested_at) VALUES(?,?,?,?)
+	  ON CONFLICT(run_id) DO UPDATE SET pending=1, reason=excluded.reason, requested_at=excluded.requested_at
+	  WHERE reruns.pending=0 AND reruns.count < ?`, runID, repo, reason, ts(at), max); err != nil {
+		return false, err
+	}
+	var pending int
+	err := l.db.QueryRow(`SELECT pending FROM reruns WHERE run_id=?`, runID).Scan(&pending)
+	return pending == 1, err
+}
+
+func (l *Ledger) PendingReruns() ([]Rerun, error) {
+	rows, err := l.db.Query(`SELECT run_id, repo, COALESCE(reason,''), requested_at FROM reruns WHERE pending=1 ORDER BY requested_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Rerun
+	for rows.Next() {
+		var r Rerun
+		var at sql.NullString
+		if err := rows.Scan(&r.RunID, &r.Repo, &r.Reason, &at); err != nil {
+			return nil, err
+		}
+		r.RequestedAt = parseTS(at)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RerunSettled takes a run off the queue; called says whether GitHub was asked to rerun it.
+func (l *Ledger) RerunSettled(runID int64, called bool) error {
+	n := 0
+	if called {
+		n = 1
+	}
+	return l.exec(`UPDATE reruns SET pending=0, count=count+? WHERE run_id=?`, n, runID)
+}
 
 func (l *Ledger) exec(q string, args ...any) error {
 	_, err := l.db.Exec(q, args...)
@@ -123,6 +234,7 @@ type Runner struct {
 	JobID, Job               string // Job is the job's display name, known from JobStarted on
 	Repo, Result             string
 	RunID                    int64
+	OOMKills                 int       // processes killed at the class's memory limit
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
 }
@@ -159,12 +271,14 @@ type Usage struct {
 	MemPeak, IOBytes               int64
 	PSICPUSec, PSIMemSec, PSIIOSec float64
 	ExitCode                       *int
+	OOMKills                       int
 }
 
 func (l *Ledger) SetUsage(name string, u Usage) error {
 	return l.exec(`UPDATE runners SET cpu_sec=MAX(COALESCE(cpu_sec,0),?), mem_peak=MAX(COALESCE(mem_peak,0),?),
-	  io_bytes=MAX(COALESCE(io_bytes,0),?), psi_cpu_sec=?, psi_mem_sec=?, psi_io_sec=?, exit_code=COALESCE(?, exit_code) WHERE name=?`,
-		u.CPUSec, u.MemPeak, u.IOBytes, u.PSICPUSec, u.PSIMemSec, u.PSIIOSec, u.ExitCode, name)
+	  io_bytes=MAX(COALESCE(io_bytes,0),?), psi_cpu_sec=?, psi_mem_sec=?, psi_io_sec=?, exit_code=COALESCE(?, exit_code),
+	  oom_kills=MAX(COALESCE(oom_kills,0),?) WHERE name=?`,
+		u.CPUSec, u.MemPeak, u.IOBytes, u.PSICPUSec, u.PSIMemSec, u.PSIIOSec, u.ExitCode, u.OOMKills, name)
 }
 
 func (l *Ledger) MarkRemoved(name string, at time.Time) error {
@@ -249,7 +363,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 }
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
-  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at`
+  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0)`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -262,7 +376,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var r Runner
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
-			&r.Repo, &r.Result, &r.RunID, &started); err != nil {
+			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -441,6 +555,7 @@ type FinishedJob struct {
 	CPUSec      float64   `json:"cpuSec"`
 	MemPeak     int64     `json:"memPeak"`
 	ExitCode    *int      `json:"exitCode"`
+	OOMKills    int       `json:"oomKills"`
 }
 
 // RecentJobs are the newest runners that are over, newest first.
@@ -449,7 +564,7 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 	    r.state, COALESCE(r.result,''), COALESCE(r.reason,''), r.created_at, r.started_at, r.finished_at,
 	    COALESCE((julianday(r.started_at)-julianday(d.first_seen))*86400, 0),
 	    COALESCE((julianday(r.finished_at)-julianday(r.started_at))*86400, 0),
-	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code
+	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code, COALESCE(r.oom_kills,0)
 	  FROM runners r LEFT JOIN demand d ON d.job_id = r.assigned_job_id
 	  WHERE r.removed_at IS NOT NULL OR r.state IN ('failed','lost')
 	  ORDER BY COALESCE(r.finished_at, r.removed_at, r.created_at) DESC LIMIT ?`, limit)
@@ -463,7 +578,7 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 		var created, started, finished sql.NullString
 		var exit sql.NullInt64
 		if err := rows.Scan(&j.Runner, &j.Class, &j.Host, &j.Job, &j.Repo, &j.RunID, &j.State, &j.Result, &j.Reason,
-			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit); err != nil {
+			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit, &j.OOMKills); err != nil {
 			return nil, err
 		}
 		j.CreatedAt, j.StartedAt, j.FinishedAt = parseTS(created), parseTS(started), parseTS(finished)

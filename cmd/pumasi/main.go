@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/controller"
@@ -90,7 +91,7 @@ func runController(args []string, down bool) error {
 		return err
 	}
 	defer unlock()
-	l, err := ledger.Open(cfg.Ledger)
+	l, moved, err := ledger.OpenOrRebuild(cfg.Ledger, time.Now())
 	if err != nil {
 		return err
 	}
@@ -111,6 +112,7 @@ func runController(args []string, down bool) error {
 		return err
 	}
 	defer c.Close()
+	c.LedgerMoved = moved
 	if !*verbose {
 		// The listener logs every long poll at info level.
 		c.ListenerLog = slog.New(newLineHandler(os.Stdout, slog.LevelWarn))

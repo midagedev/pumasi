@@ -25,7 +25,10 @@ type Snapshot struct {
 	NonRunnerCPU float64            `json:"nonRunnerCpu"` // cores used by everything but runners
 	NonRunnerMem int64              `json:"nonRunnerMem"` // MemTotal - MemAvailable - runner memory.current
 	SampledAt    time.Time          `json:"sampledAt"`
-	Runners      []Runner           `json:"runners"`
+	// Free and total bytes of the filesystem holding docker's data (0 = unknown).
+	DiskFree  int64    `json:"diskFree"`
+	DiskTotal int64    `json:"diskTotal"`
+	Runners   []Runner `json:"runners"`
 }
 
 // Runner is one runner container as the agent last sampled it. Resource values
@@ -47,6 +50,7 @@ type Runner struct {
 	MemPeak      int64              `json:"memPeak"`
 	MemCurrent   int64              `json:"memCurrent"`
 	IOBytes      int64              `json:"ioBytes"`
+	OOMKills     int                `json:"oomKills,omitempty"`    // processes killed at the memory limit
 	PressureSec  map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
 	StartedAt    *time.Time         `json:"startedAt,omitempty"`
 	ExitedAt     *time.Time         `json:"exitedAt,omitempty"`
@@ -123,6 +127,17 @@ func (c *Client) Start(ctx context.Context, r StartRequest) (Runner, error) {
 	var out Runner
 	err := c.do(ctx, http.MethodPost, "/v1/runners", r, &out)
 	return out, err
+}
+
+// Check asks the agent whether the host can start runners (docker answers, the
+// image is there or can be pulled). A nil error with a non-empty string is the
+// host's own reason why not.
+func (c *Client) Check(ctx context.Context, image string) (string, error) {
+	var out struct {
+		Problem string `json:"problem"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/check?image="+url.QueryEscape(image), nil, &out)
+	return out.Problem, err
 }
 
 // Delete stops and removes a runner container and returns its last sampled values.

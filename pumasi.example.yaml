@@ -13,6 +13,8 @@ hosts:                               # ssh destinations (aliases from ~/.ssh/con
     shell: wsl -e sh -s              # Windows host running WSL (default: sh -s)
     budget: {cpus: 6, memory: 9G}
 
+# rerun: 1                           # optional: after a failure on pumasi's side (host reboot, runner killed)
+#                                    #   rerun that run's failed jobs once; default 0 = only tell
 # notify:                            # optional: problems (and their end) as one line each
 #   webhook: https://hooks.example/…  # JSON POST {text, key, kind, subject, state, detail}
 #   command: my-notify --stdin        # or a command that gets the same JSON on stdin

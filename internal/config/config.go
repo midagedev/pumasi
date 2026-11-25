@@ -27,6 +27,11 @@ type Config struct {
 	DemandTTL        time.Duration `yaml:"demandTTL"`
 	PSICPUThreshold  float64       `yaml:"psiCPUThreshold"`
 	WaitAlert        time.Duration `yaml:"waitAlert"` // a job waiting this long is a problem
+	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
+	DiskMinFree float64 `yaml:"diskMinFree"`
+	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
+	// failure on its own side (host reboot, runner killed). 0 = only tell.
+	Rerun int `yaml:"rerun"`
 
 	Notify Notify `yaml:"notify"`
 
@@ -51,6 +56,8 @@ type Class struct {
 	Memory     Bytes    `yaml:"memory"`
 	MaxRunners int      `yaml:"maxRunners"`
 	Hosts      []string `yaml:"hosts"` // empty = every host
+	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
+	MaxDuration time.Duration `yaml:"maxDuration"`
 }
 
 type Host struct {
@@ -125,6 +132,9 @@ func (c *Config) defaults() {
 	def(&c.HostLostAfter, 2*time.Minute)
 	def(&c.DemandTTL, 24*time.Hour)
 	def(&c.WaitAlert, 10*time.Minute)
+	if c.DiskMinFree == 0 {
+		c.DiskMinFree = 10
+	}
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
 	}

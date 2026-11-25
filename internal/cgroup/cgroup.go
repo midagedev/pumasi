@@ -23,6 +23,7 @@ type Stats struct {
 	MemCurrent uint64
 	MemPeak    uint64
 	IOBytes    uint64
+	OOMKills   uint64 // memory.events oom_kill: processes killed at the memory limit
 	// Some-stall totals in microseconds, keyed by cpu|memory|io.
 	Pressure map[string]uint64
 }
@@ -36,6 +37,18 @@ func ParseCPUStat(s string) (uint64, error) {
 		}
 	}
 	return 0, fmt.Errorf("cpu.stat: no usage_usec")
+}
+
+// ParseMemoryEvents returns oom_kill from memory.events (0 when absent).
+func ParseMemoryEvents(s string) uint64 {
+	for _, line := range strings.Split(s, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[0] == "oom_kill" {
+			n, _ := strconv.ParseUint(f[1], 10, 64)
+			return n
+		}
+	}
+	return 0
 }
 
 // ParseUint parses single-value files such as memory.peak and memory.current.
@@ -190,6 +203,9 @@ func (r Reader) Read(dir string) (Stats, error) {
 	st.MemPeak = max(st.MemPeak, st.MemCurrent)
 	if s, err = readString(filepath.Join(dir, "io.stat")); err == nil {
 		st.IOBytes, _ = ParseIOStat(s, r.hasHolders)
+	}
+	if s, err = readString(filepath.Join(dir, "memory.events")); err == nil {
+		st.OOMKills = ParseMemoryEvents(s)
 	}
 	st.Pressure = map[string]uint64{}
 	for _, res := range []string{"cpu", "memory", "io"} {

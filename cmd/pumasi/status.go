@@ -73,6 +73,9 @@ func printStatus(w io.Writer, s controller.State) {
 			state = "unreachable"
 			if *h.Reachable {
 				state = "ok"
+				if h.Closed != "" {
+					state = h.Closed
+				}
 			}
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%g/%g\t%s/%s\t%s\t%d\t%s\n", h.Name, h.Kind, h.UsedCPUs, h.BudgetCPUs,

@@ -19,6 +19,8 @@ import (
 type Status struct {
 	Hosts   map[string]*api.Snapshot `json:"hosts"`
 	Waiting []Waiting                `json:"waiting"`
+	// Closed: hosts that are up but take no new runners, with the reason.
+	Closed map[string]string `json:"closed,omitempty"`
 }
 
 type Waiting struct {
@@ -28,9 +30,12 @@ type Waiting struct {
 }
 
 func (c *Controller) setStatus(defers []decide.Defer) {
-	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}}
+	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}}
 	for _, h := range c.hosts {
 		st.Hosts[h.cfg.Name] = h.snap
+		if h.snap != nil && h.closed != "" {
+			st.Closed[h.cfg.Name] = h.closed
+		}
 	}
 	for _, d := range defers {
 		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason})

@@ -31,6 +31,7 @@ type Container struct {
 	State      string // created | running | exited (anything else is reported as is)
 	Pid        int
 	ExitCode   int
+	OOMKilled  bool // docker saw the container's main process killed at the memory limit
 	StartedAt  time.Time
 	FinishedAt time.Time
 }
@@ -45,6 +46,10 @@ type Driver interface {
 	LogEvents(ctx context.Context, name string, since time.Time) (LogEvents, error)
 	// LogTail is the end of the runner's output, kept with the job once the container is gone.
 	LogTail(ctx context.Context, name string, lines int) string
+	// DataDir is where the driver keeps images and containers ("" = unknown).
+	DataDir(ctx context.Context) string
+	// Check reports why the host cannot start a runner from image right now (nil = it can).
+	Check(ctx context.Context, image string) error
 }
 
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
@@ -116,6 +121,32 @@ func (d Docker) List(ctx context.Context) ([]Container, error) {
 	return cs, nil
 }
 
+func (d Docker) DataDir(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.DockerRootDir}}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (d Docker) Check(ctx context.Context, image string) error {
+	if out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
+		return fmt.Errorf("docker does not answer: %s", lastLine(out))
+	}
+	if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Run() == nil {
+		return nil
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "pull", "-q", image).CombinedOutput(); err != nil {
+		return fmt.Errorf("cannot pull %s: %s", image, lastLine(out))
+	}
+	return nil
+}
+
+func lastLine(b []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
 // LogEvents are times read from a runner's output; zero when not seen.
 type LogEvents struct {
 	Listening, JobStarted time.Time
@@ -173,6 +204,7 @@ type inspected struct {
 		Status     string `json:"Status"`
 		Pid        int    `json:"Pid"`
 		ExitCode   int    `json:"ExitCode"`
+		OOMKilled  bool   `json:"OOMKilled"`
 		StartedAt  string `json:"StartedAt"`
 		FinishedAt string `json:"FinishedAt"`
 	} `json:"State"`
@@ -210,12 +242,13 @@ func parseInspect(b []byte) ([]inspected, error) {
 
 func (i inspected) container() Container {
 	c := Container{
-		ID:       i.ID,
-		Name:     strings.TrimPrefix(i.Name, "/"),
-		Class:    i.labels[labelClass],
-		State:    i.State.Status,
-		Pid:      i.State.Pid,
-		ExitCode: i.State.ExitCode,
+		ID:        i.ID,
+		Name:      strings.TrimPrefix(i.Name, "/"),
+		Class:     i.labels[labelClass],
+		State:     i.State.Status,
+		Pid:       i.State.Pid,
+		ExitCode:  i.State.ExitCode,
+		OOMKilled: i.State.OOMKilled,
 	}
 	c.CPUs, _ = strconv.ParseFloat(i.labels[labelCPUs], 64)
 	c.MemBytes, _ = strconv.ParseInt(i.labels[labelMem], 10, 64)

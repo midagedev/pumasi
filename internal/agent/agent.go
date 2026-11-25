@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -43,6 +44,7 @@ type Agent struct {
 
 	prevRootUsec uint64
 	prevAt       time.Time
+	dataDir      string // docker's data directory, asked once
 }
 
 type rec struct {
@@ -61,6 +63,8 @@ type hostState struct {
 	nonRunnerCPU float64
 	nonRunnerMem int64
 	sampledAt    time.Time
+	diskFree     int64
+	diskTotal    int64
 }
 
 func New(cfg Config, drv Driver, cg cgroup.Reader, log *slog.Logger) *Agent {
@@ -149,6 +153,9 @@ func (a *Agent) Sample(ctx context.Context) {
 			r.ExitedAt = ptr(c.FinishedAt)
 			r.ExitCode = ptr(c.ExitCode)
 			r.MemCurrent = 0
+			if c.OOMKilled && r.OOMKills == 0 {
+				r.OOMKills = 1 // the cgroup is gone with the container; docker still knows
+			}
 			if r.rebooted && c.ExitCode != 0 {
 				r.Lost = lostRebooted
 			}
@@ -186,7 +193,7 @@ func (a *Agent) Sample(ctx context.Context) {
 	a.dataMu.Unlock()
 	a.save()
 
-	a.sampleHost(now, runnerUsecDelta, runnerMem)
+	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem)
 }
 
 func applyStats(r *rec, s cgroup.Stats) {
@@ -195,14 +202,21 @@ func applyStats(r *rec, s cgroup.Stats) {
 	r.MemCurrent = int64(s.MemCurrent)
 	r.MemPeak = max(r.MemPeak, int64(s.MemPeak))
 	r.IOBytes = int64(s.IOBytes)
+	r.OOMKills = max(r.OOMKills, int(s.OOMKills))
 	r.PressureSec = map[string]float64{}
 	for k, v := range s.Pressure {
 		r.PressureSec[k] = float64(v) / 1e6
 	}
 }
 
-func (a *Agent) sampleHost(now time.Time, runnerUsecDelta uint64, runnerMem int64) {
+func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta uint64, runnerMem int64) {
 	h := hostState{cpus: float64(runtime.NumCPU()), sampledAt: now}
+	if a.dataDir == "" {
+		a.dataDir = a.drv.DataDir(ctx)
+	}
+	if a.dataDir != "" {
+		h.diskFree, h.diskTotal = diskSpace(a.dataDir)
+	}
 	if psi, err := a.cg.HostPressure(); err == nil {
 		h.psi = psi
 	} else {
@@ -231,6 +245,15 @@ func (a *Agent) sampleHost(now time.Time, runnerUsecDelta uint64, runnerMem int6
 	a.host = h
 }
 
+// diskSpace is the free and total bytes of the filesystem holding dir (0, 0 = unknown).
+func diskSpace(dir string) (free, total int64) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, 0
+	}
+	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
+}
+
 func ptr[T any](v T) *T { return &v }
 
 // Snapshot returns the last sampled state.
@@ -241,7 +264,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 		Host: a.cfg.Host, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
-		SampledAt: a.host.sampledAt, Runners: []api.Runner{},
+		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
 	}
 	for _, r := range a.recs {
 		s.Runners = append(s.Runners, r.Runner)
@@ -367,6 +390,13 @@ func (a *Agent) Handler() http.Handler {
 		}
 		a.log.Info("runner deleted", "runner", name, "cpuSec", out.CPUSec, "memPeak", out.MemPeak)
 		writeJSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("GET /v1/check", func(w http.ResponseWriter, r *http.Request) {
+		problem := ""
+		if err := a.drv.Check(r.Context(), r.URL.Query().Get("image")); err != nil {
+			problem = err.Error()
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"problem": problem})
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")

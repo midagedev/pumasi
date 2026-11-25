@@ -1,0 +1,28 @@
+name: chaos
+# Load for `make chaos`: two linux-s jobs that take `mb` of memory once (above
+# the class limit = the kernel kills it) and then hold the runner for `seconds`.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "how long each job holds its runner"
+        default: "120"
+      mb:
+        description: "memory taken at the start, in MiB"
+        default: "100"
+
+jobs:
+  hold:
+    strategy:
+      fail-fast: false
+      matrix:
+        i: [1, 2]
+    runs-on: [self-hosted, pumasi-linux-s]
+    timeout-minutes: 30
+    steps:
+      - name: take memory, then hold
+        run: |
+          echo "runner=$RUNNER_NAME job=${{ matrix.i }}"
+          head -c ${{ inputs.mb }}M /dev/zero | tail > /dev/null
+          sleep ${{ inputs.seconds }}
+          echo "done runner=$RUNNER_NAME"

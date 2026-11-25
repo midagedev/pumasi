@@ -85,6 +85,9 @@ func TestReaderOnFixtures(t *testing.T) {
 		t.Errorf("mem peak %d current %d", st.MemPeak, st.MemCurrent)
 	}
 	// 8:0 is held by dm (252:0), so it is not counted twice.
+	if st.OOMKills != 2 {
+		t.Errorf("oom kills %d, want 2", st.OOMKills)
+	}
 	if want := uint64(2772353024 + 24555520 + 139743232 + 170946560 + 1023324160 + 4096); st.IOBytes != want {
 		t.Errorf("io %d, want %d", st.IOBytes, want)
 	}

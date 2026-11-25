@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -129,5 +130,58 @@ func TestCloseFromExitAndRevive(t *testing.T) {
 	}
 	if ok, _ := l.Revive("a"); ok {
 		t.Fatal("a finished runner must not be revived")
+	}
+}
+
+func TestOpenOrRebuildMovesDamagedFileAside(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "l.db")
+	l, moved, err := OpenOrRebuild(path, time.Now())
+	if err != nil || moved != "" {
+		t.Fatalf("fresh ledger: moved %q err %v", moved, err)
+	}
+	_ = l.InsertRunner("r1", "linux-s", "h", time.Now())
+	l.Close()
+	if err := os.WriteFile(path, []byte("this is not a database, not even close"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, moved, err = OpenOrRebuild(path, time.Now())
+	if err != nil || moved == "" {
+		t.Fatalf("damaged ledger: moved %q err %v", moved, err)
+	}
+	defer l.Close()
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatalf("damaged copy not kept: %v", err)
+	}
+	if rs, _ := l.LiveRunners(); len(rs) != 0 {
+		t.Fatalf("rebuilt ledger not empty: %+v", rs)
+	}
+	now := time.Now()
+	if err := l.InsertAdopted("linux-l-h-1", "linux-l", "h", 7, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := l.Runner("linux-l-h-1"); r.State != "busy" || r.RunnerID != 7 {
+		t.Fatalf("adopted runner %+v", r)
+	}
+}
+
+func TestRerunQueueHonoursTheLimit(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	now := time.Now()
+	if ok, _ := l.RequestRerun("o/r", 1, "runner died", now, 1); !ok {
+		t.Fatal("first request not queued")
+	}
+	if rs, _ := l.PendingReruns(); len(rs) != 1 || rs[0].RunID != 1 || rs[0].Repo != "o/r" {
+		t.Fatalf("pending %+v", rs)
+	}
+	_ = l.RerunSettled(1, true)
+	if ok, _ := l.RequestRerun("o/r", 1, "runner died again", now, 1); ok {
+		t.Fatal("second rerun queued although the limit is 1")
+	}
+	if ok, _ := l.RequestRerun("o/r", 1, "runner died again", now, 2); !ok {
+		t.Fatal("second rerun refused although the limit is 2")
 	}
 }
