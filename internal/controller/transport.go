@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,10 +26,11 @@ type SSHTunnel struct {
 	RemotePort int
 	Log        *slog.Logger
 
-	mu    sync.Mutex
-	cmd   *exec.Cmd
-	local int
-	dead  chan struct{}
+	mu     sync.Mutex
+	cmd    *exec.Cmd
+	local  int
+	dead   chan struct{}
+	closed bool
 }
 
 func (t *SSHTunnel) BaseURL(ctx context.Context) (string, error) {
@@ -63,13 +65,21 @@ func (t *SSHTunnel) start(ctx context.Context) error {
 	cmd := exec.Command("ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
 		"-o", "ControlMaster=no", "-o", "ControlPath=none",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-L", fwd, t.Dest)
+	// Own process group: a terminal Ctrl-C must not take the tunnel down before
+	// the controller has removed its runners through it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("ssh %s: %w", t.Dest, err)
 	}
 	dead := make(chan struct{})
 	go func() {
 		err := cmd.Wait()
-		t.Log.Warn("ssh tunnel exited", "dest", t.Dest, "local", port, "err", err)
+		t.mu.Lock()
+		closed := t.closed
+		t.mu.Unlock()
+		if !closed {
+			t.Log.Warn("ssh tunnel exited", "dest", t.Dest, "err", err)
+		}
 		close(dead)
 	}()
 
@@ -94,13 +104,14 @@ func (t *SSHTunnel) start(ctx context.Context) error {
 		}
 	}
 	t.cmd, t.local, t.dead = cmd, port, dead
-	t.Log.Info("ssh tunnel up", "dest", t.Dest, "local", port, "remote", t.RemotePort)
+	t.Log.Debug("ssh tunnel up", "dest", t.Dest, "local", port, "remote", t.RemotePort)
 	return nil
 }
 
 func (t *SSHTunnel) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.closed = true
 	if t.cmd != nil {
 		_ = t.cmd.Process.Kill()
 		t.cmd = nil

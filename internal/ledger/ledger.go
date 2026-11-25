@@ -97,7 +97,7 @@ type Runner struct {
 	RunnerID                 int64
 	CreatedAt, PostedAt      time.Time
 	ListeningAt              time.Time
-	JobID                    string
+	JobID, Job               string // Job is the job's display name, known from JobStarted on
 	RemovedAt                time.Time
 }
 
@@ -217,7 +217,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 	return out, rows.Err()
 }
 
-const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), removed_at`
+const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -229,7 +229,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	for rows.Next() {
 		var r Runner
 		var created, posted, listening, removed sql.NullString
-		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &removed); err != nil {
+		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -261,4 +261,11 @@ func (l *Ledger) Runner(name string) (Runner, error) {
 
 func (l *Ledger) AddDecision(at time.Time, class, host, action, runner, reason string) error {
 	return l.exec(`INSERT INTO decisions(at, class, host, action, runner, reason) VALUES(?,?,?,?,?,?)`, ts(at), class, host, action, runner, reason)
+}
+
+// LastDefer is the reason of the newest defer decision for a class ("" = none).
+func (l *Ledger) LastDefer(class string) string {
+	var reason sql.NullString
+	_ = l.db.QueryRow(`SELECT reason FROM decisions WHERE action='defer' AND class=? ORDER BY id DESC LIMIT 1`, class).Scan(&reason)
+	return reason.String
 }

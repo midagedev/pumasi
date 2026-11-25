@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +32,10 @@ type Controller struct {
 	token  string
 	ledger *ledger.Ledger
 	log    *slog.Logger
-	ev     *EventLog
-	now    func() time.Time
+	// ListenerLog receives the scale set listener's own lines (one per long poll).
+	ListenerLog *slog.Logger
+	ev          *EventLog
+	now         func() time.Time
 
 	hosts   []*host
 	classes []*class
@@ -43,10 +46,12 @@ type Controller struct {
 	starts    sync.WaitGroup
 	lastDefer map[string]deferRec
 	runCheck  map[int64]time.Time
+	status    Status // last round, for `pumasi status`
 }
 
 type host struct {
 	cfg       config.Host
+	started   bool // this controller started its agent
 	tr        Transport
 	agent     *api.Client
 	snap      *api.Snapshot
@@ -73,7 +78,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 	if err != nil {
 		return nil, fmt.Errorf("github client: %w", err)
 	}
-	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ev: ev, now: time.Now,
+	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
 		kick: make(chan struct{}, 1), inflight: map[string]bool{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		tr := &SSHTunnel{Dest: hc.SSH, RemotePort: hc.AgentPort, Log: log}
@@ -111,16 +116,28 @@ func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 			c.ev.Write("scale-set-created", set)
 		}
 		cl.setID = set.ID
-		c.log.Info("scale set", "class", cl.cfg.Name, "id", set.ID, "name", set.Name, "labels", set.Labels)
+		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]", cl.cfg.Name, strings.Join(cl.cfg.Labels, ", ")))
 	}
 	return nil
 }
 
-// Run listens on every class and re-evaluates until ctx ends.
-func (c *Controller) Run(ctx context.Context) error {
+// Run starts the agents, listens on every class and re-evaluates until ctx
+// ends. Then it removes its runners and stops the agents; scale sets stay.
+// distDir holds the linux builds of this binary (pumasi-linux-<arch>).
+func (c *Controller) Run(ctx context.Context, distDir string) error {
 	if err := c.EnsureScaleSets(ctx); err != nil {
 		return err
 	}
+	defer c.shutdown()
+	if err := c.startAgents(ctx, distDir); err != nil {
+		return err
+	}
+	closeStatus, err := c.serveStatus()
+	if err != nil {
+		return err
+	}
+	defer closeStatus()
+	c.log.Info("listening for jobs (Ctrl-C to stop)")
 	var wg sync.WaitGroup
 	for _, cl := range c.classes {
 		wg.Add(1)
@@ -156,7 +173,7 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 			}
 			defer session.Close(context.WithoutCancel(ctx))
 			l, err := listener.New(session, listener.Config{ScaleSetID: cl.setID, MaxRunners: cl.cfg.MaxRunners,
-				Logger: c.log.With("class", cl.cfg.Name).WithGroup("listener")})
+				Logger: c.ListenerLog.With("class", cl.cfg.Name)})
 			if err != nil {
 				return err
 			}
@@ -215,7 +232,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		// No runner took it within 5 minutes: GitHub cancels this assignment and, up to
 		// two more times, assigns the job again under a new job id (M0, M1). A job canceled
 		// by a person looks the same and is simply not assigned again.
-		c.log.Info("job completed without a runner", "class", cls, "job", j.JobDisplayName, "result", j.Result)
+		c.log.Info(fmt.Sprintf("unassigned %s  %s: no runner took it, GitHub withdrew the assignment (%s)", cls, j.JobDisplayName, j.Result))
 		if err := c.ledger.CloseDemand(j.JobID, "unassigned-"+j.Result, orNow(j.FinishTime, now)); err != nil {
 			return err
 		}
@@ -234,6 +251,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		if !ours {
 			c.log.Warn("job started on a runner not in the ledger", "class", cls, "runner", j.RunnerName)
 		}
+		c.log.Info(fmt.Sprintf("job %s on %s", j.JobDisplayName, j.RunnerName))
 	}
 	for _, j := range msg.JobCompletedMessages {
 		if j.RunnerName == "" {
@@ -242,6 +260,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		if err := c.ledger.JobCompleted(j.RunnerName, job(cls, j.JobMessageBase), j.Result, orNow(j.FinishTime, now)); err != nil {
 			return err
 		}
+		c.log.Info(fmt.Sprintf("done %s on %s  %s", j.JobDisplayName, j.RunnerName, j.Result))
 	}
 	if msg.Statistics != nil {
 		c.mu.Lock()
@@ -296,6 +315,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		c.start(ctx, s, now)
 	}
 	c.recordDefers(plan.Defer, now)
+	c.setStatus(plan.Defer)
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
 }
@@ -314,8 +334,13 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 					h.downSince = now
 				}
 				h.snap = nil
-				c.log.Warn("agent unreachable", "host", h.cfg.Name, "err", err, "since", h.downSince)
+				if h.downSince.Equal(now) {
+					c.log.Warn(fmt.Sprintf("host %s unreachable", h.cfg.Name), "err", err)
+				}
 				return
+			}
+			if !h.downSince.IsZero() {
+				c.log.Info(fmt.Sprintf("host %s reachable again", h.cfg.Name))
 			}
 			h.snap, h.downSince = &s, time.Time{}
 		}()
@@ -345,6 +370,9 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 						c.log.Error("ledger busy", "err", err)
 					}
 					lr.State = "busy"
+					// Seen in the runner's own output; GitHub's JobStarted message comes later.
+					c.log.Info(fmt.Sprintf("busy %s", ar.Name))
+					c.ev.Write("runner-busy", map[string]any{"runner": ar.Name, "runningJobAt": ar.JobStartedAt})
 				}
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
@@ -355,6 +383,7 @@ func (c *Controller) syncRunners(live []ledger.Runner) []decide.Runner {
 						c.log.Error("ledger listening", "err", err)
 					}
 					lr.ListeningAt = *ar.ListeningAt
+					c.log.Info(fmt.Sprintf("ready %s  %.1fs", ar.Name, float64(ms)/1000))
 					if lr.State == "starting" {
 						lr.State = "idle"
 					}
@@ -453,7 +482,7 @@ func (c *Controller) hostByName(name string) *host {
 
 // stop removes the container (when the agent answers), stores its final values and the new state.
 func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
-	c.log.Info("stop runner", "runner", st.Runner, "host", st.Host, "state", st.State, "reason", st.Reason)
+	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
 	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
 	removed := false
 	if h := c.hostByName(st.Host); h != nil && h.snap != nil {
@@ -482,7 +511,7 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 // start records the runner and launches it in the background.
 func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	name := fmt.Sprintf("%s-%s-%s", s.Class, s.Host, uuid.NewString()[:8])
-	c.log.Info("start runner", "runner", name, "reason", s.Reason)
+	c.log.Info(fmt.Sprintf("start %s on %s  %s  (%s)", s.Class, s.Host, s.Reason, name))
 	c.decision(now, s.Class, s.Host, "start", name, s.Reason)
 	if err := c.ledger.InsertRunner(name, s.Class, s.Host, now); err != nil {
 		c.log.Error("ledger insert", "err", err)
@@ -550,7 +579,7 @@ func (c *Controller) recordDefers(ds []decide.Defer, now time.Time) {
 			continue
 		}
 		c.lastDefer[d.Class] = deferRec{count: d.Count, at: now}
-		c.log.Info("defer", "class", d.Class, "count", d.Count, "reason", d.Reason)
+		c.log.Info(fmt.Sprintf("defer %s x%d  %s", d.Class, d.Count, d.Reason))
 		c.decision(now, d.Class, "", "defer", "", fmt.Sprintf("%d waiting: %s", d.Count, d.Reason))
 	}
 	for cls := range c.lastDefer {
@@ -579,11 +608,11 @@ func (c *Controller) unregister(ctx context.Context) {
 		err := c.gh.RemoveRunner(ctx, r.RunnerID)
 		switch {
 		case err == nil:
-			c.log.Info("removed registration", "runner", r.Name, "id", r.RunnerID)
+			c.log.Debug("removed registration", "runner", r.Name, "id", r.RunnerID)
 			c.ev.Write("unregistered", map[string]any{"runner": r.Name, "id": r.RunnerID})
 		case errors.Is(err, scaleset.RunnerNotFoundError):
 		case errors.Is(err, scaleset.JobStillRunningError):
-			c.log.Info("registration busy, retry later", "runner", r.Name)
+			c.log.Debug("registration busy, retry later", "runner", r.Name)
 			continue
 		default:
 			c.log.Warn("remove registration", "runner", r.Name, "err", err)
@@ -647,30 +676,112 @@ func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (s
 	return run.Status, run.Conclusion, err
 }
 
-// Teardown removes every runner container the agents report, the registrations
-// the ledger still holds, and the scale sets of the configured classes.
-func (c *Controller) Teardown(ctx context.Context) error {
-	now := c.now()
-	c.refreshHosts(ctx, now)
+// startAgents puts this build's agent on every host, in parallel. A host that
+// fails is reported and left out; the run goes on while one host works.
+func (c *Controller) startAgents(ctx context.Context, distDir string) error {
+	errs := make([]error, len(c.hosts))
+	var wg sync.WaitGroup
+	for i, h := range c.hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			defer cancel()
+			did, err := ensureAgent(cctx, h.cfg, distDir)
+			if err != nil {
+				errs[i] = err
+				c.log.Error(fmt.Sprintf("host %s not usable", h.cfg.Name), "err", err)
+				return
+			}
+			h.started = true
+			c.log.Info(fmt.Sprintf("host %s  %s  budget %gcpu/%s", h.cfg.Name, did, h.cfg.Budget.CPUs, gib(int64(h.cfg.Budget.Memory))))
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := errors.Join(errs...); err != nil && !slices.ContainsFunc(c.hosts, func(h *host) bool { return h.started }) {
+		return errors.New("no usable host")
+	}
+	return nil
+}
+
+func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
+
+// shutdown runs after Ctrl-C, on its own deadline: remove our runners, stop the
+// agents we started, close the tunnels.
+func (c *Controller) shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	c.log.Info("stopping: removing runners and agents (scale sets stay; `pumasi down` deletes them)")
+	c.refreshHosts(ctx, c.now())
+	n := 0
 	for _, h := range c.hosts {
 		if h.snap == nil {
-			c.log.Warn("teardown: agent unreachable", "host", h.cfg.Name)
 			continue
 		}
 		for _, r := range h.snap.Runners {
 			if _, err := h.agent.Delete(ctx, r.Name); err != nil {
-				c.log.Error("teardown delete", "runner", r.Name, "err", err)
+				c.log.Error("remove runner", "runner", r.Name, "err", err)
 				continue
 			}
-			_ = c.ledger.SetState(r.Name, "", "teardown")
-			_ = c.ledger.MarkRemoved(r.Name, now)
-			c.log.Info("teardown: removed container", "host", h.cfg.Name, "runner", r.Name)
+			_ = c.ledger.SetState(r.Name, "", "controller stopped")
+			_ = c.ledger.MarkRemoved(r.Name, c.now())
+			n++
 		}
 	}
+	c.forgetLiveRunners("controller stopped")
+	c.unregister(ctx)
+	var wg sync.WaitGroup
+	for _, h := range c.hosts {
+		if !h.started {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := stopAgent(ctx, h.cfg); err != nil {
+				c.log.Error(fmt.Sprintf("host %s: agent not stopped", h.cfg.Name), "err", err)
+			}
+		}()
+	}
+	wg.Wait()
+	c.Close()
+	c.log.Info(fmt.Sprintf("stopped  %d runners removed", n))
+}
+
+// forgetLiveRunners marks runners whose container we could not see removed as lost.
+func (c *Controller) forgetLiveRunners(reason string) {
 	live, _ := c.ledger.LiveRunners()
 	for _, r := range live {
-		_ = c.ledger.SetState(r.Name, "lost", "teardown")
+		_ = c.ledger.SetState(r.Name, "lost", reason)
 	}
+}
+
+// Down removes everything pumasi left behind: on every host the agent, the
+// containers labelled pumasi and the cache directory; on GitHub the remaining
+// registrations and the classes' scale sets. It needs no running agent.
+func (c *Controller) Down(ctx context.Context) error {
+	errs := make([]error, len(c.hosts))
+	var wg sync.WaitGroup
+	for i, h := range c.hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+			out, err := cleanHost(cctx, h.cfg)
+			if err != nil {
+				errs[i] = err
+				c.log.Error(fmt.Sprintf("host %s not cleaned", h.cfg.Name), "err", err)
+				return
+			}
+			c.log.Info(fmt.Sprintf("host %s  agent stopped, %s containers removed, ~/.cache/pumasi removed", h.cfg.Name, lastLine(out)))
+		}()
+	}
+	wg.Wait()
+	c.forgetLiveRunners("down")
 	c.unregister(ctx)
 	for _, cl := range c.cfg.Classes {
 		set, err := c.gh.GetRunnerScaleSet(ctx, c.cfg.RunnerGroupID, cl.ScaleSet)
@@ -678,13 +789,13 @@ func (c *Controller) Teardown(ctx context.Context) error {
 			continue
 		}
 		if err := c.gh.DeleteRunnerScaleSet(ctx, set.ID); err != nil {
-			c.log.Error("delete scale set", "name", cl.ScaleSet, "err", err)
+			errs = append(errs, fmt.Errorf("delete scale set %s: %w", cl.ScaleSet, err))
 			continue
 		}
 		c.ev.Write("scale-set-deleted", set.ID)
-		c.log.Info("teardown: deleted scale set", "name", cl.ScaleSet, "id", set.ID)
+		c.log.Info(fmt.Sprintf("class %s  scale set %s deleted", cl.Name, cl.ScaleSet))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // EventLog appends JSON lines (listener messages, decisions, starts) for later analysis.
