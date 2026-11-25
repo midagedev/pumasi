@@ -176,3 +176,31 @@ func TestClassEnvAndPath(t *testing.T) {
 		}
 	}
 }
+
+func TestClassSlots(t *testing.T) {
+	load := func(classes string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: "+classes+"\n"), 0o600)
+		return Load(p)
+	}
+	c, err := load("[{name: a, cpus: 1, memory: 1G, slots: 2}, {name: m, cpus: 1, memory: 1G, slots: 1, os: macos, labels: [self-hosted, ci]}]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Classes[0].Registered() || c.Classes[0].Driver != "native" || c.NeedsToken() {
+		t.Errorf("a class with slots: is native and needs no token: %+v needs=%v", c.Classes[0], c.NeedsToken())
+	}
+	c, err = load("[{name: a, cpus: 1, memory: 1G, slots: 2}, {name: s, cpus: 1, memory: 1G}]")
+	if err != nil || !c.NeedsToken() || c.Classes[1].Registered() {
+		t.Errorf("a scale set class beside it needs the token: %v %v", c, err)
+	}
+	for classes, want := range map[string]string{
+		"[{name: a, cpus: 1, memory: 1G, slots: -1}]":                "negative",
+		"[{name: a, cpus: 1, memory: 1G, slots: 1, driver: docker}]": "native",
+		"[{name: a, cpus: 1, memory: 1G, slots: 1, os: windows}]":    "windows",
+	} {
+		if _, err := load(classes); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err %v, want it to say %q", classes, err, want)
+		}
+	}
+}

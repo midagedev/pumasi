@@ -45,6 +45,117 @@ type Snapshot struct {
 	DiskFree  int64    `json:"diskFree"`
 	DiskTotal int64    `json:"diskTotal"`
 	Runners   []Runner `json:"runners"`
+	// Registered runners the host keeps (classes with slots:), the jobs they
+	// have finished lately, and the version of the plan the host follows.
+	// Their runners are not among Runners: the host runs them by itself.
+	Slots    []Slot    `json:"slots,omitempty"`
+	SlotJobs []SlotJob `json:"slotJobs,omitempty"`
+	SlotPlan string    `json:"slotPlan,omitempty"`
+	// NoSlots: why this host cannot keep registered runners ("" = it can).
+	NoSlots string `json:"noSlots,omitempty"`
+}
+
+// Slot is one registered runner a host keeps: its credentials stay on the
+// host, and the host lets it listen when its plan and its budget allow.
+type Slot struct {
+	Class string `json:"class"`
+	N     int    `json:"n"`
+	// Name and ID are GitHub's of the registration.
+	Name string `json:"name"`
+	ID   int64  `json:"id,omitempty"`
+	// Origin: registered (by pumasi, with a registration token) or adopted
+	// (the credentials of a fixed runner, copied from From).
+	Origin string `json:"origin"`
+	From   string `json:"from,omitempty"`
+	// State: off | starting | listening | busy | failing. Why says why a slot
+	// is off or failing ("no room: 1.0cpu free of the budget").
+	State string `json:"state"`
+	Why   string `json:"why,omitempty"`
+	// Job is the name of the job it runs, from its own output.
+	Job string `json:"job,omitempty"`
+	// Runner is the process that listens or runs the job now (nil while off).
+	Runner *Runner `json:"runner,omitempty"`
+}
+
+// SlotJob is one ended run of a slot's runner that had taken a job.
+type SlotJob struct {
+	Runner
+	Slot       string `json:"slot"`       // class/n
+	Registered string `json:"registered"` // GitHub's name of the runner
+	Job        string `json:"job"`
+	// Result as the runner printed it (Succeeded, Failed, Canceled). Empty
+	// means the runner ended without finishing the job: it died under it.
+	Result string `json:"result,omitempty"`
+	// Stopped: why the host itself ended the runner under its job ("" = it did not).
+	Stopped string `json:"stopped,omitempty"`
+}
+
+// SlotPlan is PUT /v1/slots/plan: what the host may listen for with its
+// registered runners. The host keeps it on disk and follows it by itself, also
+// while the controller is away: it lets as many runners listen as fit into the
+// budget beside what is running, and stops idle ones that no longer fit.
+type SlotPlan struct {
+	Version string      `json:"version"` // set by the sender: a hash of the rest
+	URL     string      `json:"url"`     // where the runners are registered
+	Image   string      `json:"image"`   // its tag is the runner version
+	Classes []SlotClass `json:"classes"`
+	// The controller's budget for the host (0 = the host's own alone).
+	BudgetCPUs float64 `json:"budgetCpus,omitempty"`
+	BudgetMem  int64   `json:"budgetMem,omitempty"`
+	// When the host closes itself: CPU pressure (PSI avg10, percent) at or
+	// above PSICPUMax, less than DiskMinFree percent of the runners' disk free.
+	PSICPUMax   float64 `json:"psiCpuMax,omitempty"`
+	DiskMinFree float64 `json:"diskMinFree,omitempty"`
+	// A runner that does not listen this many seconds after its start is ended.
+	ProvisionSec int64 `json:"provisionSec,omitempty"`
+	// Closed: the controller's reason why nothing new may listen here ("" = open).
+	Closed string `json:"closed,omitempty"`
+}
+
+type SlotClass struct {
+	Name     string            `json:"name"`
+	CPUs     float64           `json:"cpus"`
+	MemBytes int64             `json:"memBytes"`
+	Slots    int               `json:"slots"`
+	Reserve  int               `json:"reserve,omitempty"`
+	Labels   []string          `json:"labels"`
+	Env      map[string]string `json:"env,omitempty"`
+	Path     []string          `json:"path,omitempty"`
+	// MaxDurationSec ends a runner whose job runs longer (0 = never).
+	MaxDurationSec int64 `json:"maxDurationSec,omitempty"`
+	// Closed: why the class does not listen on this host now ("" = it may).
+	Closed string `json:"closed,omitempty"`
+}
+
+// RegisterRequest is POST /v1/slots/register: fill the plan's empty slots by
+// registering runners with Token, a registration token of the plan's URL.
+// Class "" = every class of the plan.
+type RegisterRequest struct {
+	Token string `json:"token"`
+	Class string `json:"class,omitempty"`
+}
+
+// RegisterResult names what the host registered, what it already had and the
+// first registration that failed.
+type RegisterResult struct {
+	Registered []string `json:"registered,omitempty"`
+	Had        int      `json:"had"`
+	Problem    string   `json:"problem,omitempty"`
+}
+
+// LeaveRequest is the body of POST /v1/leave. With RunnerToken (a
+// registration or removal token) the host also removes the registrations of
+// the runners pumasi registered there.
+type LeaveRequest struct {
+	RunnerToken string `json:"runnerToken,omitempty"`
+}
+
+// LeaveResult is the answer to POST /v1/leave.
+type LeaveResult struct {
+	Containers int    `json:"containers"`
+	Problem    string `json:"problem,omitempty"`
+	// What became of the host's registered runners, one line each.
+	Slots []string `json:"slots,omitempty"`
 }
 
 // Runner is one runner as the agent last sampled it. Resource values survive
@@ -72,6 +183,9 @@ type Runner struct {
 	StartedAt    *time.Time         `json:"startedAt,omitempty"`
 	ExitedAt     *time.Time         `json:"exitedAt,omitempty"`
 	ExitCode     *int               `json:"exitCode,omitempty"`
+	// Slot: the registered runner (class/n) this process runs as. Empty = a
+	// runner of a scale set.
+	Slot string `json:"slot,omitempty"`
 	// Only in the answer to DELETE: the last lines the runner printed.
 	LogTail string `json:"logTail,omitempty"`
 	// Only in the answer to DELETE: what of the runner the host could not
@@ -180,6 +294,18 @@ func (c *Client) Check(ctx context.Context, image string) (string, error) {
 	}
 	err := c.do(ctx, http.MethodGet, "/v1/check?image="+url.QueryEscape(image), nil, &out)
 	return out.Problem, err
+}
+
+// SetSlotPlan hands the host its plan for registered runners.
+func (c *Client) SetSlotPlan(ctx context.Context, p SlotPlan) error {
+	return c.do(ctx, http.MethodPut, "/v1/slots/plan", p, nil)
+}
+
+// RegisterSlots makes the host register runners for its empty slots.
+func (c *Client) RegisterSlots(ctx context.Context, r RegisterRequest) (RegisterResult, error) {
+	var out RegisterResult
+	err := c.do(ctx, http.MethodPost, "/v1/slots/register", r, &out)
+	return out, err
 }
 
 // Delete stops and removes a runner container and returns its last sampled values.

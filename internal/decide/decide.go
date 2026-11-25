@@ -46,6 +46,10 @@ type Host struct {
 	NonRunnerCPU float64
 	NonRunnerMem int64
 	PSICPU       float64
+	// Held: what the host's registered runners (classes with slots:) hold of
+	// the budget with the jobs they run. The host runs those by itself.
+	HeldCPUs float64
+	HeldMem  int64
 	// Closed: why the host takes no new runners although it is up
 	// ("quarantined", "disk 4% free"). Empty = open.
 	Closed string
@@ -140,6 +144,11 @@ func Decide(s Snapshot) Plan {
 	alloc := map[string][2]float64{} // host -> cpus, mem
 	live := map[string]int{}         // class -> runners holding capacity
 	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
+	for _, h := range s.Hosts {
+		if h.HeldCPUs > 0 || h.HeldMem > 0 {
+			alloc[h.Name] = [2]float64{h.HeldCPUs, float64(h.HeldMem)}
+		}
+	}
 	for _, r := range runners {
 		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r); ok {
 			p.Stop = append(p.Stop, st)
