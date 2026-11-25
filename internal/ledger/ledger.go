@@ -43,6 +43,21 @@ CREATE TABLE IF NOT EXISTS demand(
   served_by TEXT,
   closed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS incidents(
+  key TEXT NOT NULL,               -- same key = same incident, e.g. host-unreachable/server1
+  kind TEXT NOT NULL,
+  subject TEXT,
+  opened_at TEXT NOT NULL,
+  resolved_at TEXT,
+  detail TEXT,                     -- the one line a person reads
+  action TEXT                      -- what pumasi did about it
+);
+CREATE INDEX IF NOT EXISTS incidents_open ON incidents(key) WHERE resolved_at IS NULL;
+CREATE TABLE IF NOT EXISTS outbox(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, payload TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, error TEXT, sent_at TEXT
+);
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, class TEXT, host TEXT, action TEXT NOT NULL, runner TEXT, reason TEXT
@@ -293,4 +308,101 @@ func (l *Ledger) Revive(name string) (bool, error) {
 func (l *Ledger) CloseFromExit(name string, exitCode int, at time.Time) error {
 	return l.exec(`UPDATE runners SET state='done', result=?, finished_at=COALESCE(finished_at, ?)
 	  WHERE name=? AND state='busy' AND result IS NULL`, fmt.Sprintf("exit-%d", exitCode), ts(at), name)
+}
+
+// Incident is something that went wrong, whether pumasi fixed it or not.
+type Incident struct {
+	Key        string    `json:"key"`
+	Kind       string    `json:"kind"`
+	Subject    string    `json:"subject"`
+	OpenedAt   time.Time `json:"openedAt"`
+	ResolvedAt time.Time `json:"resolvedAt,omitzero"`
+	Detail     string    `json:"detail"`
+	Action     string    `json:"action,omitempty"`
+}
+
+// OpenIncident opens the incident unless one with this key is open already
+// (then only its detail is refreshed). It reports whether it was newly opened.
+// With oneShot the incident is recorded as already over: a fact, not a state.
+func (l *Ledger) OpenIncident(in Incident, oneShot bool) (bool, error) {
+	res, err := l.db.Exec(`UPDATE incidents SET detail=?, action=COALESCE(NULLIF(?,''), action) WHERE key=? AND resolved_at IS NULL`, in.Detail, in.Action, in.Key)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return false, nil
+	}
+	var resolved any
+	if oneShot {
+		resolved = ts(in.OpenedAt)
+	}
+	return true, l.exec(`INSERT INTO incidents(key, kind, subject, opened_at, resolved_at, detail, action) VALUES(?,?,?,?,?,?,?)`,
+		in.Key, in.Kind, in.Subject, ts(in.OpenedAt), resolved, in.Detail, in.Action)
+}
+
+// ResolveIncident closes the open incident with this key, if any, and returns it.
+func (l *Ledger) ResolveIncident(key string, at time.Time) (Incident, bool, error) {
+	open, err := l.incidents(`key=? AND resolved_at IS NULL`, key)
+	if err != nil || len(open) == 0 {
+		return Incident{}, false, err
+	}
+	in := open[0]
+	in.ResolvedAt = at
+	return in, true, l.exec(`UPDATE incidents SET resolved_at=? WHERE key=? AND resolved_at IS NULL`, ts(at), key)
+}
+
+func (l *Ledger) OpenIncidents() ([]Incident, error) { return l.incidents(`resolved_at IS NULL`) }
+
+func (l *Ledger) incidents(where string, args ...any) ([]Incident, error) {
+	rows, err := l.db.Query(`SELECT key, kind, COALESCE(subject,''), opened_at, resolved_at, COALESCE(detail,''), COALESCE(action,'') FROM incidents WHERE `+where+` ORDER BY opened_at`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Incident{}
+	for rows.Next() {
+		var in Incident
+		var opened, resolved sql.NullString
+		if err := rows.Scan(&in.Key, &in.Kind, &in.Subject, &opened, &resolved, &in.Detail, &in.Action); err != nil {
+			return nil, err
+		}
+		in.OpenedAt, in.ResolvedAt = parseTS(opened), parseTS(resolved)
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+// Outbox holds notifications until they are delivered.
+type Outgoing struct {
+	ID      int64
+	Payload string
+}
+
+func (l *Ledger) Enqueue(payload string, at time.Time) error {
+	return l.exec(`INSERT INTO outbox(at, payload) VALUES(?,?)`, ts(at), payload)
+}
+
+func (l *Ledger) Unsent() ([]Outgoing, error) {
+	rows, err := l.db.Query(`SELECT id, payload FROM outbox WHERE sent_at IS NULL ORDER BY id LIMIT 50`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Outgoing
+	for rows.Next() {
+		var o Outgoing
+		if err := rows.Scan(&o.ID, &o.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// Sent records the outcome of a delivery attempt; a failed one stays unsent.
+func (l *Ledger) Sent(id int64, at time.Time, sendErr error) error {
+	if sendErr != nil {
+		return l.exec(`UPDATE outbox SET attempts=attempts+1, error=? WHERE id=?`, sendErr.Error(), id)
+	}
+	return l.exec(`UPDATE outbox SET attempts=attempts+1, error=NULL, sent_at=? WHERE id=?`, ts(at), id)
 }

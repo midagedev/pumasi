@@ -15,10 +15,11 @@ import (
 )
 
 type statusOut struct {
-	Controller bool            `json:"controller"` // a `pumasi up` is running and answered
-	Hosts      []hostStatus    `json:"hosts"`
-	Runners    []runnerStatus  `json:"runners"`
-	Waiting    []waitingStatus `json:"waiting"`
+	Controller bool              `json:"controller"` // a `pumasi up` is running and answered
+	Incidents  []ledger.Incident `json:"incidents"`  // open problems
+	Hosts      []hostStatus      `json:"hosts"`
+	Runners    []runnerStatus    `json:"runners"`
+	Waiting    []waitingStatus   `json:"waiting"`
 }
 
 type hostStatus struct {
@@ -85,7 +86,11 @@ func collectStatus(cfg *config.Config, l *ledger.Ledger, now time.Time) (statusO
 	out := statusOut{Hosts: []hostStatus{}, Runners: []runnerStatus{}, Waiting: []waitingStatus{}}
 	live, ok := controller.ReadStatus(cfg)
 	out.Controller = ok
+	var err error
 
+	if out.Incidents, err = l.OpenIncidents(); err != nil {
+		return out, err
+	}
 	runners, err := l.LiveRunners()
 	if err != nil {
 		return out, err
@@ -147,6 +152,14 @@ func collectStatus(cfg *config.Config, l *ledger.Ledger, now time.Time) (statusO
 func printStatus(w io.Writer, s statusOut) {
 	if !s.Controller {
 		fmt.Fprintln(w, "no controller running (start one with `pumasi up`); showing the ledger only")
+		fmt.Fprintln(w)
+	}
+	if len(s.Incidents) > 0 {
+		fmt.Fprintln(w, "PROBLEMS")
+		now := time.Now()
+		for _, in := range s.Incidents {
+			fmt.Fprintf(w, "  %s  (open %s)\n", in.Detail, now.Sub(in.OpenedAt).Round(time.Second))
+		}
 		fmt.Fprintln(w)
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

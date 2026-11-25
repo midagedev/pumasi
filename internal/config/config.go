@@ -26,9 +26,21 @@ type Config struct {
 	HostLostAfter    time.Duration `yaml:"hostLostAfter"`
 	DemandTTL        time.Duration `yaml:"demandTTL"`
 	PSICPUThreshold  float64       `yaml:"psiCPUThreshold"`
+	WaitAlert        time.Duration `yaml:"waitAlert"` // a job waiting this long is a problem
+
+	Notify Notify `yaml:"notify"`
 
 	Classes []Class `yaml:"classes"`
 	Hosts   []Host  `yaml:"hosts"`
+}
+
+// Notify says where problems are announced. Both may be set.
+type Notify struct {
+	Webhook string `yaml:"webhook"` // JSON POST: {text, key, kind, subject, state, detail}
+	Command string `yaml:"command"` // run with sh -c; gets the same JSON on stdin
+	// problem (default): problems and their end. recovered: also what pumasi
+	// fixed by itself. all: also plain information.
+	Level string `yaml:"level"`
 }
 
 type Class struct {
@@ -112,6 +124,10 @@ func (c *Config) defaults() {
 	def(&c.IdleTimeout, 5*time.Minute)
 	def(&c.HostLostAfter, 2*time.Minute)
 	def(&c.DemandTTL, 24*time.Hour)
+	def(&c.WaitAlert, 10*time.Minute)
+	if c.Notify.Level == "" {
+		c.Notify.Level = "problem"
+	}
 	if c.RunnerGroupID == 0 {
 		c.RunnerGroupID = 1
 	}
@@ -179,6 +195,9 @@ var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 func (c *Config) validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("url is required")
+	}
+	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
+		return fmt.Errorf("notify.level must be problem, recovered or all")
 	}
 	if len(c.Classes) == 0 || len(c.Hosts) == 0 {
 		return fmt.Errorf("at least one class and one host are required")

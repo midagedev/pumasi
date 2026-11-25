@@ -12,3 +12,7 @@ hosts:                               # ssh destinations (aliases from ~/.ssh/con
     desktop: true                    # someone works here: used after the servers
     shell: wsl -e sh -s              # Windows host running WSL (default: sh -s)
     budget: {cpus: 6, memory: 9G}
+
+# notify:                            # optional: problems (and their end) as one line each
+#   webhook: https://hooks.example/…  # JSON POST {text, key, kind, subject, state, detail}
+#   command: my-notify --stdin        # or a command that gets the same JSON on stdin

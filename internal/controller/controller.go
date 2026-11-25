@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -50,13 +51,16 @@ type Controller struct {
 	status    Status // last round, for `pumasi status`
 	distDir   string
 	adopted   bool // the first round has reported what it found on the hosts
+	book      *incidentBook
+	lastAlive time.Time // when an earlier controller last ran (zero = never)
 }
 
 type host struct {
 	cfg       config.Host
 	started   bool        // its agent was started or found running
 	ensuring  atomic.Bool // an agent restart is in flight
-	ensuredAt time.Time   // last restart attempt
+	reviveBad atomic.Int32
+	ensuredAt time.Time // last restart attempt
 	tr        Transport
 	agent     *api.Client
 	snap      *api.Snapshot
@@ -93,6 +97,7 @@ func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *
 	for _, cc := range cfg.Classes {
 		c.classes = append(c.classes, &class{cfg: cc})
 	}
+	c.book = newIncidentBook(c)
 	return c, nil
 }
 
@@ -134,6 +139,15 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		return err
 	}
 	c.distDir = distDir
+	if fi, err := os.Stat(c.aliveFile()); err == nil {
+		c.lastAlive = fi.ModTime()
+	}
+	go c.book.deliver(ctx)
+	defer func() { // last notifications, on a deadline of their own
+		fctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		c.book.flush(fctx)
+	}()
 	defer c.shutdown()
 	if err := c.startAgents(ctx, distDir); err != nil {
 		return err
@@ -172,12 +186,15 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 	hostname, _ := os.Hostname()
 	backoff := 5 * time.Second
 	conflict := false
+	var failingSince time.Time
 	for ctx.Err() == nil {
 		err := func() error {
 			session, err := c.gh.MessageSessionClient(ctx, cl.setID, "pumasi-"+hostname)
 			if err != nil {
 				return fmt.Errorf("session: %w", err)
 			}
+			failingSince, conflict = time.Time{}, false
+			c.book.resolve("github/" + cl.cfg.Name)
 			defer session.Close(context.WithoutCancel(ctx))
 			l, err := listener.New(session, listener.Config{ScaleSetID: cl.setID, MaxRunners: cl.cfg.MaxRunners,
 				Logger: c.ListenerLog.With("class", cl.cfg.Name)})
@@ -188,6 +205,18 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 		}()
 		if ctx.Err() != nil {
 			return
+		}
+		if failingSince.IsZero() {
+			failingSince = c.now()
+		}
+		if errors.Is(err, scaleset.UnauthorizedError) || strings.Contains(err.Error(), "403 Forbidden") {
+			// Retrying cannot help and hammers the API with a bad token.
+			c.book.open("github-auth", "github-auth", "GitHub", "GitHub rejects the token (401/403): no jobs are served until `pumasi up` is restarted with a valid PUMASI_GITHUB_TOKEN; running jobs go on")
+			return
+		}
+		if d := c.now().Sub(failingSince); d > 2*time.Minute {
+			c.book.open("github/"+cl.cfg.Name, "github-unreachable", cl.cfg.Name,
+				fmt.Sprintf("no message session for class %s for %s, new jobs of this class are not seen: %s", cl.cfg.Name, d.Round(time.Second), firstLine(err.Error())))
 		}
 		if errors.Is(err, scaleset.ConflictError) {
 			// Another machine's controller, or one that died without closing its
@@ -335,7 +364,19 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		if n > 0 {
 			c.log.Info(fmt.Sprintf("adopted %d runners left on the hosts (%d running jobs)", n, busy))
 		}
+		finished := 0
+		for _, r := range runners {
+			if r.State == "busy" && r.Container == "exited" {
+				finished++
+			}
+		}
+		if down := now.Sub(c.lastAlive); !c.lastAlive.IsZero() && (n > 0 || down > 2*time.Minute) {
+			c.book.report("restarted", "controller-restart", "controller-restart", "controller", fmt.Sprintf(
+				"controller is back: was down %s, adopted %d runners, %d jobs finished meanwhile", down.Round(time.Second), n, finished), "")
+		}
 	}
+	_ = os.WriteFile(c.aliveFile(), nil, 0o600)
+	c.hostIncidents(now, live)
 	snap := c.decideSnapshot(now, runners)
 	plan := decide.Decide(snap)
 
@@ -348,6 +389,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		c.start(ctx, s, now)
 	}
 	c.recordDefers(plan.Defer, now)
+	c.waitIncidents(plan.Defer, now)
 	c.setStatus(plan.Defer)
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
@@ -535,6 +577,9 @@ func (c *Controller) hostByName(name string) *host {
 func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	c.log.Info(fmt.Sprintf("stop %s  %s", st.Runner, st.Reason))
 	c.decision(now, "", st.Host, "stop", st.Runner, st.Reason)
+	before, _ := c.ledger.Runner(st.Runner)
+	died := before.State == "busy" && strings.HasPrefix(st.Reason, "container missing")
+	code := "unknown"
 	removed := false
 	if h := c.hostByName(st.Host); h != nil && h.snap != nil {
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -549,6 +594,9 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			}
 			// If JobCompleted was missed while the controller was away, the exit code
 			// is all there is; a late message still replaces it.
+			if before.State == "busy" && final.ExitCode != nil && *final.ExitCode != 0 {
+				died, code = true, fmt.Sprint(*final.ExitCode)
+			}
 			if final.JobStartedAt != nil && final.ExitCode != nil && final.ExitedAt != nil {
 				if err := c.ledger.CloseFromExit(st.Runner, *final.ExitCode, *final.ExitedAt); err != nil {
 					c.log.Error("ledger close", "err", err)
@@ -558,6 +606,15 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	}
 	if err := c.ledger.SetState(st.Runner, st.State, st.Reason); err != nil {
 		c.log.Error("ledger state", "err", err)
+	}
+	if died {
+		job := before.Job
+		if job == "" {
+			job = "its job"
+		}
+		c.book.report("problem", "runner-died/"+st.Runner, "runner-died", st.Runner, fmt.Sprintf(
+			"runner %s died while running %s on %s (exit code %s); GitHub will fail that job", st.Runner, job, st.Host, code),
+			"container removed; registration is removed when GitHub lets go")
 	}
 	if removed {
 		if err := c.ledger.MarkRemoved(st.Runner, now); err != nil {
@@ -786,10 +843,89 @@ func (c *Controller) reviveAgent(ctx context.Context, h *host, now time.Time) {
 		did, err := ensureAgent(cctx, h.cfg, c.distDir)
 		if err != nil {
 			c.log.Warn(fmt.Sprintf("host %s: agent not restarted", h.cfg.Name), "err", err)
+			if h.reviveBad.Add(1) == 3 {
+				c.book.open("agent-down/"+h.cfg.Name, "agent-down", h.cfg.Name, fmt.Sprintf(
+					"the agent on %s could not be restarted 3 times (%s); its running jobs go on, nothing new is placed there", h.cfg.Name, firstLine(err.Error())))
+			}
+			return
+		}
+		h.reviveBad.Store(0)
+		if did != "agent already running" {
+			c.book.report("recovered", "agent-restarted/"+h.cfg.Name, "agent-restarted", h.cfg.Name,
+				fmt.Sprintf("the agent on %s had stopped and was started again; containers were not touched", h.cfg.Name), "agent restarted")
 			return
 		}
 		c.log.Info(fmt.Sprintf("host %s  %s", h.cfg.Name, did))
 	}()
+}
+
+func (c *Controller) aliveFile() string { return filepath.Join(c.cfg.StateDir(), "alive") }
+
+func firstLine(s string) string {
+	s, _, _ = strings.Cut(s, "\n")
+	if len(s) > 200 {
+		s = s[:200] + "..."
+	}
+	return s
+}
+
+// hostIncidents opens an incident for a host that has been unreachable for
+// HostLostAfter and resolves it (and a failed agent restart) when it answers.
+func (c *Controller) hostIncidents(now time.Time, live []ledger.Runner) {
+	for _, h := range c.hosts {
+		name := h.cfg.Name
+		if h.snap != nil {
+			c.book.resolve("host-unreachable/" + name)
+			c.book.resolve("agent-down/" + name)
+			continue
+		}
+		down := now.Sub(h.downSince)
+		if h.downSince.IsZero() || down < c.cfg.HostLostAfter {
+			continue
+		}
+		jobs := 0
+		for _, r := range live {
+			if r.Host == name && r.State == "busy" {
+				jobs++
+			}
+		}
+		c.book.open("host-unreachable/"+name, "host-unreachable", name, fmt.Sprintf(
+			"%s unreachable for %s — %d jobs still running there, no new runners placed", name, down.Round(time.Second), jobs))
+	}
+}
+
+// waitIncidents opens an incident per class whose oldest unplaced job has
+// waited longer than WaitAlert, with the reason it cannot be placed.
+func (c *Controller) waitIncidents(defers []decide.Defer, now time.Time) {
+	open, err := c.ledger.OpenDemand() // oldest first
+	if err != nil {
+		return
+	}
+	late := map[string]bool{}
+	for _, d := range defers {
+		var ofClass []ledger.Demand
+		for _, o := range open {
+			if o.Class == d.Class {
+				ofClass = append(ofClass, o)
+			}
+		}
+		// The deferred jobs are the newest d.Count of the class.
+		if d.Count > len(ofClass) {
+			continue
+		}
+		waited := now.Sub(ofClass[len(ofClass)-d.Count].FirstSeen)
+		if waited < c.cfg.WaitAlert {
+			continue
+		}
+		late[d.Class] = true
+		c.book.open("waiting/"+d.Class, "job-waiting", d.Class, fmt.Sprintf(
+			"%d %s jobs waiting, the oldest for %s — %s", d.Count, d.Class, waited.Round(time.Second), d.Reason))
+	}
+	for _, cl := range c.classes {
+		if !late[cl.cfg.Name] {
+			c.book.resolve("waiting/" + cl.cfg.Name)
+		}
+	}
 }
 
 func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
