@@ -229,7 +229,7 @@ func stopRule(s Snapshot, h Host, r Runner) (Stop, bool) {
 	case r.Container == "":
 		return stop(failedUnlessJob(r), "container missing on %s", r.Host)
 	case r.Container == "exited" && r.State == "busy":
-		return stop("", "exited during a job (code %d)", r.ExitCode)
+		return stop("", "runner exited during or after its job (code %d); result comes with JobCompleted", r.ExitCode)
 	case r.Container == "exited":
 		return stop("failed", "exited before a job (code %d)", r.ExitCode)
 	case r.State == "starting" && r.ListeningAt.IsZero() && s.ProvisionTimeout > 0 && s.Now.Sub(r.CreatedAt) > s.ProvisionTimeout:

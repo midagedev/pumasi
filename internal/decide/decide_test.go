@@ -182,7 +182,7 @@ func TestDecideStops(t *testing.T) {
 		{"starting within timeout", server(), r("starting", "running"), 2 * time.Minute, ""},
 		{"provision timeout", server(), r("starting", "running"), 4 * time.Minute, "failed|provision timeout"},
 		{"exited before job", server(), r("starting", "exited"), time.Minute, "failed|exited before a job"},
-		{"exited during job keeps state", server(), r("busy", "exited"), time.Minute, "|exited during a job"},
+		{"exited during job keeps state", server(), r("busy", "exited"), time.Minute, "|runner exited during or after its job"},
 		{"busy runs on", server(), r("busy", "running"), time.Hour, ""},
 		{"job completed", server(), r("done", "running"), time.Minute, "|job completed"},
 		{"orphan container", server(), r("", "running"), time.Minute, "|not in the ledger"},
