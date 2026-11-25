@@ -16,10 +16,13 @@
 # CHAOS_HOST     the host (name in the config) that gets the linux-s jobs first:
 #                the first host that is not a desktop.
 # CHAOS_SSH      a command that runs a script from stdin on that host.
+# CHAOS_JOIN     set to 1 when CHAOS_HOST joins by itself: CHAOS_CONFIG then has
+#                listen: and no hosts:, and the script runs the invite line on
+#                the host (with CHAOS_JOIN_FLAGS, default "--cpus 4 --mem 6G").
 #
 # On the host it touches only containers labelled pumasi, pumasi's agent and
-# ~/.cache/pumasi. Rows that wait for GitHub to give up on a vanished runner
-# take 10-15 minutes each. Needs gh, jq and sqlite3.
+# ~/.cache/pumasi (with CHAOS_JOIN also ~/.local/bin/pumasi and its service).
+# Rows that wait for GitHub to give up on a vanished runner take 10-15 minutes each. Needs gh, jq and sqlite3.
 set -u
 
 : "${PUMASI_GITHUB_TOKEN:?}" "${CHAOS_CONFIG:?}" "${CHAOS_REPO:?}" "${CHAOS_HOST:?}" "${CHAOS_SSH:?}"
@@ -49,8 +52,30 @@ up() {
   : > "$LOG"
   "$BIN" up -config "$CFG" >> "$LOG" 2>&1 &
   PID=$!
-  wait_for 180 "controller listening" grep -q "listening for jobs" "$LOG"
+  wait_for 180 "controller listening" grep -q "listening for jobs" "$LOG" || return 1
+  [ -z "${CHAOS_JOIN:-}" ] || join_host
 }
+
+# join_host: the host joins once (a `down` makes the controller forget it) and
+# is waited for after every later start.
+join_host() {
+  if ! grep -q "\"name\": \"$CHAOS_HOST\"" "$(dirname "$LEDGER")/hosts.json" 2>/dev/null; then
+    local line
+    line=$("$BIN" invite -config "$CFG" | grep 'curl ') || return 1
+    echo "$line --name $CHAOS_HOST ${CHAOS_JOIN_FLAGS:---cpus 4 --mem 6G}" | host >> "$LOG" 2>&1
+  fi
+  wait_for 90 "$CHAOS_HOST connected" host_reachable
+}
+host_reachable() { [ "$(status | jq -r --arg h "$CHAOS_HOST" '.hosts[] | select(.name == $h) | .reachable')" = true ]; }
+
+agent_pid_differs() { local now; now=$(echo "echo $AGENT_PID" | host); [ -n "$now" ] && [ "$now" != "$1" ]; }
+
+# The agent's pid, as a shell expression for the host.
+if [ -n "${CHAOS_JOIN:-}" ]; then
+  AGENT_PID='$(pgrep -fx ".*/pumasi agent -join")'
+else
+  AGENT_PID='$(cat ~/.cache/pumasi/agent.pid)'
+fi
 
 # stop: Ctrl-C. Agents and running jobs stay.
 stop() {
@@ -156,10 +181,21 @@ row_agent_kill() {
   config; up || return 1
   local run; run=$(dispatch 120 100) || return 1
   wait_for 240 "two jobs running" two_busy || return 1
-  echo 'kill -9 "$(cat ~/.cache/pumasi/agent.pid)"' | host
-  check "agent restarted, told" noticed 180 "had stopped and was started again"
+  local before; before=$(echo "echo $AGENT_PID" | host)
+  echo "kill -9 $AGENT_PID" | host
+  if [ -n "${CHAOS_JOIN:-}" ]; then
+    # The host's own service starts the agent again within seconds, usually
+    # before the controller's next snapshot: the controller sees one session
+    # end and another begin, not an unreachable host.
+    check "the host's service started another agent" wait_for 60 "a new agent pid" agent_pid_differs "$before"
+    check "host connected again" wait_for 60 "$CHAOS_HOST connected" host_reachable
+    check "the drop is named" test "$(status | jq -r --arg h "$CHAOS_HOST" '.hosts[] | select(.name == $h) | .lastDrop')" = "agent exited"
+    NOTE="restarted by the host's service: agent pid $before -> $(echo "echo $AGENT_PID" | host), last drop 'agent exited'"
+  else
+    check "agent restarted, told" noticed 180 "had stopped and was started again"
+    NOTE="$(notice_line "started again")"
+  fi
   check "jobs succeeded" test "$(conclusion "$run" 600)" = success
-  NOTE="$(notice_line "started again")"
 }
 
 # The jobs end while nobody collects them, then the agent dies: the numbers of
@@ -171,7 +207,7 @@ row_agent_restart() {
   stop
   check "jobs succeeded without a controller" test "$(conclusion "$run" 600)" = success
   sleep 10
-  echo 'kill -9 "$(cat ~/.cache/pumasi/agent.pid)"' | host
+  echo "kill -9 $AGENT_PID" | host
   up || return 1
   sleep 30
   check "final cgroup numbers kept" test "$(sql "SELECT count(*) FROM runners WHERE run_id=$run AND cpu_sec > 0 AND mem_peak > 0 AND removed_at IS NOT NULL")" = 2
@@ -199,8 +235,14 @@ row_tunnel_cut() {
   config; up || return 1
   local run; run=$(dispatch 150 100) || return 1
   wait_for 240 "two jobs running" two_busy || return 1
-  local t=0
-  while [ $t -lt 300 ]; do pkill -P "$PID" ssh 2>/dev/null; sleep 0.3; t=$((t + 1)); done   # ~90s without a tunnel
+  if [ -n "${CHAOS_JOIN:-}" ]; then
+    # No tunnel to cut: the agent goes silent for 60s, which is what a dead link looks like from here.
+    echo "p=$AGENT_PID; kill -STOP \$p; sleep 60; kill -CONT \$p" | host
+    check "incident names why" noticed 30 "unreachable for .* (keepalive timeout)"
+  else
+    local t=0
+    while [ $t -lt 300 ]; do pkill -P "$PID" ssh 2>/dev/null; sleep 0.3; t=$((t + 1)); done   # ~90s without a tunnel
+  fi
   check "incident while unreachable" noticed 30 "unreachable for"
   check "incident ends" noticed 180 "host unreachable resolved"
   check "jobs succeeded" test "$(conclusion "$run" 600)" = success
@@ -226,12 +268,17 @@ row_reboot() { # simulated: nobody reboots a shared host for a test
   local run; run=$(dispatch 150 100) || return 1
   wait_for 240 "two jobs running" two_busy || return 1
   stop
-  host <<'EOF'
+  # The agent is frozen while its world changes and killed last: whatever starts
+  # it again (the controller over ssh, the host's service) finds the state file
+  # of another boot.
+  host <<EOF
 d=~/.cache/pumasi
-kill -9 "$(cat $d/agent.pid)"
-ids=$(docker ps -q --filter label=pumasi)
-[ -n "$ids" ] && docker kill $ids > /dev/null
-sed -i 's/"bootId":"[^"]*"/"bootId":"00000000-0000-0000-0000-000000000000"/' $d/runners.json
+p=$AGENT_PID
+kill -STOP \$p
+ids=\$(docker ps -q --filter label=pumasi)
+[ -n "\$ids" ] && docker kill \$ids > /dev/null
+sed -i 's/"bootId":"[^"]*"/"bootId":"00000000-0000-0000-0000-000000000000"/' \$d/runners.json
+kill -9 \$p
 EOF
   up || return 1
   check "one incident for the host, with the jobs" noticed 180 "rebooted: 2 runners lost with 2 running jobs"
