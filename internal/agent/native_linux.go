@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"io"
-	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -200,50 +198,9 @@ func (t *tree) kill() {
 	_, _ = systemctl("stop", t.unit)
 }
 
-// cloneTree makes a runner directory out of hard links to the unpacked
-// runner's bin and externals (hundreds of megabytes that are only read). The
-// few files at the top are copied: the runner rewrites some of them.
-func cloneTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		to := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case d.IsDir():
-			return os.MkdirAll(to, info.Mode().Perm()|0o700)
-		case d.Type()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(p)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(target, to)
-		case !d.Type().IsRegular():
-			return nil
-		case strings.ContainsRune(rel, filepath.Separator) && os.Link(p, to) == nil:
-			return nil
-		}
-		in, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(to, os.O_CREATE|os.O_WRONLY|os.O_EXCL, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err = io.Copy(out, in); err != nil {
-			out.Close()
-			return err
-		}
-		return out.Close()
-	})
-}
+// The unpacked runner is shared by hard links and kept read-only (native_link.go).
+func cloneTree(src, dst string) error { return linkTree(src, dst) }
+func sealDist(dir string) error       { return sealShared(dir) }
 
 func hostUsage() (HostUsage, error) { return (&CgroupMeter{R: cgroups}).Host() }
 

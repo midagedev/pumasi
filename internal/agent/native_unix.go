@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -73,6 +74,14 @@ func unpack(arc *os.File, _ int64, dir string) error {
 		case tar.TypeDir:
 			err = os.MkdirAll(p, 0o755)
 		case tar.TypeSymlink:
+			// Only to somewhere inside: a later member written through a link
+			// that points out ("a" -> /etc, then "a/x") would land outside.
+			if filepath.IsAbs(h.Linkname) {
+				return fmt.Errorf("archive link %q points to %q, outside the directory", h.Name, h.Linkname)
+			}
+			if _, err = inside(dir, path.Join(path.Dir(h.Name), h.Linkname)); err != nil {
+				return fmt.Errorf("archive link %q: %w", h.Name, err)
+			}
 			if err = os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
 				err = os.Symlink(h.Linkname, p)
 			}

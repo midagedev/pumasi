@@ -231,6 +231,9 @@ func cloneTree(src, dst string) error {
 	return nil
 }
 
+// sealDist: a clone shares no file with the unpacked runner, nothing to protect.
+func sealDist(string) error { return nil }
+
 // hostUsage: macOS has no PSI. The kernel's own memory pressure level closes
 // the host; what others use of the CPU shows in the host CPU time.
 func hostUsage() (HostUsage, error) {

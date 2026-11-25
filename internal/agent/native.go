@@ -98,7 +98,16 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 		_ = os.RemoveAll(dir)
 		return err
 	}
-	if err := cloneTree(dist, filepath.Join(dir, "runner")); err != nil {
+	err = cloneTree(dist, filepath.Join(dir, "runner"))
+	if errors.Is(err, errDistChanged) {
+		// Not run as it is: fetched anew. Runners already up keep their links.
+		_ = os.RemoveAll(filepath.Join(dir, "runner"))
+		_ = removeTree(dist)
+		if dist, err = n.dist(ctx, s.Image); err == nil {
+			err = cloneTree(dist, filepath.Join(dir, "runner"))
+		}
+	}
+	if err != nil {
 		return fail(fmt.Errorf("clone runner: %w", err))
 	}
 	log, err := os.OpenFile(filepath.Join(dir, "log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -362,6 +371,10 @@ type distFetch struct {
 	err  error
 }
 
+// errDistChanged: a file of the unpacked runner that every runner shares is
+// no longer read-only, so something has been at it since it was unpacked.
+var errDistChanged = errors.New("the unpacked runner was changed")
+
 var versionRE = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
 // runnerVersion takes the runner version from the image name pumasi is
@@ -494,6 +507,9 @@ func fetchDist(version, file, dir string) error {
 	}
 	defer os.RemoveAll(tmp)
 	if err := unpack(arc, size, tmp); err != nil {
+		return err
+	}
+	if err := sealDist(tmp); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, dir); err != nil && !errors.Is(err, os.ErrExist) {

@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -355,43 +354,6 @@ func (t *tree) close() {
 	}
 }
 
-// cloneTree makes a runner directory out of hard links to the unpacked
-// runner's bin and externals (hundreds of megabytes that are only read). The
-// few files at the top are copied: the runner rewrites some of them.
-func cloneTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		to := filepath.Join(dst, rel)
-		switch {
-		case d.IsDir():
-			return os.MkdirAll(to, 0o755)
-		case strings.ContainsRune(rel, filepath.Separator) && os.Link(p, to) == nil:
-			return nil
-		}
-		return copyFile(p, to)
-	})
-}
-
-func copyFile(from, to string) error {
-	in, err := os.Open(from)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(to)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
-}
-
 func unpack(arc *os.File, size int64, dir string) error {
 	zr, err := zip.NewReader(arc, size)
 	if err != nil {
@@ -429,6 +391,10 @@ func unpack(arc *os.File, size int64, dir string) error {
 	}
 	return nil
 }
+
+// The unpacked runner is shared by hard links and kept read-only (native_link.go).
+func cloneTree(src, dst string) error { return linkTree(src, dst) }
+func sealDist(dir string) error       { return sealShared(dir) }
 
 // hostUsage: Windows has no PSI. A commit charge close to its limit closes
 // the host: beyond it allocations fail for everyone on the machine.
