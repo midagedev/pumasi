@@ -31,7 +31,19 @@ jobs:
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
     timeout-minutes: 15
     steps:
+      - name: burn one cpu, hold memory, leave a child behind (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          "runner=$env:RUNNER_NAME os=$env:RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
+          # Left behind on purpose: only the end of the runner's Job Object ends it.
+          Start-Process ping -ArgumentList '-n','600','127.0.0.1' -WindowStyle Hidden
+          $held = New-Object byte[] (${{ inputs.megabytes }}MB)
+          for ($i = 0; $i -lt $held.Length; $i += 4096) { $held[$i] = 1 }
+          $end = (Get-Date).AddSeconds(${{ inputs.seconds }}); while ((Get-Date) -lt $end) { }
+          "done runner=$env:RUNNER_NAME held=$($held.Length)"
       - name: burn one cpu, hold memory, leave children behind
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           echo "runner=$RUNNER_NAME os=$RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
