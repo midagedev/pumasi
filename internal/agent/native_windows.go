@@ -27,7 +27,8 @@ const (
 //
 // The job has a name and no kill-on-close: it lives as long as a process is
 // in it, so a running job survives its agent and the next agent opens the job
-// again by name. Only Remove ends it.
+// again by name. Only Remove ends it. The name lasts as long as some process
+// holds a handle to the job, so the runner's processes inherit one.
 type tree struct {
 	dir             string
 	job, proc, port windows.Handle
@@ -102,9 +103,19 @@ func (t *tree) watch() error {
 	if err != nil {
 		return fmt.Errorf("completion port: %w", err)
 	}
-	assoc := jobPort{Port: port}
-	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectAssociateCompletionPortInformation,
-		uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc))); err != nil {
+	set := func(p windows.Handle) error {
+		assoc := jobPort{Port: p}
+		_, err := windows.SetInformationJobObject(t.job, windows.JobObjectAssociateCompletionPortInformation,
+			uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc)))
+		return err
+	}
+	if err = set(port); err != nil {
+		// The job of an earlier agent still points at that agent's port: let go of it first.
+		if err = set(0); err == nil {
+			err = set(port)
+		}
+	}
+	if err != nil {
 		windows.CloseHandle(port)
 		return fmt.Errorf("job port: %w", err)
 	}
@@ -151,8 +162,10 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 		return nil, err
 	}
 	defer null.Close()
-	for _, f := range []*os.File{null, log} {
-		h := windows.Handle(f.Fd())
+	// The runner's shell inherits a handle to its own job. A job's name goes
+	// away with the last handle to it, even while processes are still in the
+	// job: without this a later agent could not open the job by name.
+	for _, h := range []windows.Handle{windows.Handle(null.Fd()), windows.Handle(log.Fd()), t.job} {
 		if err = windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
 			return nil, err
 		}
@@ -237,7 +250,11 @@ func (t *tree) refresh() {
 	var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	if windows.QueryInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil) == nil {
+		// Windows counts a request it refused into the peak; the job never held more than its limit.
 		t.u.MemPeak = int64(limits.PeakJobMemoryUsed)
+		if l := int64(limits.JobMemoryLimit); l > 0 {
+			t.u.MemPeak = min(t.u.MemPeak, l)
+		}
 	}
 	var pids jobPids
 	if windows.QueryInformationJobObject(t.job, windows.JobObjectBasicProcessIdList,
