@@ -87,6 +87,7 @@ type host struct {
 	downSince   time.Time
 	seenAt      time.Time     // the last snapshot that arrived
 	rtt         time.Duration // how long that snapshot took, there and back
+	version     string        // the agent's build, as that snapshot named it
 }
 
 type class struct {
@@ -464,7 +465,7 @@ func (c *Controller) refreshHosts(ctx context.Context, now time.Time) {
 			asked := time.Now()
 			s, err := h.agent.Snapshot(cctx)
 			if err == nil {
-				h.seenAt, h.rtt = now, time.Since(asked)
+				h.seenAt, h.rtt, h.version = now, time.Since(asked), s.Version
 			}
 			warming := err == nil && s.SampledAt.IsZero()
 			if warming {
@@ -1092,6 +1093,10 @@ func (c *Controller) shutdown() {
 	c.refreshHosts(ctx, c.now())
 	removed, running := 0, 0
 	live, _ := c.ledger.LiveRunners()
+	busy := map[string]bool{}
+	for _, r := range live {
+		busy[r.Name] = r.State == "busy"
+	}
 	for _, h := range c.hosts {
 		if h.snap == nil {
 			for _, r := range live {
@@ -1102,7 +1107,9 @@ func (c *Controller) shutdown() {
 			continue
 		}
 		for _, r := range h.snap.Runners {
-			if r.JobStartedAt != nil {
+			// A job is known from the runner's own output or from GitHub's JobStarted
+			// message, whichever came first; either one is enough to leave it alone.
+			if r.JobStartedAt != nil || busy[r.Name] {
 				// Running a job, or finished one whose numbers the next `up` collects.
 				if r.State == "running" {
 					running++

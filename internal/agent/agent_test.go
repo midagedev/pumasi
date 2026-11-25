@@ -107,6 +107,14 @@ func TestParseLogEvents(t *testing.T) {
 	if ev, _ := parseLogEvents("2026-11-25T01:00:01Z Connected\n"); !ev.Listening.IsZero() || !ev.JobStarted.IsZero() {
 		t.Fatalf("no events expected: %+v", ev)
 	}
+	// stdout and stderr ran into each other: the marker has no stamp of its own.
+	ev, err = parseLogEvents("2026-11-25T01:00:11Z [RUNNER trace] something2026-11-25T01:00:12Z 2026-11-25 01:00:12Z: Running job: large (4)\n")
+	if err != nil || !ev.JobStarted.Equal(time.Date(2026, 11, 25, 1, 0, 11, 0, time.UTC)) {
+		t.Fatalf("glued line: %+v %v", ev, err)
+	}
+	if ev, err = parseLogEvents("garbage Running job: x\n"); err != nil || ev.JobStarted.IsZero() {
+		t.Fatalf("unstamped line: %+v %v", ev, err)
+	}
 }
 
 func TestParseInspect(t *testing.T) {

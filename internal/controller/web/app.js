@@ -55,7 +55,11 @@ function renderState(s) {
       td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"),
       td(h.diskFreePct === null ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(String(h.runners), "num"),
-      td(state, state === "ok" ? "muted" : "problem"));
+      td(state, state === "ok" ? "muted" : "problem"),
+      td(h.via, "muted opt"),
+      td(h.seenSeconds === null ? "-" : dur(h.seenSeconds) + " ago", "num opt"),
+      td(h.seenSeconds === null ? "-" : Math.round(h.rttMs) + "ms", "num opt"),
+      td(h.agent || "-", "muted opt"), td(h.lastDrop || "-", "muted opt"));
   }));
 
   fill("runners", s.runners.map((r) => el("tr", {},

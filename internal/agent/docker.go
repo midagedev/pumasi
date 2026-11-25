@@ -175,9 +175,20 @@ func (d Docker) LogEvents(ctx context.Context, name string, since time.Time) (Lo
 // parseLogEvents finds the first "Listening for Jobs" and "Running job" lines in
 // `docker logs -t` output and returns docker's timestamps for them. The runner
 // prints "Running job" well before GitHub's JobStarted message arrives.
+//
+// A marker line may lack its timestamp: docker writes the container's stdout
+// and stderr to two pipes, and read as one they can run into each other
+// mid-line. The event still counts — a runner whose job is never seen looks
+// idle and gets removed — with the time of the nearest stamped line before it.
 func parseLogEvents(logs string) (LogEvents, error) {
 	var ev LogEvents
+	var last time.Time
 	for _, line := range strings.Split(logs, "\n") {
+		ts, _, _ := strings.Cut(line, " ")
+		t, err := time.Parse(time.RFC3339Nano, ts)
+		if err == nil {
+			last = t
+		}
 		var dst *time.Time
 		switch {
 		case ev.Listening.IsZero() && strings.Contains(line, "Listening for Jobs"):
@@ -187,12 +198,9 @@ func parseLogEvents(logs string) (LogEvents, error) {
 		default:
 			continue
 		}
-		ts, _, _ := strings.Cut(line, " ")
-		t, err := time.Parse(time.RFC3339Nano, ts)
-		if err != nil {
-			return ev, fmt.Errorf("log timestamp %q: %w", ts, err)
+		if *dst = last; last.IsZero() {
+			*dst = time.Now()
 		}
-		*dst = t
 	}
 	return ev, nil
 }

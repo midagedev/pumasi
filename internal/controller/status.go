@@ -45,11 +45,8 @@ func (c *Controller) setStatus(defers []decide.Defer) {
 	for _, h := range c.hosts {
 		st.Hosts[h.cfg.Name] = h.snap
 		if h.tr != nil {
-			ln := Link{Via: h.tr.Via(), SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000, LastDrop: h.tr.Why()}
-			if h.snap != nil {
-				ln.Agent = h.snap.Version
-			}
-			st.Links[h.cfg.Name] = ln
+			st.Links[h.cfg.Name] = Link{Via: h.tr.Via(), SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000,
+				Agent: h.version, LastDrop: h.tr.Why()}
 		}
 		if h.snap != nil && h.closed != "" {
 			st.Closed[h.cfg.Name] = h.closed
