@@ -349,6 +349,15 @@ func removeRunners(ctx context.Context, p hostPaths) (int, error) {
 			return 0, fmt.Errorf("remove runner %s: %w", c.Name, err)
 		}
 	}
+	// The runners' own place, outside p.dir. What cannot be deleted there
+	// (files of root that a job left) stays, and stays said.
+	root := agent.RunnerRoot(p.dir)
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "pumasi: %s is not removed (%v); delete it by hand\n", root, err)
+	}
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(filepath.Dir(root)) // C:\pm, when no other user has runners there
+	}
 	return len(cs), nil
 }
 

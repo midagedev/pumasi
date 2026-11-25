@@ -5,11 +5,13 @@ package agent
 import (
 	"archive/tar"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const distExt = ".tar.gz"
@@ -18,6 +20,24 @@ const distExt = ".tar.gz"
 // leaves the exit code in a file, because a later agent is not the runner's
 // parent and cannot wait for it.
 const runScript = `cd "$1/runner" && ./run.sh; echo $? > "$1/exit.tmp" && mv "$1/exit.tmp" "$1/exit"`
+
+// ownDir makes p a directory of this user alone. The places runnerRoot names
+// are open to every user of the machine: one that someone else made first is
+// not used.
+func ownDir(p string) error {
+	if err := os.Mkdir(p, 0o700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s is not this user's alone", p)
+	}
+	return nil
+}
 
 func (t *tree) exitCode() (int, bool) {
 	b, err := os.ReadFile(filepath.Join(t.dir, "exit"))

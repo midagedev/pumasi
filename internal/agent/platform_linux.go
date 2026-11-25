@@ -14,7 +14,7 @@ import (
 // class's runners are docker containers (the default) or, with driver:
 // native, processes of the agent's user kept in dir.
 func Platform(tag, dir string) (Driver, Meter) {
-	l := &linux{docker: Docker{Tag: tag}, meter: &CgroupMeter{R: cgroup.DefaultReader()}, native: &Native{Root: dir}}
+	l := &linux{docker: Docker{Tag: tag}, meter: &CgroupMeter{R: cgroup.DefaultReader()}, native: &Native{Root: dir, Runners: RunnerRoot(dir)}}
 	return l, l
 }
 

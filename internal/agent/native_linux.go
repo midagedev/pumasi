@@ -24,6 +24,9 @@ const distOS = "linux"
 
 var cgroups = cgroup.DefaultReader()
 
+// runnerRoot: /var/tmp is on disk (unlike many a /tmp) and outlives a reboot.
+func runnerRoot() string { return "/var/tmp/pumasi-" + strconv.Itoa(os.Getuid()) }
+
 // tree is one runner's processes, held by a systemd user scope: a cgroup of
 // its own under the user's systemd, which holds them to the class's CPU and
 // memory, counts what they use and ends them all at once. The scope belongs

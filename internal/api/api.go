@@ -74,6 +74,9 @@ type Runner struct {
 	ExitCode     *int               `json:"exitCode,omitempty"`
 	// Only in the answer to DELETE: the last lines the runner printed.
 	LogTail string `json:"logTail,omitempty"`
+	// Only in the answer to DELETE: what of the runner the host could not
+	// delete, and why ("/var/tmp/…/.trash/x could not be deleted: permission denied").
+	Leftover string `json:"leftover,omitempty"`
 }
 
 // PersonAway: a machine whose last input is more recent than this has someone

@@ -782,6 +782,11 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			if f.LogTail != "" {
 				_ = c.ledger.SetLogTail(st.Runner, f.LogTail)
 			}
+			if f.Leftover != "" {
+				c.book.report("problem", "leftover/"+st.Runner, "leftover", st.Runner, fmt.Sprintf(
+					"%s on %s is removed, but the host may not delete all of its files: %s", st.Runner, st.Host, f.Leftover),
+					"none: delete it on the host (usually files a job wrote as root through a container)")
+			}
 			// If JobCompleted was missed while the controller was away, the exit code
 			// is all there is; a late message still replaces it.
 			if f.JobStartedAt != nil && f.ExitCode != nil && f.ExitedAt != nil {

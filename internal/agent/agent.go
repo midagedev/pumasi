@@ -339,18 +339,24 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 		}
 	}
 	tail := a.drv.LogTail(ctx, name, 40)
-	if err := a.drv.Remove(ctx, name); err != nil {
+	err := a.drv.Remove(ctx, name)
+	var left *Leftover
+	if err != nil && !errors.As(err, &left) {
 		return api.Runner{}, err
 	}
 	a.dataMu.Lock()
 	delete(a.recs, name)
 	a.dataMu.Unlock()
 	a.save()
-	if !ok {
-		return api.Runner{Name: name, State: "unknown"}, nil
+	out := api.Runner{Name: name, State: "unknown"}
+	if ok {
+		out = r.Runner
+		out.LogTail = tail
 	}
-	out := r.Runner
-	out.LogTail = tail
+	if left != nil {
+		a.log.Warn("runner removed, but not all of its files", "runner", name, "left", left.Path, "err", left.Err)
+		out.Leftover = left.Error()
+	}
 	return out, nil
 }
 

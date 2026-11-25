@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,6 +65,15 @@ type Driver interface {
 	// Check reports why the host cannot start a runner from image right now (nil = it can).
 	Check(ctx context.Context, image string) error
 }
+
+// Leftover is Remove's error when the runner is gone but a directory of it
+// could not be deleted and stays on the host at Path.
+type Leftover struct {
+	Path string
+	Err  error
+}
+
+func (l *Leftover) Error() string { return fmt.Sprintf("%s could not be deleted: %v", l.Path, l.Err) }
 
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
 type Docker struct {
@@ -208,7 +218,7 @@ func removeWorkDir(ctx context.Context, dir, image string) error {
 	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "-u", "0", "--mount", "type=bind,source="+filepath.Clean(parent)+",target=/w",
 		"--entrypoint", "rm", image, "-rf", "/w/"+name).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("work directory %s not removed: %s", dir, lastLine(out))
+		return &Leftover{Path: dir, Err: errors.New(lastLine(out))}
 	}
 	return nil
 }

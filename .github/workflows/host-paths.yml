@@ -8,12 +8,14 @@ name: host-paths
 #           and a container of the job that takes more memory than the class
 #   compose a job of a docker: inside class that runs a service container and a
 #           compose stack (build, healthcheck, depends_on) to its end
+#   residue a job of a native class that leaves a directory without write
+#           permission and, through the host's docker, files of root
 #   plain   a job that needs nothing of the host (any class)
 on:
   workflow_dispatch:
     inputs:
       test:
-        description: "native | oom | mounts | docker | compose | plain"
+        description: "native | oom | mounts | docker | compose | residue | plain"
         default: "plain"
       class:
         description: "class (scale set pumasi-<class>)"
@@ -22,7 +24,7 @@ on:
         description: "mounts: the directory holding rw/ and ro/ (same path on the host and in the container)"
         default: "/tmp/pumasi-test"
       megabytes:
-        description: "oom, docker: megabytes the job asks for"
+        description: "oom, docker: megabytes the job asks for (residue: 0 = leave no files of root)"
         default: "1500"
 
 jobs:
@@ -141,6 +143,21 @@ jobs:
           grep -q '^app-1 *| 42$' up.log
           docker compose down -v
           echo "left in the runner's daemon: $(docker ps -aq | wc -l) containers, $(docker images -q | wc -l) images"
+  residue:
+    if: inputs.test == 'residue'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: leave what the runner's user cannot simply delete
+        shell: bash
+        run: |
+          echo "workspace: $GITHUB_WORKSPACE"
+          case "$GITHUB_WORKSPACE" in "$HOME"/*) echo "the workspace is under the home directory"; exit 1 ;; esac
+          mkdir -p ro/deep && echo x > ro/deep/f && chmod -R a-w ro
+          if [ "${{ inputs.megabytes }}" != 0 ]; then
+            docker run --rm -u 0 -v "$PWD:/w" --entrypoint sh ghcr.io/actions/actions-runner:2.338.2 -c 'mkdir /w/rootdir && echo x > /w/rootdir/f && chmod 700 /w/rootdir'
+            ls -ld rootdir
+          fi
   plain:
     if: inputs.test == 'plain'
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]

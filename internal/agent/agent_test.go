@@ -17,13 +17,14 @@ import (
 type fakeDriver struct {
 	cs        map[string]Container
 	listening map[string]time.Time
+	left      error // what Remove answers once the runner is gone
 }
 
 func (f *fakeDriver) Start(_ context.Context, s Spec) error {
 	f.cs[s.Name] = Container{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, State: "running", Pid: 42}
 	return nil
 }
-func (f *fakeDriver) Remove(_ context.Context, name string) error { delete(f.cs, name); return nil }
+func (f *fakeDriver) Remove(_ context.Context, name string) error { delete(f.cs, name); return f.left }
 func (f *fakeDriver) List(context.Context) ([]Container, error) {
 	var out []Container
 	for _, c := range f.cs {
@@ -91,6 +92,25 @@ func TestStartSampleExitDelete(t *testing.T) {
 	}
 	if len(a.Snapshot().Runners) != 0 {
 		t.Fatal("runner still listed after delete")
+	}
+}
+
+// A runner whose files the host may not all delete is still removed: the
+// record goes, and the answer says what stays.
+func TestDeleteTellsWhatItCouldNotRemove(t *testing.T) {
+	drv := &fakeDriver{cs: map[string]Container{}, listening: map[string]time.Time{}}
+	a := testAgent(drv)
+	ctx := context.Background()
+	if _, err := a.Start(ctx, api.StartRequest{Name: "r1", Class: "c", CPUs: 1, MemBytes: 1 << 30, Image: "img", JITConfig: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	drv.left = &Leftover{Path: "/var/tmp/x/.trash/r1", Err: errors.New("permission denied")}
+	got, err := a.Delete(ctx, "r1")
+	if err != nil || !strings.Contains(got.Leftover, "/var/tmp/x/.trash/r1") || got.Class != "c" {
+		t.Fatalf("delete %+v %v", got, err)
+	}
+	if len(a.Snapshot().Runners) != 0 {
+		t.Fatal("runner still listed")
 	}
 }
 

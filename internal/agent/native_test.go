@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -98,5 +99,32 @@ func TestAssetDigest(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err == nil {
 		t.Error("something was unpacked")
+	}
+}
+
+// A directory the job left without write permission (a Go module cache) is no
+// reason to keep a removed runner's files.
+func TestRemoveTreeGetsThroughReadOnlyDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directories have no write bit on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "r")
+	deep := filepath.Join(dir, "mod", "cache")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "f"), []byte("x"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{deep, filepath.Dir(deep)} {
+		if err := os.Chmod(d, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removeTree(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("still there: %v", err)
 	}
 }

@@ -214,6 +214,10 @@ func (t *tree) kill() {
 	}
 }
 
+// runnerRoot: /Users/Shared is on the same volume as the home (clonefile
+// works) and nothing sweeps it, unlike /tmp.
+func runnerRoot() string { return "/Users/Shared/pumasi-" + strconv.Itoa(os.Getuid()) }
+
 // cloneTree copies the unpacked runner. On APFS clonefile(2) makes the copy
 // without copying data; elsewhere cp does it the slow way.
 func cloneTree(src, dst string) error {

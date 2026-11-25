@@ -80,6 +80,25 @@ const (
 	jobAllAccess                       = 0x1F001F
 )
 
+// runnerRoot is short, C:\pm\<n>: a runner's work directory sits several
+// levels below it and Windows paths end at 260 characters. <n> is the last
+// part of the user's SID, so two users of one machine do not see each other's
+// runners.
+func runnerRoot() string {
+	drive := os.Getenv("SystemDrive")
+	if drive == "" {
+		drive = "C:"
+	}
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return ""
+	}
+	sid := u.User.Sid.String()
+	return filepath.Join(drive+`\`, "pm", sid[strings.LastIndexByte(sid, '-')+1:])
+}
+
+func ownDir(p string) error { return os.MkdirAll(p, 0o700) }
+
 // jobName is the Job Object of a runner directory. The name lives in the
 // logon session's namespace: an agent started in another session does not
 // find it and reports the runner as exited.

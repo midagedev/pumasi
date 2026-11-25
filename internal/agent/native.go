@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,13 +29,14 @@ import (
 // they need that OS itself. Isolation is a fresh runner directory, nothing more.
 //
 //	<Root>/dist/actions-runner-<os>-<arch>-<version>/   the runner, downloaded once
-//	<Root>/runners/<name>/runner/                       a clone of it, one per runner
-//	<Root>/runners/<name>/{pumasi.json,log,exit}        what pumasi keeps about it
+//	<Runners>/<name>/runner/                            a clone of it, one per runner
+//	<Runners>/<name>/{pumasi.json,log,exit}             what pumasi keeps about it
 //
 // The runner must outlive an agent restart, so nothing about it lives only in
 // memory: List rebuilds its view from the directories and the process table.
 type Native struct {
-	Root string
+	Root    string
+	Runners string // "" = <Root>/runners
 
 	mu        sync.Mutex
 	trees     map[string]*tree
@@ -56,7 +59,28 @@ type meta struct {
 
 var runnerNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-func (n *Native) dir(name string) string { return filepath.Join(n.Root, "runners", name) }
+func (n *Native) runners() string {
+	if n.Runners != "" {
+		return n.Runners
+	}
+	return filepath.Join(n.Root, "runners")
+}
+
+func (n *Native) dir(name string) string { return filepath.Join(n.runners(), name) }
+
+// RunnerRoot is where runners get their directories. Not under the user's
+// home: its path would be in every job's log, and on Windows a deep root eats
+// into the 260 characters a path may have. Where that place cannot be had (or
+// is not this user's alone) it is cache/runners.
+func RunnerRoot(cache string) string {
+	if p := runnerRoot(); p != "" && ownDir(p) == nil {
+		return p
+	}
+	return filepath.Join(cache, "runners")
+}
+
+// trashDir holds what could not be deleted of removed runners.
+const trashDir = ".trash"
 
 func (n *Native) Start(ctx context.Context, s Spec) error {
 	if !runnerNameRE.MatchString(s.Name) {
@@ -103,7 +127,7 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 }
 
 func (n *Native) List(context.Context) ([]Container, error) {
-	entries, err := os.ReadDir(filepath.Join(n.Root, "runners"))
+	entries, err := os.ReadDir(n.runners())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -151,7 +175,9 @@ func (n *Native) List(context.Context) ([]Container, error) {
 	return cs, nil
 }
 
-// Remove stops whatever is left of the runner's process tree and deletes its directory.
+// Remove stops whatever is left of the runner's process tree and deletes its
+// directory. What the agent's user may not delete (files a job wrote as root
+// through a container) is moved out of the runners' way and told as Leftover.
 func (n *Native) Remove(_ context.Context, name string) error {
 	if !runnerNameRE.MatchString(name) {
 		return fmt.Errorf("bad runner name %q", name)
@@ -171,12 +197,35 @@ func (n *Native) Remove(_ context.Context, name string) error {
 	}
 	var err error
 	for i := 0; i < 20; i++ { // a dying process may still hold or write files
-		if err = os.RemoveAll(dir); err == nil {
+		if err = removeTree(dir); err == nil {
 			return nil
+		}
+		if runtime.GOOS != "windows" && errors.Is(err, fs.ErrPermission) {
+			break // waiting does not change whose file it is
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	trash := filepath.Join(n.runners(), trashDir, name+"-"+strconv.FormatInt(time.Now().Unix(), 36))
+	if os.MkdirAll(filepath.Dir(trash), 0o700) == nil && os.Rename(dir, trash) == nil {
+		return &Leftover{Path: trash, Err: err}
+	}
 	return fmt.Errorf("remove %s: %w", dir, err)
+}
+
+// removeTree is os.RemoveAll that also gets through directories the job left
+// without write permission (a Go module cache).
+func removeTree(dir string) error {
+	err := os.RemoveAll(dir)
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
 
 // Runner is the Meter side. During a sample List has just refreshed every tree.
