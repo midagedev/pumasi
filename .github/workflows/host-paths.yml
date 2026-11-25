@@ -6,12 +6,14 @@ name: host-paths
 #   mounts  a job of a container class with mounts: [<dir>/rw, <dir>/ro:ro]
 #   docker  a job of a container class with docker: inside: its own daemon,
 #           and a container of the job that takes more memory than the class
+#   compose a job of a docker: inside class that runs a service container and a
+#           compose stack (build, healthcheck, depends_on) to its end
 #   plain   a job that needs nothing of the host (any class)
 on:
   workflow_dispatch:
     inputs:
       test:
-        description: "native | oom | mounts | docker | plain"
+        description: "native | oom | mounts | docker | compose | plain"
         default: "plain"
       class:
         description: "class (scale set pumasi-<class>)"
@@ -100,6 +102,45 @@ jobs:
         shell: bash
         run: |
           docker run --rm alpine sh -c 'x=$(head -c ${{ inputs.megabytes }}m /dev/zero | tr "\0" x); echo "held ${#x} bytes"'
+  compose:
+    if: inputs.test == 'compose'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - name: the job's service container answers
+        shell: bash
+        run: |
+          exec 3<>/dev/tcp/localhost/6379; printf 'PING\r\n' >&3; read -r pong <&3; echo "redis: $pong"
+          test "${pong%$'\r'}" = "+PONG"
+      - name: a compose stack, to its end
+        shell: bash
+        run: |
+          # The runner image has the docker CLI and buildx, not compose.
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL -o ~/.docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m)"
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+          mkdir -p stack/app && cd stack
+          printf 'FROM postgres:16-alpine\nCMD ["psql", "-h", "db", "-U", "postgres", "-tAc", "select 6 * 7"]\n' > app/Dockerfile
+          cat > compose.yaml <<'YAML'
+          services:
+            db:
+              image: postgres:16-alpine
+              environment: {POSTGRES_PASSWORD: x}
+              healthcheck: {test: [CMD, pg_isready, -U, postgres], interval: 1s, retries: 60}
+            app:
+              build: ./app
+              environment: {PGPASSWORD: x}
+              depends_on: {db: {condition: service_healthy}}
+          YAML
+          docker compose up --build --abort-on-container-exit --exit-code-from app 2>&1 | tee up.log
+          grep -q '^app-1 *| 42$' up.log
+          docker compose down -v
+          echo "left in the runner's daemon: $(docker ps -aq | wc -l) containers, $(docker images -q | wc -l) images"
   plain:
     if: inputs.test == 'plain'
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
