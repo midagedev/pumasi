@@ -1,0 +1,29 @@
+name: labels
+# A job that asks for any labels: what a scale set with a class's labels: takes
+# over from fixed runners (docs/design.md).
+on:
+  workflow_dispatch:
+    inputs:
+      labels:
+        description: "runs-on, as a JSON list"
+        default: '["self-hosted", "pumasi-small"]'
+      jobs:
+        description: "JSON list, one job per element"
+        default: "[1]"
+      seconds:
+        description: "how long each job runs"
+        default: "20"
+
+jobs:
+  hold:
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(inputs.jobs) }}
+    runs-on: ${{ fromJSON(inputs.labels) }}
+    timeout-minutes: 20
+    steps:
+      - shell: sh
+        run: |
+          echo "runner=$RUNNER_NAME job=${{ matrix.i }}"
+          sleep ${{ inputs.seconds }}

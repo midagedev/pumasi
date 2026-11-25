@@ -83,6 +83,10 @@ type Class struct {
 	// so what the job runs with docker counts against the runner's limits.
 	// The runner container is privileged for it.
 	Docker string `yaml:"docker"`
+	// Labels replace the class's own label: the scale set takes jobs whose
+	// runs-on is among them ([self-hosted, Linux, X64, ci-pool] takes over
+	// from fixed runners with those labels, workflows unchanged).
+	Labels []string `yaml:"labels"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
@@ -93,6 +97,15 @@ type Class struct {
 // ScaleSet is the class's scale set on GitHub, and the label its jobs ask for:
 // runs-on: [self-hosted, pumasi-<class>].
 func (cl Class) ScaleSet() string { return "pumasi-" + cl.Name }
+
+// RunsOn is the labels of the class's scale set: a job comes to it when all
+// of its runs-on labels are among them.
+func (cl Class) RunsOn() []string {
+	if len(cl.Labels) > 0 {
+		return cl.Labels
+	}
+	return []string{"self-hosted", cl.ScaleSet()}
+}
 
 type Host struct {
 	Name string `yaml:"name"` // default: the ssh destination

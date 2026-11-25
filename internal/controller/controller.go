@@ -169,10 +169,14 @@ const runnerGroup = 1
 func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 	for _, cl := range c.classes {
 		name := cl.cfg.ScaleSet()
+		var labels []scaleset.Label
+		for _, l := range cl.cfg.RunsOn() {
+			labels = append(labels, scaleset.Label{Name: l})
+		}
 		set, err := c.gh.GetRunnerScaleSet(ctx, runnerGroup, name)
 		if err != nil || set == nil {
 			set, err = c.gh.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
-				Name: name, RunnerGroupID: runnerGroup, Labels: []scaleset.Label{{Name: name}, {Name: "self-hosted"}},
+				Name: name, RunnerGroupID: runnerGroup, Labels: labels,
 				RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 			})
 			if err != nil {
@@ -181,9 +185,31 @@ func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 			c.ev.Write("scale-set-created", set)
 		}
 		cl.setID = set.ID
-		c.log.Info(fmt.Sprintf("class %s  runs-on: [self-hosted, %s]", cl.cfg.Name, name))
+		// GitHub keeps the labels a scale set was made with.
+		var has []string
+		for _, l := range set.Labels {
+			has = append(has, l.Name)
+		}
+		if want := cl.cfg.RunsOn(); len(has) > 0 && !sameLabels(has, want) {
+			return fmt.Errorf("scale set %s exists with the labels [%s], the config asks for [%s]: labels cannot be changed, run `pumasi down` first (or rename the class)",
+				name, strings.Join(has, ", "), strings.Join(want, ", "))
+		}
+		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]", cl.cfg.Name, strings.Join(cl.cfg.RunsOn(), ", ")))
 	}
 	return nil
+}
+
+// sameLabels compares label sets the way GitHub matches them: without case or order.
+func sameLabels(a, b []string) bool {
+	norm := func(in []string) []string {
+		out := make([]string, len(in))
+		for i, s := range in {
+			out[i] = strings.ToLower(s)
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	return slices.Equal(norm(a), norm(b))
 }
 
 // Run opens the listener the hosts dial, makes the hosts of the config join,
