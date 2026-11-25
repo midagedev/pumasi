@@ -123,6 +123,7 @@ func stopService(p hostPaths, kill bool) {
 		}
 		_ = os.Remove(unitPath())
 		_ = systemctl("daemon-reload")
+		_ = systemctl("reset-failed", unitName) // stopping the agent by signal counts as a failure there
 	}
 	if pid := loopPid(p); pid != 0 && kill {
 		// The loop leads its own session: the group is the loop and its agent.

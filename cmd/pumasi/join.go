@@ -387,18 +387,18 @@ func runLeave(args []string) error {
 				len(up), strings.Join(up, "\n  "))
 		}
 	}
-	hc, cerr := join.LoadHostConfig(p.conf)
-	stopService(p, true)
-	n, err := removeContainers(ctx)
-	if err != nil {
-		return err
-	}
+	// The controller first: a host that says goodbye is not reported as lost.
 	told := "the controller was not told (this host had no join.json)"
-	if cerr == nil {
+	if hc, err := join.LoadHostConfig(p.conf); err == nil {
 		told = "the controller forgot this host"
 		if err := hc.Leave(ctx); err != nil {
 			told = fmt.Sprintf("the controller could not be told (%v); it keeps %s as unreachable until `pumasi down --force`", err, hc.Name)
 		}
+	}
+	stopService(p, true)
+	n, err := removeContainers(ctx)
+	if err != nil {
+		return err
 	}
 	removeFiles(p)
 	fmt.Printf("left: agent stopped, %d containers removed, %s and the binary removed; %s\n", n, p.dir, told)
