@@ -33,7 +33,8 @@ jobs:
     steps:
       - name: burn one cpu, hold memory, leave a child behind (Windows)
         if: runner.os == 'Windows'
-        shell: powershell
+        # Not `shell: powershell`: a Windows that was never set up for scripts refuses to load the step's file.
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           "runner=$env:RUNNER_NAME os=$env:RUNNER_OS job=${{ matrix.i }} pwd=$PWD"
           # Left behind on purpose: only the end of the runner's Job Object ends it.
