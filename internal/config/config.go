@@ -76,6 +76,10 @@ type Class struct {
 	// ("/srv/cache", "/srv/keys:ro"). The class goes only to hosts that have
 	// them all; a native class sees the host anyway and only uses them for that.
 	Mounts []string `yaml:"mounts"`
+	// Docker: inside gives each container runner a docker daemon of its own,
+	// so what the job runs with docker counts against the runner's limits.
+	// The runner container is privileged for it.
+	Docker string `yaml:"docker"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
@@ -307,6 +311,10 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class %s: reserve must not be negative", cl.Name)
 		case cl.Driver != "docker" && cl.Driver != "native":
 			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
+		case cl.Docker != "" && cl.Docker != "inside":
+			return fmt.Errorf("class %s: docker must be inside (or left out)", cl.Name)
+		case cl.Docker == "inside" && cl.Driver != "docker":
+			return fmt.Errorf("class %s: docker: inside is for container runners; a native runner uses the host's docker", cl.Name)
 		case cl.Driver == "docker" && cl.OS != "linux":
 			return fmt.Errorf("class %s: %s hosts run runners as processes only (driver: native)", cl.Name, cl.OS)
 		}

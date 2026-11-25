@@ -95,6 +95,8 @@ type StartRequest struct {
 	// WorkDir: a host directory inside one of Mounts, named after the runner,
 	// that the host makes for the runner's work directory and removes with it.
 	WorkDir string `json:"workDir,omitempty"`
+	// InnerDocker: a container runner with a docker daemon of its own.
+	InnerDocker bool `json:"innerDocker,omitempty"`
 }
 
 // Client talks to one agent. BaseURL is resolved per call so a transport can

@@ -825,7 +825,7 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	defer cancel()
 	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
 		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
-		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir})
+		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir, InnerDocker: cl.cfg.Docker == "inside"})
 	if err != nil {
 		// The registration stays until unregister removes it.
 		fail("agent start: " + err.Error())

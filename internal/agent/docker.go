@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,8 @@ type Spec struct {
 	// WorkDir: a directory inside one of Mounts for the runner's work
 	// directory, made before the runner starts and removed with it.
 	WorkDir string
+	// InnerDocker gives a container runner a docker daemon of its own.
+	InnerDocker bool
 }
 
 // Container is a runner container as the driver sees it.
@@ -116,7 +119,18 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 		}
 		args = append(args, "--label", labelWork+"="+s.WorkDir)
 	}
-	cmd := exec.CommandContext(ctx, "docker", append(args, s.Image, "/home/runner/run.sh")...)
+	image, run := s.Image, []string{"/home/runner/run.sh"}
+	if s.InnerDocker {
+		var err error
+		if image, err = innerImage(ctx, s.Image); err != nil {
+			return err
+		}
+		// dockerd needs a privileged container, and its data on a volume: the
+		// container's own filesystem is an overlay it cannot stack another on.
+		args = append(args, "--privileged", "--volume", "/var/lib/docker")
+		run = []string{"sh", "-c", innerDockerScript}
+	}
+	cmd := exec.CommandContext(ctx, "docker", append(append(args, image), run...)...)
 	cmd.Stdin = strings.NewReader("ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -126,6 +140,55 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 		return fmt.Errorf("docker run: %w: %s", err, bytes.TrimSpace(out))
 	}
 	return nil
+}
+
+// innerDockerScript starts a docker daemon inside the runner container, then
+// becomes the runner. The daemon and everything it runs stay in the
+// container's cgroup, so the runner's limits and numbers cover them.
+// cgroup v2 lets a cgroup have either processes or children with controllers:
+// the container's processes move to a leaf first, so the daemon can give its
+// containers cgroups of their own.
+const innerDockerScript = `sudo -n sh -c '
+cd /sys/fs/cgroup && mkdir -p init &&
+for p in $(cat cgroup.procs); do echo $p > init/cgroup.procs 2>/dev/null; done
+sed -e "s/ / +/g" -e "s/^/+/" cgroup.controllers > cgroup.subtree_control
+exec dockerd >/var/log/dockerd.log 2>&1' &
+i=0; until docker info >/dev/null 2>&1 || [ $i -ge 300 ]; do i=$((i+1)); sleep 0.1; done
+docker info >/dev/null 2>&1 || { echo "pumasi: the docker daemon did not start in this runner:"; tail -n 5 /var/log/dockerd.log; }
+exec /home/runner/run.sh`
+
+var innerImageMu sync.Mutex
+
+// innerImage is image with what dockerd needs besides itself. The stock
+// runner image carries dockerd but no iptables, without which the daemon does
+// not start. Built once per host and base image.
+func innerImage(ctx context.Context, image string) (string, error) {
+	innerImageMu.Lock()
+	defer innerImageMu.Unlock()
+	// A start that gives up must not kill the build the next start needs.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}} {{.Config.User}}", image).Output()
+	if err != nil {
+		return "", fmt.Errorf("docker image inspect %s: %w", image, err)
+	}
+	id, user, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	tag := "pumasi-inner-docker:" + strings.TrimPrefix(id, "sha256:")[:12]
+	if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", tag).Run() == nil {
+		return tag, nil
+	}
+	file := "FROM " + image + "\nUSER root\n" +
+		"RUN command -v dockerd >/dev/null || { echo 'the image has no dockerd' >&2; exit 1; }\n" +
+		"RUN command -v iptables >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables && rm -rf /var/lib/apt/lists/*; }\n"
+	if user != "" {
+		file += "USER " + user + "\n"
+	}
+	build := exec.CommandContext(ctx, "docker", "build", "-q", "-t", tag, "-")
+	build.Stdin = strings.NewReader(file)
+	if out, err := build.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("image for docker: inside: %s", lastLine(out))
+	}
+	return tag, nil
 }
 
 // removeWorkDir deletes a runner's work directory on the host. What the job
@@ -156,7 +219,7 @@ func (d Docker) Remove(ctx context.Context, name string) error {
 	if c[0].labels[labelTag] != d.Tag {
 		return fmt.Errorf("container %s is not labeled %s=%s", name, labelTag, d.Tag)
 	}
-	out, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "docker", "rm", "-f", "-v", name).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "No such container") {
 		return fmt.Errorf("docker rm: %w: %s", err, bytes.TrimSpace(out))
 	}

@@ -240,7 +240,7 @@ func cleanHost(ctx context.Context, h config.Host) (string, error) {
 n=0
 if [ "$(uname -s)" = Linux ]; then
   ids=$(docker ps -aq --filter label=pumasi 2>/dev/null || true)
-  if [ -n "$ids" ]; then n=$(echo "$ids" | wc -l | tr -d ' '); docker rm -f $ids >/dev/null; fi
+  if [ -n "$ids" ]; then n=$(echo "$ids" | wc -l | tr -d ' '); docker rm -f -v $ids >/dev/null; fi
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   for u in $(systemctl --user list-units 'pumasi-*.scope' --all --no-legend --plain 2>/dev/null | awk '{print $1}'); do
     systemctl --user kill --signal=SIGKILL "$u" 2>/dev/null || true

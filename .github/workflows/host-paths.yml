@@ -4,12 +4,14 @@ name: host-paths
 #           and uses the host's docker, the second reads what the first wrote
 #   oom     a job that takes more memory than its class
 #   mounts  a job of a container class with mounts: [<dir>/rw, <dir>/ro:ro]
+#   docker  a job of a container class with docker: inside: its own daemon,
+#           and a container of the job that takes more memory than the class
 #   plain   a job that needs nothing of the host (any class)
 on:
   workflow_dispatch:
     inputs:
       test:
-        description: "native | oom | mounts | plain"
+        description: "native | oom | mounts | docker | plain"
         default: "plain"
       class:
         description: "class (scale set pumasi-<class>)"
@@ -18,7 +20,7 @@ on:
         description: "mounts: the directory holding rw/ and ro/ (same path on the host and in the container)"
         default: "/tmp/pumasi-test"
       megabytes:
-        description: "oom: megabytes the job asks for"
+        description: "oom, docker: megabytes the job asks for"
         default: "1500"
 
 jobs:
@@ -80,6 +82,24 @@ jobs:
           # filesystem behind one mount, so a cache there can be hard-linked.
           echo "workspace: $GITHUB_WORKSPACE"
           ln "$d/rw/from-container" "$GITHUB_WORKSPACE/linked" && echo "hard link from the mount into the workspace: ok ($(stat -c %h "$GITHUB_WORKSPACE/linked") links)"
+  docker:
+    if: inputs.test == 'docker'
+    runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
+    timeout-minutes: 10
+    steps:
+      - name: the runner's own docker daemon
+        shell: bash
+        run: |
+          echo "daemon $(docker version --format '{{.Server.Version}}'), $(docker ps -aq | wc -l) containers, $(docker images -q | wc -l) images"
+          docker run --rm alpine sh -c 'wget -q -O- -T 10 https://api.github.com/zen; echo; echo "network from the job container: ok"'
+          docker run -d --name web -p 8080:80 nginx:alpine > /dev/null
+          for i in $(seq 50); do curl -fsS -o /dev/null localhost:8080 && break; sleep 0.2; done
+          curl -fsS localhost:8080 | grep -o '<title>.*</title>'
+          docker run --rm alpine sh -c 'i=0; while [ $i -lt 20000000 ]; do i=$((i+1)); done; echo burned'
+      - name: a container of the job takes more memory than the class has
+        shell: bash
+        run: |
+          docker run --rm alpine sh -c 'x=$(head -c ${{ inputs.megabytes }}m /dev/zero | tr "\0" x); echo "held ${#x} bytes"'
   plain:
     if: inputs.test == 'plain'
     runs-on: [self-hosted, "pumasi-${{ inputs.class }}"]
