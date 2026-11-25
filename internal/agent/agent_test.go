@@ -43,7 +43,6 @@ func testAgent(drv Driver) *Agent {
 	cg := cgroup.Reader{
 		CgroupRoot: filepath.Join("..", "cgroup", "testdata", "cg"),
 		ProcRoot:   filepath.Join("..", "cgroup", "testdata", "proc"),
-		SysRoot:    filepath.Join("..", "cgroup", "testdata", "sys"),
 	}
 	return New(Config{Host: "h1", BudgetCPUs: 3, BudgetMem: 4 << 30}, drv, &CgroupMeter{R: cg}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }

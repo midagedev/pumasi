@@ -1,18 +1,23 @@
 package cgroup
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 const scope = "system.slice/docker-bdfedcdf244d7769e643f4ca02d4c203c693296c006811ec590b3f72bef505ad.scope"
 
-func fixtureReader() Reader {
-	return Reader{
-		CgroupRoot: filepath.Join("testdata", "cg"),
-		ProcRoot:   filepath.Join("testdata", "proc"),
-		SysRoot:    filepath.Join("testdata", "sys"),
+// fixtureReader reads testdata. The /sys part (8:0 sits under a device-mapper
+// device) is made here and not checked in: Windows cannot check out a path
+// with a colon, and where it cannot be made SysRoot is empty.
+func fixtureReader(t *testing.T) Reader {
+	sys := t.TempDir()
+	holders := filepath.Join(sys, "dev", "block", "8:0", "holders")
+	if os.MkdirAll(holders, 0o755) != nil || os.WriteFile(filepath.Join(holders, "dm-0"), nil, 0o644) != nil {
+		sys = ""
 	}
+	return Reader{CgroupRoot: filepath.Join("testdata", "cg"), ProcRoot: filepath.Join("testdata", "proc"), SysRoot: sys}
 }
 
 func TestParsers(t *testing.T) {
@@ -66,7 +71,7 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestReaderOnFixtures(t *testing.T) {
-	r := fixtureReader()
+	r := fixtureReader(t)
 	dir, err := r.PathOfPid(42)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +93,7 @@ func TestReaderOnFixtures(t *testing.T) {
 	if st.OOMKills != 2 {
 		t.Errorf("oom kills %d, want 2", st.OOMKills)
 	}
-	if want := uint64(2772353024 + 24555520 + 139743232 + 170946560 + 1023324160 + 4096); st.IOBytes != want {
+	if want := uint64(2772353024 + 24555520 + 139743232 + 170946560 + 1023324160 + 4096); r.SysRoot != "" && st.IOBytes != want {
 		t.Errorf("io %d, want %d", st.IOBytes, want)
 	}
 	if st.Pressure["cpu"] != 44396719 || st.Pressure["memory"] != 128515439 || st.Pressure["io"] != 740512275 {
