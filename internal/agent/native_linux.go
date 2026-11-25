@@ -100,7 +100,7 @@ func startTree(dir string, s Spec, env []string, log *os.File) (*tree, error) {
 		// runner with it: the runner reports the failed step.
 		args = append(args, "-p", "OOMPolicy=continue")
 	}
-	cmd := exec.Command("systemd-run", append(args, "--", "/bin/sh", "-c", runScript, "sh", dir)...)
+	cmd := exec.Command("systemd-run", append(args, "--", "/bin/sh", "-c", runScript, "sh", dir, runArgs(s))...)
 	cmd.Env = userEnv(env)
 	cmd.Stdout, cmd.Stderr = log, log
 	// Its own session: a hangup of the agent's terminal does not reach it.

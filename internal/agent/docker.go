@@ -40,6 +40,10 @@ type Spec struct {
 	// runner's PATH. "{runner}" in a value is the runner's own directory.
 	Env  map[string]string
 	Path []string
+	// Slot: the runner is a registered one (class/n) that listens with its own
+	// credentials for one job. install puts them into its fresh directory.
+	Slot    string
+	install func(runnerDir string) error
 }
 
 // The runner's own directory in the runner image.
@@ -98,6 +102,7 @@ type Container struct {
 	OOMKilled  bool // docker saw the container's main process killed at the memory limit
 	StartedAt  time.Time
 	FinishedAt time.Time
+	Slot       string // the registered runner it runs as ("" = none)
 }
 
 // Driver starts and removes runner containers. M1 has one: docker.
