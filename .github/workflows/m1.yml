@@ -1,0 +1,43 @@
+name: m1
+# M1 acceptance load: 4 linux-l and 6 linux-s jobs at once, each burning CPU and
+# holding memory for a while so placement, deferral and per-runner metrics show.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "burn duration per job"
+        default: "90"
+
+jobs:
+  large:
+    strategy:
+      fail-fast: false
+      matrix:
+        i: [1, 2, 3, 4]
+    runs-on: pumasi-linux-l
+    timeout-minutes: 20
+    steps:
+      - name: burn 2 cpus and ~2G
+        run: |
+          echo "runner=$RUNNER_NAME class=linux-l job=${{ matrix.i }} nproc=$(nproc)"
+          end=$(( $(date +%s) + ${{ inputs.seconds }} ))
+          for n in 1 2; do (while [ "$(date +%s)" -lt "$end" ]; do :; done) & done
+          (head -c 2000M /dev/zero; sleep ${{ inputs.seconds }}) | tail > /dev/null &
+          wait
+          echo "done runner=$RUNNER_NAME"
+  small:
+    strategy:
+      fail-fast: false
+      matrix:
+        i: [1, 2, 3, 4, 5, 6]
+    runs-on: pumasi-linux-s
+    timeout-minutes: 20
+    steps:
+      - name: burn 1 cpu and ~600M
+        run: |
+          echo "runner=$RUNNER_NAME class=linux-s job=${{ matrix.i }} nproc=$(nproc)"
+          end=$(( $(date +%s) + ${{ inputs.seconds }} ))
+          (while [ "$(date +%s)" -lt "$end" ]; do :; done) &
+          (head -c 600M /dev/zero; sleep ${{ inputs.seconds }}) | tail > /dev/null &
+          wait
+          echo "done runner=$RUNNER_NAME"

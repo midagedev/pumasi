@@ -1,0 +1,39 @@
+# pumasi-controller configuration (example). Copy it, put your own ssh aliases in,
+# and run: PUMASI_GITHUB_TOKEN=... pumasi-controller -config pumasi.yaml
+url: https://github.com/OWNER/REPO        # registration URL (repo, org or enterprise)
+image: ghcr.io/actions/actions-runner:2.338.2
+ledger: pumasi.db
+eventLog: events.jsonl
+
+evaluateEvery: 10s       # periodic re-evaluation (serves deferred jobs without new messages)
+provisionTimeout: 3m     # placement -> "Listening for Jobs"
+idleTimeout: 5m          # listening -> JobStarted
+hostLostAfter: 2m        # agent unreachable this long -> its runners are lost
+psiCPUThreshold: 40      # no new runners on a host whose cpu PSI some avg10 is at or above this
+
+classes:
+  - name: linux-s
+    scaleSet: pumasi-linux-s
+    labels: [pumasi-linux-s, self-hosted]
+    cpus: 1
+    memory: 1G
+    maxRunners: 10
+  - name: linux-l
+    scaleSet: pumasi-linux-l
+    labels: [pumasi-linux-l, self-hosted]
+    cpus: 2
+    memory: 3G
+    maxRunners: 10
+    # hosts: [server1]   # restrict a class to some hosts (default: all)
+
+hosts:
+  - name: server1
+    ssh: my-linux-server     # ssh destination; the controller runs ssh -L to the agent's loopback port
+    agentPort: 7391
+    kind: server             # server | desktop (servers are filled first)
+    budget: {cpus: 4, memory: 6G}
+  - name: desk1
+    ssh: my-desktop-wsl
+    agentPort: 7391
+    kind: desktop
+    budget: {cpus: 6, memory: 9G}
