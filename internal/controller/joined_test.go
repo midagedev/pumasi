@@ -124,7 +124,10 @@ func TestJoinedHostIsAHostLikeAnyOther(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no kick after a host joined")
 	}
-	c.syncJoined(true)
+	// It becomes a host with its first connection.
+	for end := time.Now().Add(3 * time.Second); len(c.hosts) == 0 && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		c.syncJoined(true)
+	}
 	if len(c.hosts) != 1 || c.hosts[0].cfg.Name != "desk1" || c.hosts[0].cfg.Budget.CPUs != 2 {
 		t.Fatalf("hosts %+v", c.hosts)
 	}

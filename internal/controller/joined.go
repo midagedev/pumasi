@@ -155,10 +155,15 @@ func (c *Controller) syncJoined(announce bool) {
 			continue
 		}
 		l := newJoinLink(c.join, m)
-		hosts = append(hosts, &host{cfg: mh, started: true, tr: l, agent: l.Agent()})
 		if announce {
+			// Registered a moment ago: it becomes a host with its first connection,
+			// not an unreachable one in between.
+			if !l.peer.Link().Connected {
+				continue
+			}
 			c.log.Info(fmt.Sprintf("host %s joined  budget %gcpu/%s", m.Name, m.CPUs, gib(m.Mem)))
 		}
+		hosts = append(hosts, &host{cfg: mh, started: true, tr: l, agent: l.Agent()})
 	}
 	c.hostsMu.Lock()
 	c.hosts = hosts

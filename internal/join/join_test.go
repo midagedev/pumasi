@@ -154,7 +154,7 @@ func TestControllerRestartHostDialsAgain(t *testing.T) {
 	if got, err := get(t, s2.Peer(hc.ID)); err != nil || got != "hello from desk1" {
 		t.Fatalf("%q %v", got, err)
 	}
-	if len(states) == 0 || states[0] != "controller exited" {
+	if len(states) == 0 || states[0] != "the controller closed the connection" {
 		t.Fatalf("the host saw %q", states)
 	}
 }

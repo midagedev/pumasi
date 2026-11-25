@@ -256,7 +256,7 @@ func (h *Host) connect(ctx context.Context) (bool, string) {
 	}
 	_ = srv.Close()
 	_ = sess.Close()
-	return true, wc.why("controller")
+	return true, wc.why("the controller closed the connection")
 }
 
 // upgrade switches to the controller's build. When that fails the host stays

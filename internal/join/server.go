@@ -366,7 +366,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	s.Changed()
 	go func() {
 		<-sess.CloseChan()
-		if p.drop(sess, wc.why("agent")) {
+		if p.drop(sess, wc.why("agent exited")) {
 			s.Changed()
 		}
 	}()

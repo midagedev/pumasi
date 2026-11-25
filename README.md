@@ -2,7 +2,8 @@
 
 셀프호스트 GitHub Actions 러너를 이미 가진 머신들(Linux 서버, 사람이 쓰는 데스크톱의 WSL)에 나눠 띄운다.
 호스트마다 빌려줄 상한을 정해 두면, 잡이 올 때 자리가 있는 곳에 일회용 러너를 띄우고 끝나면 지운다.
-노트북에서 바이너리 하나를 실행하면 된다. 호스트에는 ssh 와 Docker 만 있으면 되고 설치할 것이 없다.
+노트북에서 바이너리 하나를 실행하면 된다. 호스트는 두 가지로 붙는다: 호스트에서 초대 한 줄을 실행하거나(join),
+노트북이 ssh 로 들어간다. 어느 쪽이든 호스트에 필요한 것은 Docker 뿐이다.
 
 ## 빠른 시작
 
@@ -81,6 +82,46 @@ linux-s  2     no host with 1.0cpu/1.0G free (desk1 0.0cpu/1.0G, server1 0.0cpu/
 
 `pumasi down` 만 전부 지운다: 호스트의 pumasi 컨테이너·에이전트·`~/.cache/pumasi`, GitHub 의 scale set. 러너가 떠 있으면 목록을 보이고 거부한다(`--force` 로 강행).
 
+## 호스트가 스스로 붙기 (join)
+
+노트북이 호스트에 ssh 로 닿지 못하거나 ssh 설정을 호스트마다 맞추기 싫으면 방향을 뒤집는다. 호스트가 노트북으로 연결을 연다([설계](docs/join.md)).
+
+```yaml
+# pumasi.yaml — hosts: 는 없어도 되고, 섞어 써도 된다
+url: https://github.com/OWNER/REPO
+listen: 0.0.0.0:7411
+classes:
+  - {name: linux-s, cpus: 1, memory: 1G}
+```
+
+```
+$ pumasi up            # 다른 터미널에서
+$ pumasi invite
+Run this on the host that should join:
+
+  curl -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.sh | sh -s -- <token>
+```
+
+그 한 줄을 호스트에서 실행하면 호스트가 붙기 전에 하나씩 확인하고, 막힌 것을 이름으로 말한다:
+
+```
+ok    resolve 10.0.0.5
+ok    tcp 10.0.0.5:7411 (3ms)
+ok    controller certificate matches the invite
+ok    token accepted, the name desk1 is free
+ok    docker 27.3.1 reachable as this user
+ok    cgroup v2 with memory and cpu controllers
+
+joined as desk1 (server): lends 6 cpus and 9.0G, runs as the systemd user unit pumasi.service
+```
+
+- 기본은 그 머신의 절반을 hostname 으로 빌려준다. 토큰 뒤에 `--name desk1 --cpus 6 --mem 9G --desktop` 로 바꾼다.
+- 호스트는 초대 줄의 공개키 지문으로만 controller 를 믿고, controller 는 토큰으로 호스트를 받는다. `pumasi invite --rotate` 는 토큰을 바꾸되 이미 붙은 호스트는 그대로 둔다.
+- 연결이 끊기면 호스트가 1~30초 간격으로 다시 건다. 노트북이 꺼져 있어도 도는 잡은 그대로 돌고, 다시 `up` 하면 이어받는다.
+- controller 의 판이 바뀌면 호스트가 새 바이너리를 받아 스스로 바꿔 실행한다. 러너는 건드리지 않는다.
+- 호스트에서 `pumasi doctor` 는 같은 확인에 에이전트·연결 상태를 더해 보여 주고, `pumasi leave` 는 그 호스트에서 pumasi 를 전부 지운다. `pumasi down` 은 붙어 있는 호스트에 같은 일을 시킨다.
+- `pumasi status` 와 대시보드의 Hosts 표에 붙은 방식(`VIA`)·마지막 응답(`SEEN`)·왕복 시간(`RTT`)·에이전트 판(`AGENT`)·마지막으로 끊긴 이유(`LAST DROP`)가 나오고, 호스트 유실 알림에도 이유가 붙는다: `desk1 unreachable for 30s (keepalive timeout) — …`.
+
 ## 대시보드와 알림
 
 `pumasi up` 이 loopback 에 대시보드를 같이 띄운다(`pumasi open`). 문제·호스트·러너·대기·최근 잡 50개·24시간 추이를 한 화면에 보여 주고, 같은 주소의 `/metrics` 는 Prometheus 용이다. 따로 설치하거나 빌드할 것은 없다.
@@ -102,10 +143,10 @@ notify:
 ## 알아 둘 것
 
 - GitHub 토큰은 노트북의 `PUMASI_GITHUB_TOKEN` 에만 있다. 호스트로는 러너 하나짜리 JIT 설정만 간다.
-- 에이전트는 호스트의 loopback 에서만 듣고, 노트북이 `ssh -L` 로 붙는다.
+- ssh 호스트의 에이전트는 loopback 에서만 듣고 노트북이 `ssh -L` 로 붙는다. join 호스트의 에이전트는 어디서도 듣지 않고 노트북의 `listen` 포트로 TLS 연결 하나를 연다. 대시보드와 status 는 어느 쪽이든 loopback 에만 열린다.
 - 장부(SQLite)와 이벤트 로그는 `~/.local/state/pumasi/` 에 쌓인다. 잡마다 cpu 초·메모리 peak·기동 시간이 남는다.
 - 지금은 Linux 호스트(WSL2 포함)와 Docker 러너만 된다. 사람 우선·Mac·VM 은 [설계](docs/design.md)의 다음 단계.
 
 ## 문서
 
-[문제](docs/problem.md) · [설계](docs/design.md) · [견고함](docs/robustness.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)
+[문제](docs/problem.md) · [설계](docs/design.md) · [join](docs/join.md) · [견고함](docs/robustness.md) · [대시보드](docs/dashboard.md) · [M1 계획](docs/m1-plan.md) · [M1 실측](docs/m1-results.md) · [조사](docs/research/)

@@ -204,9 +204,9 @@ func (w *watched) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// why turns the read error into the words shown to people. peer is what the
-// other end is called ("agent", "controller").
-func (w *watched) why(peer string) string {
+// why turns the read error into the words shown to people. closed is what a
+// clean end from the other side means here ("agent exited").
+func (w *watched) why(closed string) string {
 	w.mu.Lock()
 	err := w.e
 	w.mu.Unlock()
@@ -215,7 +215,7 @@ func (w *watched) why(peer string) string {
 		// Nothing arrived, and it was this side's keepalive that gave up.
 		return WhyKeepalive
 	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
-		return peer + " exited"
+		return closed
 	case errors.Is(err, syscall.ECONNRESET):
 		return WhyReset
 	}
