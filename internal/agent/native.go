@@ -534,3 +534,24 @@ func inside(dir, name string) (string, error) {
 	}
 	return p, nil
 }
+
+// runnerLibs is what the runner (a .NET program) loads at start and what its
+// own bin/installdependencies.sh installs: without any one of them it exits
+// before it listens. Each is known by the file name the loader looks for.
+var runnerLibs = []struct{ name, file string }{
+	{"libicu", "libicuuc.so."},
+	{"libssl", "libssl.so."},
+	{"libkrb5", "libgssapi_krb5.so."},
+	{"zlib", "libz.so."},
+	{"libstdc++", "libstdc++.so."},
+}
+
+func missingLibs(cache string) []string {
+	var miss []string
+	for _, l := range runnerLibs {
+		if !strings.Contains(cache, l.file) {
+			miss = append(miss, l.name)
+		}
+	}
+	return miss
+}

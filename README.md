@@ -82,6 +82,7 @@ joined as desk1 (server): lends what it has free, runs as the systemd user unit 
 
 **끄기** — Ctrl-C 는 controller 만 내린다. 도는 잡은 호스트에서 계속 돌고 다음 `up` 이 이어받는다.
 `pumasi down` 이 전부 지운다: 호스트의 러너·에이전트·파일, GitHub 의 scale set. 러너가 떠 있으면 목록을 보이고 거부한다(`--force`).
+러너 이미지는 **pumasi 가 받은 것만** 지운다. 붙기 전부터 있던 이미지는 건드리지 않고, 받은 이미지라도 다른 컨테이너가 쓰고 있으면 남기고 `kept:` 한 줄로 말한다(`pumasi leave` 도 같다).
 호스트 하나만 떼려면 그 호스트에서 `pumasi leave`.
 
 **대신 붙여 주기** — ssh 로 들어갈 수 있는 호스트는 설정에 적어 두면 `up` 이 거기서 초대 줄을 대신 실행한다. 붙은 뒤는 같다.
@@ -129,7 +130,8 @@ classes:
 
 - 러너는 **잡 하나로 끝난다.** 작업 디렉터리·도구 캐시(`setup-node` 등)는 남지 않는다. 잡 사이에 남길 것은 `mounts` 나 native 클래스의 호스트 디렉터리, 캐시 액션에 둔다.
 - `mounts` 가 있으면 작업 디렉터리를 첫 쓰기 가능 mount 안에 둔다 — pnpm·uv·ccache 가 캐시에서 hard link 로 가져올 수 있게.
-- `driver: native`(Linux) 는 systemd user 세션과 cpu·memory 위임, linger 가 필요하다. 없으면 한도 없이 띄우지 않고 대기 사유에 호스트가 이유를 말한다.
+- `driver: native`(Linux) 는 systemd user 세션과 cpu·memory 위임, linger, 그리고 러너가 뜰 때 읽는 라이브러리(libicu·libssl·libkrb5·zlib·libstdc++ — 러너의 `installdependencies.sh` 가 까는 것)가 필요하다. 없으면 띄우지 않고 대기 사유에 호스트가 이유를 말한다. 붙을 때의 확인도 `note` 한 줄로 말한다.
+- native 클래스를 로그인 사용자가 아닌 서비스 계정으로 돌릴 때 러너에게만 보여야 하는 경로는, 그 계정의 systemd 사용자 관리자(`user@<UID>.service`)에 drop-in 으로 `BindPaths=` 를 주면 된다. 에이전트(user unit)와 러너(scope)가 그 마운트를 물려받으므로, 고정 러너의 unit 이 `BindPaths` 로 주던 경로를 호스트 전체를 바꾸지 않고 옮길 수 있다. 그 계정에 linger 가 켜져 있어야 한다.
 - **native 러너는 격리가 약하다**(Mac·Windows 는 늘 native). 잡은 호스트 사용자의 홈·자격·전역 도구를 읽고 바꿀 수 있다. 믿는 레포의 잡에만 쓴다.
 - 러너 판은 `image:` 의 태그를 따른다(기본 `ghcr.io/actions/actions-runner:2.338.2`). Mac·Windows 는 그 태그에서 판 번호만 읽으므로 **`:latest` 로 적으면 Mac·Windows 러너가 뜨지 못한다.** 판은 사람이 올린다.
 

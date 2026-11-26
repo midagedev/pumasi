@@ -90,7 +90,7 @@ func (h *host) running(ctx context.Context) ([]string, error) {
 }
 
 // leave asks a connected host to remove itself: runners, service, files. It
-// returns how many runners that took.
+// returns how many runners that took, and what the host said it kept.
 func (h *host) leave(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/leave", nil)
 	if err != nil {
@@ -102,8 +102,9 @@ func (h *host) leave(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 	var out struct {
-		Containers int    `json:"containers"`
-		Problem    string `json:"problem"`
+		Containers int      `json:"containers"`
+		Kept       []string `json:"kept"`
+		Problem    string   `json:"problem"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("the host did not clean up (%s)", resp.Status)
@@ -111,7 +112,11 @@ func (h *host) leave(ctx context.Context) (string, error) {
 	if out.Problem != "" {
 		return "", fmt.Errorf("the host did not clean up: %s", out.Problem)
 	}
-	return fmt.Sprint(out.Containers), nil
+	did := fmt.Sprintf("agent stopped, %d runners removed, pumasi's files removed", out.Containers)
+	for _, k := range out.Kept {
+		did += "; kept: " + k
+	}
+	return did, nil
 }
 
 func memberHost(m join.Member) config.Host {

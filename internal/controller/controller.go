@@ -1594,10 +1594,7 @@ func (c *Controller) down(ctx context.Context, force bool) error {
 			var err error
 			switch {
 			case h.connected():
-				var n string
-				if n, err = h.leave(cctx); err == nil {
-					did = fmt.Sprintf("agent stopped, %s runners removed, pumasi's files removed", n)
-				}
+				did, err = h.leave(cctx)
 			case h.cfg.SSH != "":
 				did, err = leaveOverSSH(cctx, h.cfg, force)
 			default:

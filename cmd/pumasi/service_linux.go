@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/midagedev/pumasi/internal/agent"
 )
 
 const unitName = "pumasi.service"
@@ -115,8 +117,17 @@ func stopService(p hostPaths, kill bool) {
 	stopLoop(p, kill)
 }
 
-// preflightHost checks what runners need here: docker and cgroup v2.
-func preflightHost(ctx context.Context, say func(bool, string, ...any) bool, _ func(string, ...any)) {
+// preflightHost checks what runners need here: docker and cgroup v2. Whether
+// a class with driver: native can use this host is said too, as a note: the
+// host does not know yet which classes it will be given.
+func preflightHost(ctx context.Context, say func(bool, string, ...any) bool, note func(string, ...any)) {
+	defer func() {
+		if p := agent.NativeProblem(); p != "" {
+			note("driver: native classes will not be placed here: %s", p)
+		} else {
+			say(true, "driver: native classes can run here (systemd user session, linger, the runner's libraries)")
+		}
+	}()
 	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	switch {

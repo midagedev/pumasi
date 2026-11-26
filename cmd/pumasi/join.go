@@ -343,32 +343,37 @@ func runners(ctx context.Context, p hostPaths, all bool) []string {
 	return names
 }
 
-func removeRunners(ctx context.Context, p hostPaths) (int, error) {
+// removeRunners removes the runners and what the driver made besides them.
+// kept names what pumasi put here and could not take away again.
+func removeRunners(ctx context.Context, p hostPaths) (n int, kept []string, err error) {
 	drv, _ := agent.Platform("pumasi", p.dir)
 	cs, err := drv.List(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	for _, c := range cs {
 		if err := drv.Remove(ctx, c.Name); err != nil {
-			return 0, fmt.Errorf("remove runner %s: %w", c.Name, err)
+			return 0, nil, fmt.Errorf("remove runner %s: %w", c.Name, err)
 		}
 	}
 	// Native runners of a class with driver: native live in their own scopes.
 	scopes := sweepScopes()
-	if c, ok := drv.(interface{ Clean(context.Context) }); ok {
-		c.Clean(ctx) // what the driver made besides runners (Linux: the docker: inside image)
+	// What the driver made besides runners (Linux: the docker: inside image, the runner images it pulled).
+	if c, ok := drv.(interface {
+		Clean(context.Context) []string
+	}); ok {
+		kept = c.Clean(ctx)
 	}
 	// The runners' own place, outside p.dir. What cannot be deleted there
 	// (files of root that a job left) stays, and stays said.
 	root := agent.RunnerRoot(p.dir)
 	if err := os.RemoveAll(root); err != nil {
-		fmt.Fprintf(os.Stderr, "pumasi: %s is not removed (%v); delete it by hand\n", root, err)
+		kept = append(kept, fmt.Sprintf("%s is not removed (%v); delete it by hand", root, err))
 	}
 	if runtime.GOOS == "windows" {
 		_ = os.Remove(filepath.Dir(root)) // C:\pm, when no other user has runners there
 	}
-	return len(cs) + scopes, nil
+	return len(cs) + scopes, kept, nil
 }
 
 func tcpWhy(err error) string {
@@ -459,10 +464,13 @@ func runLeave(args []string) error {
 		}
 	}
 	stopService(p, true)
-	n, err := removeRunners(ctx, p)
+	n, kept, err := removeRunners(ctx, p)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("left: agent stopped, %d runners removed, %s; %s\n", n, removeFiles(p), told)
+	for _, k := range kept {
+		fmt.Println("kept:", k)
+	}
 	return nil
 }

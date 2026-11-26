@@ -45,7 +45,9 @@
 | 대시보드의 Job sizes 표와 러너의 now/est 칸 | 미확인 | 코드만. 화면을 열어 보지 않았다 |
 | Windows 에서의 추정·실측 | 미확인 | 빌드와 vet 만 |
 | Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 | 미확인 | 유닛뿐 |
-| native Linux 러너로 실제 잡 | 미확인(이번) | VM 에 libicu 가 없어 러너가 뜨지 못했다(`exited before a job` 3번 → 호스트 격리까지는 설계대로). 가입 전 확인이 libicu 를 보지 않는다 |
+| native Linux 러너로 실제 잡 | 미확인(이번) | VM 에 libicu 가 없어 러너가 뜨지 못한다 |
+| 러너 라이브러리가 없는 호스트에는 native 클래스를 놓지 않는다 | 실물 | libicu 없는 VM: 붙을 때 `note  driver: native classes will not be placed here: the runner cannot start here, it needs libicu (…)`, native 클래스의 잡은 러너를 띄워 보지 않고 대기하며 `WHY` 에 같은 말. 라이브러리가 다 있는 호스트에서 `ok` 가 나오는 쪽은 유닛(`ldconfig -p` 출력 판독)뿐 |
+| 서비스 계정의 `user@<UID>.service` drop-in `BindPaths=` 를 에이전트와 scope 러너가 물려받는다 | 실물 | 11-26, linger 켠 서비스 계정에서 |
 
 ## 줄 (잡 우선순위)
 
@@ -87,6 +89,7 @@
 
 | 동작 | 수준 | 본 것 |
 |---|---|---|
+| 떠날 때 러너 이미지: pumasi 가 받은 것만 지운다 | 실물 | VM. 받은 이미지 → `leave` 뒤 없음(이미지 수가 붙기 전과 같음). 붙기 전부터 있던 이미지 → 기록 없음, `leave` 뒤 그대로. 받은 이미지를 남의 컨테이너가 쓰는 중 → `down` 이 `kept: image … stays: … container … is using its referenced image` 라 말하고 남김 |
 | 메모리 한도(컨테이너, native Linux, `docker: inside`) | 실물 | 넘은 프로세스만 137 로 죽고 잡은 실패로 보고, OOM 사건, peak = 한도. 한도가 클래스 크기였던 판에서 본 것이고, 지금 판(`limit`)은 컨테이너만 다시 봤다 |
 | Windows 메모리 한도 | 실물 | 할당이 거절되고 사건, peak = 한도 |
 | Windows CPU 한도의 강제 | 미확인 | |

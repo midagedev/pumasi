@@ -172,6 +172,8 @@ func (l *Leftover) Error() string { return fmt.Sprintf("%s could not be deleted:
 // Docker drives the docker CLI. Only containers carrying label pumasi=<Tag> are touched.
 type Docker struct {
 	Tag string
+	// Dir is the agent's directory; the list of images pumasi pulled is kept there.
+	Dir string
 }
 
 const (
@@ -183,6 +185,10 @@ const (
 )
 
 func (d Docker) Start(ctx context.Context, s Spec) error {
+	// docker run would pull a missing image by itself, and nobody would know it was pumasi's.
+	if err := d.ensure(ctx, s.Image); err != nil {
+		return err
+	}
 	cpus := strconv.FormatFloat(s.CPUs, 'f', -1, 64)
 	mem := strconv.FormatInt(s.MemBytes, 10)
 	args := []string{"run", "-d", "--name", s.Name,
@@ -310,13 +316,56 @@ func innerImage(ctx context.Context, image string) (string, error) {
 	return tag, nil
 }
 
-// Clean removes the images pumasi built on this host (docker: inside). The
-// runner image itself was pulled, not made, and stays in docker's cache.
-func (d Docker) Clean(ctx context.Context) {
+// Clean removes the images pumasi put on this host: the ones it built (docker:
+// inside) and the runner images it pulled itself. An image that was here
+// before pumasi is not touched, and one that something else still uses stays
+// (no force); kept names those.
+func (d Docker) Clean(ctx context.Context) (kept []string) {
 	out, _ := exec.CommandContext(ctx, "docker", "images", "-q", "--filter", "reference="+innerImageRepo).Output()
 	if ids := strings.Fields(string(out)); len(ids) > 0 {
 		_ = exec.CommandContext(ctx, "docker", append([]string{"rmi"}, ids...)...).Run()
 	}
+	for _, image := range d.pulled() {
+		if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Run() != nil {
+			continue // already gone
+		}
+		if out, err := exec.CommandContext(ctx, "docker", "rmi", image).CombinedOutput(); err != nil {
+			kept = append(kept, fmt.Sprintf("image %s stays: %s", image, lastLine(out)))
+		}
+	}
+	return kept
+}
+
+// pulledFile lists the images pumasi pulled here, one a line.
+func (d Docker) pulledFile() string { return filepath.Join(d.Dir, "images-pulled") }
+
+func (d Docker) pulled() []string {
+	if d.Dir == "" {
+		return nil
+	}
+	b, _ := os.ReadFile(d.pulledFile())
+	return strings.Fields(string(b))
+}
+
+// ensure makes image present, and remembers the ones it had to pull: only
+// those are pumasi's to remove when the host leaves.
+func (d Docker) ensure(ctx context.Context, image string) error {
+	if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Run() == nil {
+		return nil
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "pull", "-q", image).CombinedOutput(); err != nil {
+		return fmt.Errorf("cannot pull %s: %s", image, lastLine(out))
+	}
+	if d.Dir == "" || slices.Contains(d.pulled(), image) {
+		return nil
+	}
+	f, err := os.OpenFile(d.pulledFile(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil // the image is there; only the note that it is ours is lost
+	}
+	defer f.Close()
+	_, _ = f.WriteString(image + "\n")
+	return nil
 }
 
 // removeWorkDir deletes a runner's work directory on the host. What the job
@@ -390,13 +439,7 @@ func (d Docker) Check(ctx context.Context, image string) error {
 	if out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
 		return fmt.Errorf("docker does not answer: %s", lastLine(out))
 	}
-	if exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Run() == nil {
-		return nil
-	}
-	if out, err := exec.CommandContext(ctx, "docker", "pull", "-q", image).CombinedOutput(); err != nil {
-		return fmt.Errorf("cannot pull %s: %s", image, lastLine(out))
-	}
-	return nil
+	return d.ensure(ctx, image)
 }
 
 func lastLine(b []byte) string {

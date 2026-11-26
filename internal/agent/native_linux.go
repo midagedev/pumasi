@@ -252,7 +252,24 @@ func findNativeProblem() string {
 	if _, err := os.Stat("/var/lib/systemd/linger/" + name); err != nil {
 		return fmt.Sprintf("runners would end when %s logs out: run loginctl enable-linger %s", name, name)
 	}
+	if miss := MissingRunnerLibs(); len(miss) > 0 {
+		return "the runner cannot start here, it needs " + strings.Join(miss, ", ") + " (as root: the distribution's packages, or bin/installdependencies.sh of an unpacked actions/runner)"
+	}
 	return ""
+}
+
+// MissingRunnerLibs names the shared libraries a process runner needs and the
+// loader here does not know. Nothing is named when the loader cannot be asked.
+func MissingRunnerLibs() []string {
+	ldconfig := "ldconfig"
+	if _, err := exec.LookPath(ldconfig); err != nil {
+		ldconfig = "/sbin/ldconfig" // not in a user's PATH on some distributions
+	}
+	out, err := exec.Command(ldconfig, "-p").Output()
+	if err != nil {
+		return nil
+	}
+	return missingLibs(string(out))
 }
 
 func yield(map[string]*tree, bool) {}

@@ -185,7 +185,7 @@ ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전�
 ### native 러너
 
 - **Linux**: `systemd-run --user --scope --unit=pumasi-<러너>` 안의 `run.sh`. systemd-run 이 자신을 scope 에 넣고 나서 러너의 셸이 되므로 러너는 무엇을 띄우기 전부터 한도 아래다.
-  띄울 수 없는 호스트는 스스로 말한다(systemd user 세션 없음, cpu·memory 미위임, linger 꺼짐) — 그 호스트에는 native 클래스를 놓지 않고 대기 사유에 그 말이 나온다.
+  띄울 수 없는 호스트는 스스로 말한다(systemd user 세션 없음, cpu·memory 미위임, linger 꺼짐, 러너가 읽는 라이브러리 없음 — `ldconfig -p` 에 묻는다) — 그 호스트에는 native 클래스를 놓지 않고 대기 사유에 그 말이 나온다.
   잡이 호스트 docker 로 띄운 컨테이너는 이 cgroup 밖이다.
 - **러너 루트는 홈 밖이다**: Linux `/var/tmp/pumasi-<uid>`, Mac `/Users/Shared/pumasi-<uid>`, Windows `C:\pm\<SID 끝자리>`. 잡 로그에 호스트 사용자의 홈 경로가 나오지 않고
   Windows 에서는 경로가 짧다(260자 한계). 그 자리가 이미 남의 것이면 `~/.cache/pumasi/runners` 를 쓴다.

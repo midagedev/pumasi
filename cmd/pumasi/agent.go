@@ -102,8 +102,8 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 	})
 	// The controller's `down`: remove everything pumasi put here, then end.
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, r *http.Request) {
-		n, err := removeRunners(r.Context(), p)
-		out := map[string]any{"containers": n}
+		n, kept, err := removeRunners(r.Context(), p)
+		out := map[string]any{"containers": n, "kept": kept}
 		if err != nil {
 			out["problem"] = err.Error()
 		} else {
