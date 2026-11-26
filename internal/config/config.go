@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,6 +47,11 @@ type Config struct {
 	// Listen: the address every host dials, the hosts of hosts: too. Default
 	// DefaultListen: all of this machine's addresses.
 	Listen string `yaml:"listen"`
+	// Dashboard: where the dashboard, its JSON and /metrics are served.
+	// Nothing there asks who is reading, so keep it on loopback and open it
+	// elsewhere through a tunnel or an authenticating proxy. Default
+	// DefaultDashboard: a free loopback port, written to the state directory.
+	Dashboard string `yaml:"dashboard"`
 
 	Classes []Class `yaml:"classes"`
 	Hosts   []Host  `yaml:"hosts"`
@@ -275,11 +281,17 @@ func Load(path string) (*Config, error) {
 	return c, c.validate()
 }
 
-const DefaultListen = "0.0.0.0:7411"
+const (
+	DefaultListen    = "0.0.0.0:7411"
+	DefaultDashboard = "127.0.0.1:0"
+)
 
 func (c *Config) defaults() {
 	if c.Listen == "" {
 		c.Listen = DefaultListen
+	}
+	if c.Dashboard == "" {
+		c.Dashboard = DefaultDashboard
 	}
 	def := func(d *time.Duration, v time.Duration) {
 		if *d == 0 {
@@ -391,6 +403,9 @@ var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 func (c *Config) validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("url is required")
+	}
+	if _, _, err := net.SplitHostPort(c.Dashboard); err != nil {
+		return fmt.Errorf("dashboard: %w (an address like 127.0.0.1:7420)", err)
 	}
 	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
 		return fmt.Errorf("notify.level must be problem, recovered or all")

@@ -8,8 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/midagedev/pumasi/internal/agent"
-	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/ledger"
 )
 
@@ -44,15 +42,10 @@ func (c *Controller) webHandler() http.Handler {
 		reply(w, s, err)
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
-		var snaps []api.Snapshot
-		for _, s := range c.liveStatus().Hosts {
-			if s != nil {
-				snaps = append(snaps, *s)
-			}
-		}
-		slices.SortFunc(snaps, func(a, b api.Snapshot) int { return cmpString(a.Host, b.Host) })
 		w.Header().Set("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")
-		agent.WriteMetrics(w, snaps...)
+		if err := c.writeMetrics(w); err != nil {
+			c.log.Error("metrics", "err", err)
+		}
 	})
 	return mux
 }

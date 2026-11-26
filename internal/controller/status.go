@@ -73,7 +73,7 @@ func addrFile(cfg *config.Config) string { return filepath.Join(cfg.StateDir(), 
 
 // serveStatus answers `pumasi status` on a loopback port written beside the ledger.
 func (c *Controller) serveStatus() (func(), error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", c.cfg.Dashboard)
 	if err != nil {
 		return nil, err
 	}

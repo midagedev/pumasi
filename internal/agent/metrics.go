@@ -12,6 +12,13 @@ import (
 
 // WriteMetrics renders snapshots (one per host) in the OpenMetrics text format.
 func WriteMetrics(w io.Writer, snaps ...api.Snapshot) {
+	WriteHostFamilies(w, snaps...)
+	fmt.Fprintln(w, "# EOF")
+}
+
+// WriteHostFamilies is WriteMetrics without the closing "# EOF", for a
+// writer that has families of its own to add.
+func WriteHostFamilies(w io.Writer, snaps ...api.Snapshot) {
 	family := func(name, typ, help string) {
 		fmt.Fprintf(w, "# TYPE %s %s\n# HELP %s %s\n", name, typ, name, help)
 	}
@@ -75,8 +82,10 @@ func WriteMetrics(w io.Writer, snaps ...api.Snapshot) {
 	runner("pumasi_runner_provision_seconds", "", "gauge", "From start request to the runner listening for jobs.", func(r api.Runner) (float64, bool) {
 		return float64(r.ProvisionMs) / 1000, r.ListeningAt != nil
 	})
-	fmt.Fprintln(w, "# EOF")
 }
+
+// MetricLabel is one label pair, the value escaped as OpenMetrics wants it.
+func MetricLabel(k, v string) string { return label(k, v) }
 
 func label(k, v string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)

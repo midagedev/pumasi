@@ -613,6 +613,37 @@ type FinishedJob struct {
 	OOMKills    int     `json:"oomKills"`
 }
 
+// JobTotal is how many jobs the runners of a class finished with one result
+// (GitHub's, or "exit-N" when only the runner's exit was seen), and how long
+// those jobs ran in all.
+type JobTotal struct {
+	Class, Result string
+	Jobs          int
+	Seconds       float64
+}
+
+// JobTotals are the finished jobs of the whole ledger by class and result:
+// counters that only grow while the ledger is kept.
+func (l *Ledger) JobTotals() ([]JobTotal, error) {
+	rows, err := l.db.Query(`SELECT class, result, COUNT(*),
+	    ROUND(COALESCE(SUM(MAX(0, (julianday(finished_at)-julianday(started_at))*86400)), 0), 1)
+	  FROM runners WHERE result IS NOT NULL AND result != '' AND started_at IS NOT NULL AND finished_at IS NOT NULL
+	  GROUP BY 1, 2 ORDER BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobTotal
+	for rows.Next() {
+		var t JobTotal
+		if err := rows.Scan(&t.Class, &t.Result, &t.Jobs, &t.Seconds); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // RecentJobs are the newest runners that are over, newest first.
 func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 	rows, err := l.db.Query(`SELECT r.name, r.class, r.host, COALESCE(r.job,''), COALESCE(r.repo,''), COALESCE(r.run_id,0),

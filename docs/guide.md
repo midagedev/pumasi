@@ -239,7 +239,16 @@ rerun: 1                              # 우리 쪽 잘못으로 실패한 run �
 ## 대시보드
 
 `pumasi up` 이 loopback 에 웹 화면을 같이 띄운다(`pumasi open`). 문제 · 호스트 · 러너 · 대기와 사유 · 최근 잡 50개(대기·실행 시간, cpu 초, 메모리 peak, 로그 끝) · 24시간 추이를 한 화면에 보여 준다.
-같은 주소의 `/metrics` 는 Prometheus 용이다. 읽기 전용이고 밖으로 열지 않는다.
+주소는 기본으로 비어 있는 loopback 포트이고, 다른 도구가 읽게 하려면 설정의 `dashboard: 127.0.0.1:7420` 으로 고정한다.
+**읽는 사람을 묻지 않으므로** loopback 에 두고, 밖에서 볼 때는 ssh 터널이나 인증하는 프록시를 앞에 둔다.
+
+| 경로 | 내용 |
+|---|---|
+| `/api/state` | 호스트 · 러너 · 대기 · overflow · 잰 잡 크기 · 사건 · 경고 |
+| `/api/jobs` | 최근 잡 50개 |
+| `/api/job?runner=` | 러너 하나의 결정 이력과 로그 끝 |
+| `/api/series` | 24시간 추이 |
+| `/metrics` | OpenMetrics(Prometheus). 호스트·러너 수치(`pumasi_host_*`, `pumasi_runner_*`)와 controller 의 것: `pumasi_host_reachable`, `pumasi_runners{class,host,state}`, `pumasi_jobs_waiting{class}`, `pumasi_jobs_waiting_oldest_seconds`, `pumasi_overflow_take`/`_held`, `pumasi_incidents_open`, `pumasi_jobs_total{class,result}`, `pumasi_job_seconds_total{class,result}`(장부가 남아 있는 동안 늘기만 한다) |
 
 ## controller 를 계속 켜 두기
 

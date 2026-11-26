@@ -1,6 +1,7 @@
 # Copy to pumasi.yaml, then: make && PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi up
 url: https://github.com/OWNER/REPO         # repo, org or enterprise
 listen: 0.0.0.0:7411                       # where hosts connect (the default); `pumasi invite` prints the line that joins one
+# dashboard: 127.0.0.1:7420               # the dashboard, its JSON and /metrics (default: a free loopback port). No login: keep it on loopback
 
 # A class is a kind of runner: runs-on: [self-hosted, pumasi-<name>]. No sizes: pumasi measures
 # what each job uses and places its next run by that.
