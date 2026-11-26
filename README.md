@@ -162,6 +162,36 @@ estimate build: 0.4cpu/1.8G -> 0.4cpu/3.2G after a run that held 2.7G (learned f
 호스트의 `budget` 과 초대 줄의 `--cpus`·`--mem` 은 필수에서 상한으로 바뀌었고, 초대 줄의 기본은 "머신의 절반"에서 "비어 있는 만큼"이 되었다(이미 붙은 호스트는 다시 붙일 때까지 전의 값을 상한으로 쥐고 있다).
 `up` 은 뜰 때 클래스마다 지금의 뜻을 한 줄로 말한다.
 
+## 잡 우선순위
+
+자리가 모자랄 때 누구에게 먼저 줄지를 규칙으로 정한다. 자리가 넉넉하면 아무 일도 하지 않는다. **도는 잡은 건드리지 않는다**(밀어내지 않는다).
+
+```yaml
+priority:                                   # 위에서부터, 처음 맞는 규칙이 그 잡의 등급이다
+  - {match: {workflow: "deploy-*.yml"}, level: high}
+  - {match: {event: schedule}, level: low}
+  - {match: {class: e2e, branch: "release/*"}, level: high}
+# priorityHeadStart: 30m                    # 기본값
+```
+
+- `match` 의 키: `class`, `event`(push · pull_request · schedule · workflow_dispatch …)는 그대로 비교하고, `workflow`(파일 이름) · `job`(GitHub 이 보여 주는 잡 이름) · `repo` · `ref` · `branch` 는 glob 이다. 적은 키가 모두 맞아야 한다.
+- `level` 은 `high` · `normal` · `low`. **high 는 30분(`priorityHeadStart`) 먼저 온 것으로, low 는 30분 늦게 온 것으로 친다.** 줄은 그렇게 친 시각 순이다.
+  그래서 굶는 잡이 없다: 30분 넘게 기다린 normal 잡은 방금 온 high 잡보다 앞이고, low 잡도 30분이 지나면 새로 온 normal 잡보다 앞이다.
+- **바꾸면 바로 적용된다.** 돌고 있는 `up` 이 설정 파일이 바뀐 것을 보고 `priority` 와 `priorityHeadStart` 만 다시 읽는다(다음 평가, 10초 안. 로그에 `priority: 3 rules read again …`). 파일이 틀리면 전의 규칙을 그대로 쓰고 경고한다. 다른 키는 `up` 을 다시 띄워야 바뀐다.
+- `pumasi priority` 가 규칙과 지금 기다리는 잡의 줄을 보여 준다. `pumasi status` 의 `WAITING` 은 줄 순서대로 나오고 `LINE` 칸이 그 자리에 선 이유를 말한다.
+- 높은 잡이 자리가 없어 기다리는 동안, 그 잡이 갈 수 있는 호스트에는 그보다 낮은 잡을 새로 놓지 않는다(같은 등급끼리는 전처럼 작은 잡이 빈틈을 채운다).
+
+**클래스 안에서는 순서를 바꾸지 못한다.** GitHub 은 scale set(클래스) 안의 잡을 온 순서대로 러너에게 주고, 어느 러너가 어느 잡을 받을지는 정할 수 없다([잰 것](docs/verified.md#github-쪽에서-잰-것)).
+그래서 규칙이 실제로 바꾸는 것은 **어느 클래스가 러너를 먼저 받느냐**다. 같은 클래스에서 high 잡보다 앞에 선 잡들은 그 잡과 함께 당겨진다 — 그 잡이 차례를 받으려면 앞의 잡이 먼저 나가야 하기 때문이다:
+
+```
+WAITING  JOBS  LINE                                                                   WHY
+build    2     1: ahead of deploy in its class, which is high by rule 1 (job: deploy)  no host with 2.0cpu/4.0G free (…)
+nightly  1     2                                                                       no host with 2.0cpu/4.0G free (…)
+```
+
+배포처럼 꼭 먼저 가야 하는 잡은 자기 클래스(`runs-on`)를 따로 주는 것이 가장 분명하다. 자리를 아예 남겨 두려면 `reserve`.
+
 ## 기존 고정 러너에서 옮기기
 
 워크플로우를 고치지 않고 옮길 수 있다. 클래스에 고정 러너의 라벨을 그대로 적는다:

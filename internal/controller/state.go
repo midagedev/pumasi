@@ -92,6 +92,10 @@ type WaitingState struct {
 	Class  string `json:"class"`
 	Jobs   int    `json:"jobs"`
 	Reason string `json:"reason"`
+	// Order: the class's place in the line for room (1 = next), and why when
+	// a priority rule put it there ("" = by its age). 0 = no controller to say.
+	Order    int    `json:"order"`
+	Priority string `json:"priority"`
 	// How long the oldest open job of the class has waited.
 	OldestSeconds int64 `json:"oldestSeconds"`
 }
@@ -205,8 +209,8 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		return 0
 	}
 	if ok {
-		for _, w := range live.Waiting {
-			out.Waiting = append(out.Waiting, WaitingState{Class: w.Class, Jobs: w.Jobs, Reason: w.Reason, OldestSeconds: oldest(w.Class)})
+		for i, w := range live.Waiting {
+			out.Waiting = append(out.Waiting, WaitingState{Class: w.Class, Jobs: w.Jobs, Reason: w.Reason, Order: i + 1, Priority: w.Priority, OldestSeconds: oldest(w.Class)})
 		}
 		return out, nil
 	}

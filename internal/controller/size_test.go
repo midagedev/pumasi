@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +126,44 @@ func TestLimits(t *testing.T) {
 		if cpus, mem := limits(tt.cl, tt.budget, tt.machine); cpus != tt.cpus || mem != tt.mem {
 			t.Errorf("%s: %g/%d", tt.name, cpus, mem)
 		}
+	}
+}
+
+// The priority rules are read again when the config file changes, without a
+// restart; a file that does not load leaves the rules in force.
+func TestPriorityRulesAreReadAgain(t *testing.T) {
+	r := newRig(t)
+	p := filepath.Join(t.TempDir(), "pumasi.yaml")
+	write := func(body string, age time.Duration) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte("url: u\nclasses: [{name: small}]\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(age) // file times can be coarse: make each write a different one
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("", -3*time.Minute)
+	r.cfg.Path = p
+	r.reloadPriority() // the file `up` started with
+	job := config.WaitingJob{Class: "small", WorkflowRef: "o/r/.github/workflows/deploy-prod.yml@refs/heads/main"}
+	if level, _ := r.cfg.LevelOf(job); level != 0 {
+		t.Fatalf("level %d before any rule", level)
+	}
+	write("priority:\n  - {match: {workflow: \"deploy-*.yml\"}, level: high}\npriorityHeadStart: 1h\n", -2*time.Minute)
+	r.reloadPriority()
+	if level, why := r.cfg.LevelOf(job); level != 1 || r.cfg.PriorityHeadStart != time.Hour {
+		t.Fatalf("after the edit: level %d (%s), head start %s", level, why, r.cfg.PriorityHeadStart)
+	}
+	write("priority:\n  - {match: {workflow: \"deploy-*.yml\"}, level: urgent}\n", -time.Minute)
+	r.reloadPriority()
+	if level, _ := r.cfg.LevelOf(job); level != 1 {
+		t.Errorf("a file that does not load took the rules away")
+	}
+	write("", 0)
+	r.reloadPriority()
+	if level, _ := r.cfg.LevelOf(job); level != 0 || r.cfg.PriorityHeadStart != config.DefaultHeadStart {
+		t.Errorf("rules removed from the file are still in force")
 	}
 }

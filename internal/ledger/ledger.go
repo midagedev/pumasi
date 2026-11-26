@@ -113,7 +113,9 @@ func Open(path string) (*Ledger, error) {
 		// est_*: what placement counted on for this runner; est_runs = finished runs it was learned from.
 		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER",
 		// limit_mem: the memory limit the OS held the runner to (NULL or 0 = none).
-		"runners ADD COLUMN limit_mem INTEGER"} {
+		"runners ADD COLUMN limit_mem INTEGER",
+		// event: what triggered the job's run (push, schedule, …), for the priority rules.
+		"demand ADD COLUMN event TEXT"} {
 		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("schema: %w", err)
@@ -314,6 +316,7 @@ func (l *Ledger) MarkUnregistered(name string) error {
 // Job describes a job from a listener message.
 type Job struct {
 	ID, Class, Repo, Workflow, Name, Labels string
+	Event                                   string // push, pull_request, schedule, workflow_dispatch, …
 	RunID                                   int64
 	QueueTime                               time.Time
 }
@@ -346,11 +349,11 @@ func (l *Ledger) JobCompleted(runner string, j Job, result string, at time.Time)
 // with a new job id; the earlier, unassigned row of the same run and job name
 // lends its first_seen and count so waiting time and order survive.
 func (l *Ledger) UpsertDemand(j Job, at time.Time) error {
-	return l.exec(`INSERT INTO demand(job_id, class, repo, workflow, job, run_id, labels, queue_time, first_seen, last_seen, assigned_count)
-	  SELECT ?,?,?,?,?,?,?,?, COALESCE(MIN(first_seen), ?), ?, COUNT(*)+1
+	return l.exec(`INSERT INTO demand(job_id, class, repo, workflow, job, run_id, labels, event, queue_time, first_seen, last_seen, assigned_count)
+	  SELECT ?,?,?,?,?,?,?,?,?, COALESCE(MIN(first_seen), ?), ?, COUNT(*)+1
 	  FROM demand WHERE run_id=? AND job=? AND class=? AND served_by LIKE 'unassigned-%'
 	  ON CONFLICT(job_id) DO UPDATE SET last_seen=excluded.last_seen`,
-		j.ID, j.Class, j.Repo, j.Workflow, j.Name, j.RunID, j.Labels, ts(j.QueueTime), ts(at), ts(at), j.RunID, j.Name, j.Class)
+		j.ID, j.Class, j.Repo, j.Workflow, j.Name, j.RunID, j.Labels, j.Event, ts(j.QueueTime), ts(at), ts(at), j.RunID, j.Name, j.Class)
 }
 
 func (l *Ledger) CloseDemand(jobID, servedBy string, at time.Time) error {
@@ -365,12 +368,13 @@ func (l *Ledger) CloseOpenDemand(servedBy string, at time.Time) error {
 type Demand struct {
 	JobID, Class, Repo  string
 	Workflow, Job       string
+	Event               string
 	RunID               int64
 	FirstSeen, LastSeen time.Time
 }
 
 func (l *Ledger) OpenDemand() ([]Demand, error) {
-	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(run_id,0), first_seen, last_seen FROM demand WHERE closed_at IS NULL ORDER BY first_seen`)
+	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(event,''), COALESCE(run_id,0), first_seen, last_seen FROM demand WHERE closed_at IS NULL ORDER BY first_seen`)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +383,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 	for rows.Next() {
 		var d Demand
 		var first, last sql.NullString
-		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.RunID, &first, &last); err != nil {
+		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.Event, &d.RunID, &first, &last); err != nil {
 			return nil, err
 		}
 		d.FirstSeen, d.LastSeen = parseTS(first), parseTS(last)

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMinimalConfigDefaults(t *testing.T) {
@@ -183,6 +184,54 @@ func TestClassEnvAndPath(t *testing.T) {
 	} {
 		if err := load(bad); err == nil {
 			t.Errorf("accepted %s", bad)
+		}
+	}
+}
+
+func TestPriorityRules(t *testing.T) {
+	load := func(rules string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: [{name: a}]\npriority:\n"+rules), 0o600)
+		return Load(p)
+	}
+	c, err := load(`  - {match: {workflow: "deploy-*.yml"}, level: high}
+  - {match: {event: schedule}, level: low}
+  - {match: {class: e2e, branch: "release/*"}, level: high}
+  - {match: {job: "lint*"}, level: low}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		job   WaitingJob
+		level int
+		why   string
+	}{
+		{WaitingJob{Class: "a", Repo: "o/r", WorkflowRef: "o/r/.github/workflows/deploy-prod.yml@refs/heads/main", Name: "ship", Event: "push"}, 1, "high by rule 1 (workflow: deploy-*.yml)"},
+		{WaitingJob{Class: "a", WorkflowRef: "o/r/.github/workflows/ci.yml@refs/heads/main", Name: "build", Event: "schedule"}, -1, "low by rule 2 (event: schedule)"},
+		// The first rule that matches counts: a scheduled deploy is a deploy.
+		{WaitingJob{Class: "a", WorkflowRef: "o/r/.github/workflows/deploy-x.yml@refs/heads/main", Event: "schedule"}, 1, "high by rule 1 (workflow: deploy-*.yml)"},
+		{WaitingJob{Class: "e2e", WorkflowRef: "o/r/.github/workflows/e2e.yml@refs/heads/release/2026-04", Event: "push"}, 1, "high by rule 3 (class: e2e, branch: release/*)"},
+		{WaitingJob{Class: "e2e", WorkflowRef: "o/r/.github/workflows/e2e.yml@refs/pull/7/merge", Event: "pull_request"}, 0, ""},
+		{WaitingJob{Class: "a", WorkflowRef: "o/r/.github/workflows/ci.yml@refs/heads/x", Name: "lint (go)"}, -1, "low by rule 4 (job: lint*)"},
+		{WaitingJob{Class: "a"}, 0, ""}, // a job known only from the count has no name to match
+	}
+	for _, tt := range tests {
+		if level, why := c.LevelOf(tt.job); level != tt.level || why != tt.why {
+			t.Errorf("%+v: %d %q, want %d %q", tt.job, level, why, tt.level, tt.why)
+		}
+	}
+	if c.PriorityHeadStart != 30*time.Minute {
+		t.Errorf("head start %s", c.PriorityHeadStart)
+	}
+	for rules, want := range map[string]string{
+		"  - {match: {event: push}, level: urgent}\n": "high, normal or low",
+		"  - {level: high}\n":                         "at least one",
+		"  - {match: {job: \"[\"}, level: low}\n":     "bad pattern",
+		"  - {match: {label: x}, level: low}\n":       "label",
+	} {
+		if _, err := load(rules); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err %v, want %q", rules, err, want)
 		}
 	}
 }

@@ -99,16 +99,24 @@ type Demand struct {
 	CPUs     float64
 	MemBytes int64
 	Sized    string
+	// Name is the job's name for people ("" = not known).
+	Name string
+	// Level is the job's place in line while room is short: 1 high, 0 normal,
+	// -1 low. Ranked says which rule gave it ("" = none).
+	Level  int
+	Ranked string
 }
 
 type Snapshot struct {
-	Now              time.Time
-	Hosts            []Host
-	Classes          []Class
-	Demand           []Demand
-	Runners          []Runner
-	PSICPUThreshold  float64
-	PSIMemThreshold  float64
+	Now             time.Time
+	Hosts           []Host
+	Classes         []Class
+	Demand          []Demand
+	Runners         []Runner
+	PSICPUThreshold float64
+	PSIMemThreshold float64
+	// HeadStart: a job of level L is placed as if it had come L*HeadStart earlier.
+	HeadStart        time.Duration
 	ProvisionTimeout time.Duration
 	IdleTimeout      time.Duration
 	HostLostAfter    time.Duration
@@ -131,6 +139,9 @@ type Defer struct {
 	Class  string
 	Count  int
 	Reason string
+	// Priority: why the class's next job stands where it does in line
+	// ("" = by its age alone). Defers come in the order of the line.
+	Priority string
 }
 
 type Plan struct {
@@ -179,18 +190,7 @@ func Decide(s Snapshot) Plan {
 	}
 
 	// 2. Demand not covered by a runner that is starting or idle: the newest jobs of each class.
-	byClass := map[string][]Demand{}
-	for _, d := range s.Demand {
-		byClass[d.Class] = append(byClass[d.Class], d)
-	}
-	var open []Demand
-	for c, ds := range byClass {
-		sort.Slice(ds, func(i, j int) bool { return less(ds[i], ds[j]) })
-		if n := covering[c]; n < len(ds) {
-			open = append(open, ds[n:]...)
-		}
-	}
-	sort.Slice(open, func(i, j int) bool { return less(open[i], open[j]) })
+	open := Line(s.Demand, covering, s.HeadStart)
 
 	// 3. Oldest job first; a smaller class may fill a gap a bigger one cannot use.
 	hostNames := make([]string, 0, len(hosts))
@@ -199,15 +199,24 @@ func Decide(s Snapshot) Plan {
 	}
 	sort.Strings(hostNames)
 	deferIdx := map[string]int{}
+	var d Demand
 	deferred := func(class, reason string) {
 		if i, ok := deferIdx[class]; ok {
 			p.Defer[i].Count++
 			return
 		}
 		deferIdx[class] = len(p.Defer)
-		p.Defer = append(p.Defer, Defer{Class: class, Count: 1, Reason: reason})
+		p.Defer = append(p.Defer, Defer{Class: class, Count: 1, Reason: reason, Priority: d.Ranked})
 	}
-	for _, d := range open {
+	// kept: hosts where a job waits for room. No job of a lower level is
+	// started there meanwhile: it would take the room the other waits for.
+	// Running jobs are never touched for it.
+	type keep struct {
+		level int
+		class string
+	}
+	kept := map[string]keep{}
+	for _, d = range open {
 		c, ok := classes[d.Class]
 		if !ok {
 			deferred(d.Class, "unknown class")
@@ -223,7 +232,7 @@ func Decide(s Snapshot) Plan {
 			needCPU, needMem = d.CPUs, float64(d.MemBytes)
 		}
 		best, bestSlots := "", -1.0
-		var why []string
+		var why, short []string
 		lacking := "" // a path no host that could otherwise take the class has
 		for _, hn := range c.Hosts {
 			if _, ok := hosts[hn]; !ok {
@@ -245,6 +254,11 @@ func Decide(s Snapshot) Plan {
 				continue
 			case freeCPU+1e-9 < needCPU || freeMem < needMem:
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
+				short = append(short, hn)
+				continue
+			}
+			if k, ok := kept[hn]; ok && k.level > d.Level {
+				why = append(why, fmt.Sprintf("%s kept for a %s job of %s", hn, levelName(k.level), k.class))
 				continue
 			}
 			if r := reservedFor(s, c, hn, needCPU, needMem, hosts, alloc, live); r != "" {
@@ -268,6 +282,11 @@ func Decide(s Snapshot) Plan {
 				why = append(why, "no allowed host")
 			}
 			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
+			for _, hn := range short {
+				if k, ok := kept[hn]; !ok || d.Level > k.level {
+					kept[hn] = keep{d.Level, c.Name}
+				}
+			}
 			continue
 		}
 		h := hosts[best]
@@ -275,6 +294,9 @@ func Decide(s Snapshot) Plan {
 		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", needCPU, gib(needMem), freeCPU, gib(freeMem))
 		if d.Sized != "" {
 			reason += " " + d.Sized
+		}
+		if d.Ranked != "" {
+			reason += "; " + d.Ranked
 		}
 		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: needCPU, MemBytes: int64(needMem)})
 		a := alloc[best]
@@ -430,6 +452,66 @@ func better(h Host, slots float64, cur Host, curSlots float64) bool {
 		return h.Kind == "server"
 	}
 	return slots > curSlots+1e-9
+}
+
+// Line is the waiting jobs in the order they are given room. covering says
+// how many runners of each class are up without a job yet: that many of the
+// class's oldest jobs are theirs and not in the line.
+func Line(demand []Demand, covering map[string]int, headStart time.Duration) []Demand {
+	byClass := map[string][]Demand{}
+	for _, d := range demand {
+		byClass[d.Class] = append(byClass[d.Class], d)
+	}
+	var open []Demand
+	for c, ds := range byClass {
+		sort.Slice(ds, func(i, j int) bool { return less(ds[i], ds[j]) })
+		inherit(ds)
+		if n := covering[c]; n < len(ds) {
+			open = append(open, ds[n:]...)
+		}
+	}
+	sort.Slice(open, func(i, j int) bool { return before(open[i], open[j], headStart) })
+	return open
+}
+
+// inherit gives a class's waiting jobs (oldest first) the level of the most
+// urgent job behind them. GitHub hands a class's jobs to its runners oldest
+// first, whichever job a runner was started for: an urgent job is served only
+// after those before it, so they move up with it.
+func inherit(ds []Demand) {
+	for i := len(ds) - 2; i >= 0; i-- {
+		if next := ds[i+1]; next.Level > ds[i].Level {
+			ds[i].Level = next.Level
+			name := next.Name
+			if name == "" {
+				name = "a job"
+			}
+			ds[i].Ranked = "ahead of " + name + " in its class, which is " + next.Ranked
+			if strings.HasPrefix(next.Ranked, "ahead of ") {
+				ds[i].Ranked = next.Ranked // the same job further back pulls both
+			}
+		}
+	}
+}
+
+// before is the line: by age, a job of level L counting as headStart*L older.
+// However high a job's level, one that has waited long enough goes first.
+func before(a, b Demand, headStart time.Duration) bool {
+	ta, tb := a.FirstSeen.Add(-time.Duration(a.Level)*headStart), b.FirstSeen.Add(-time.Duration(b.Level)*headStart)
+	if !ta.Equal(tb) {
+		return ta.Before(tb)
+	}
+	return less(a, b)
+}
+
+func levelName(l int) string {
+	switch {
+	case l > 0:
+		return "high"
+	case l < 0:
+		return "low"
+	}
+	return "normal"
 }
 
 func less(a, b Demand) bool {

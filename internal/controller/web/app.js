@@ -80,7 +80,8 @@ function renderState(s) {
     td(String(j.runs), "num"))), "sizes-empty");
 
   fill("waiting", s.waiting.map((w) => el("tr", {},
-    td(w.class, "waiting"), td(String(w.jobs), "num"), td(dur(w.oldestSeconds), "num"), td(w.reason || "-", "wrap"))), "waiting-empty");
+    td(w.class, "waiting"), td(String(w.jobs), "num"), td(dur(w.oldestSeconds), "num"),
+    td(w.order ? w.order + (w.priority ? ": " + w.priority : "") : "-", "wrap"), td(w.reason || "-", "wrap"))), "waiting-empty");
 }
 
 // Results: GitHub's word for a job; a runner that never got one shows why it ended.

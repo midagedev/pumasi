@@ -37,6 +37,9 @@ type Waiting struct {
 	Class  string `json:"class"`
 	Jobs   int    `json:"jobs"`
 	Reason string `json:"reason"`
+	// Priority: why the class's next job stands where it does in line ("" = by its age).
+	// The list is in the order of the line.
+	Priority string `json:"priority,omitempty"`
 }
 
 func (c *Controller) setStatus(defers []decide.Defer) {
@@ -49,7 +52,7 @@ func (c *Controller) setStatus(defers []decide.Defer) {
 		}
 	}
 	for _, d := range defers {
-		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason})
+		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason, Priority: d.Priority})
 	}
 	c.mu.Lock()
 	c.status = st

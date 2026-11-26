@@ -131,13 +131,14 @@ func printStatus(w io.Writer, s controller.State) {
 	if len(s.Waiting) == 0 {
 		fmt.Fprintln(w, "no jobs waiting")
 	} else {
-		fmt.Fprintln(tw, "WAITING\tJOBS\tWHY")
+		// In the order of the line: the first class gets the next room that fits it.
+		fmt.Fprintln(tw, "WAITING\tJOBS\tLINE\tWHY")
 		for _, wt := range s.Waiting {
-			reason := wt.Reason
-			if reason == "" {
-				reason = "-"
+			line := "-"
+			if wt.Order > 0 {
+				line = strconv.Itoa(wt.Order) + cond(wt.Priority != "", ": "+wt.Priority, "")
 			}
-			fmt.Fprintf(tw, "%s\t%d\t%s\n", wt.Class, wt.Jobs, reason)
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", wt.Class, wt.Jobs, line, dash(wt.Reason))
 		}
 		tw.Flush()
 	}

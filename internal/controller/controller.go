@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -57,6 +58,8 @@ type Controller struct {
 	// Runners whose start request the agent has not answered yet (zero), or
 	// answered at that time: a snapshot asked for before then cannot show them.
 	inflight map[string]time.Time
+	// cfgRead: the config file's modification time when its priority rules were last read.
+	cfgRead time.Time
 	// sized: what each waiting job was taken to need in the last decision (under mu).
 	sized       map[string]size.Estimate
 	starts      sync.WaitGroup
@@ -465,7 +468,7 @@ func job(class string, j scaleset.JobMessageBase) ledger.Job {
 	}
 	return ledger.Job{
 		ID: j.JobID, Class: class, Repo: j.OwnerName + "/" + j.RepositoryName,
-		Workflow: j.JobWorkflowRef, Name: j.JobDisplayName, RunID: j.WorkflowRunID,
+		Workflow: j.JobWorkflowRef, Name: j.JobDisplayName, RunID: j.WorkflowRunID, Event: j.EventName,
 		Labels: strings.Join(j.RequestLabels, ","), QueueTime: queued,
 	}
 }
@@ -480,6 +483,7 @@ func orNow(t, now time.Time) time.Time {
 // Evaluate is one reconciliation round: read agents, update the ledger, decide, act.
 func (c *Controller) Evaluate(ctx context.Context) {
 	now := c.now()
+	c.reloadPriority()
 	c.syncJoined(true)
 	c.refreshHosts(ctx, now)
 
@@ -729,6 +733,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 
 func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) decide.Snapshot {
 	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold, PSIMemThreshold: c.cfg.PSIMemThreshold,
+		HeadStart:        c.cfg.PriorityHeadStart,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
 		if h.snap != nil {
@@ -762,7 +767,8 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	perClass := map[string]int{}
 	c.sized = map[string]size.Estimate{}
 	for _, d := range open {
-		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen}
+		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen, Name: d.Job}
+		dd.Level, dd.Ranked = c.cfg.LevelOf(config.WaitingJob{Class: d.Class, Repo: d.Repo, WorkflowRef: d.Workflow, Name: d.Job, Event: d.Event})
 		if cl := c.classByName(d.Class); cl != nil {
 			est := c.estimate(cl.cfg, ledger.KeyOf(d.Repo, d.Workflow, d.Job))
 			c.sized[d.JobID] = est
@@ -786,6 +792,35 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		}
 	}
 	return s
+}
+
+// reloadPriority takes the config file's priority rules again when the file
+// has changed, so the line can be reordered without stopping `up`. Nothing
+// else of the file is read again. A file that does not load keeps the rules
+// in force and says so once.
+func (c *Controller) reloadPriority() {
+	fi, err := os.Stat(c.cfg.Path)
+	if c.cfg.Path == "" || err != nil || fi.ModTime().Equal(c.cfgRead) {
+		return
+	}
+	first := c.cfgRead.IsZero()
+	c.cfgRead = fi.ModTime()
+	if first {
+		return // the config `up` started with
+	}
+	fresh, err := config.Load(c.cfg.Path)
+	if err != nil {
+		c.log.Warn("the config changed but does not load; the priority rules stay as they were", "err", err)
+		return
+	}
+	if reflect.DeepEqual(fresh.Priority, c.cfg.Priority) && fresh.PriorityHeadStart == c.cfg.PriorityHeadStart {
+		return
+	}
+	c.mu.Lock()
+	c.cfg.Priority, c.cfg.PriorityHeadStart = fresh.Priority, fresh.PriorityHeadStart
+	c.mu.Unlock()
+	c.log.Info(fmt.Sprintf("priority: %d rules read again from %s (head start %s); they order the jobs waiting now", len(fresh.Priority), c.cfg.Path, fresh.PriorityHeadStart))
+	c.decision(c.now(), "", "", "priority", "", fmt.Sprintf("%d rules, head start %s", len(fresh.Priority), fresh.PriorityHeadStart))
 }
 
 // estimate is what a job is expected to use: learned from its last measured

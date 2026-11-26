@@ -48,6 +48,17 @@ type Config struct {
 
 	Classes []Class `yaml:"classes"`
 	Hosts   []Host  `yaml:"hosts"`
+
+	// Priority: which waiting jobs get a runner first while room is short.
+	// The first rule that matches a job counts. A running `pumasi up` reads
+	// this key again when the file changes; the rest of the file needs a restart.
+	Priority []PriorityRule `yaml:"priority"`
+	// PriorityHeadStart: a high job is placed as if it had come this much
+	// earlier, a low one as if this much later (default 30m).
+	PriorityHeadStart time.Duration `yaml:"priorityHeadStart"`
+
+	// Path is the file the config was read from.
+	Path string `yaml:"-"`
 }
 
 // Notify says where problems are announced. Both may be set.
@@ -201,6 +212,7 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	c.Path = path
 	c.defaults()
 	return c, c.validate()
 }
@@ -220,6 +232,7 @@ func (c *Config) defaults() {
 	def(&c.ProvisionTimeout, 3*time.Minute)
 	def(&c.HostLostAfter, 2*time.Minute)
 	def(&c.WaitAlert, 10*time.Minute)
+	def(&c.PriorityHeadStart, DefaultHeadStart)
 	c.IdleTimeout, c.DemandTTL, c.PSICPUThreshold, c.PSIMemThreshold = 5*time.Minute, 24*time.Hour, 40, 10
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
@@ -325,6 +338,11 @@ func (c *Config) validate() error {
 	}
 	if len(c.Classes) == 0 {
 		return fmt.Errorf("at least one class is required")
+	}
+	for i, r := range c.Priority {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("priority rule %d: %w", i+1, err)
+		}
 	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {

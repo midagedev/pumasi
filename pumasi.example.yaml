@@ -19,6 +19,9 @@ classes:
 #   - {ssh: server1}                                                     # lends what it has free, as measured
 #   - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}          # someone works there: used last, theirs first; budget caps what it lends
 
+# priority:                                # who gets room first while it is short; the first match counts; no running job is stopped
+#   - {match: {workflow: "deploy-*.yml"}, level: high}                    # counts as having come 30m earlier
+#   - {match: {event: schedule}, level: low}                              # as having come 30m later
 # rerun: 1                                 # rerun a run's failed jobs once after a failure on pumasi's side
 # notify: {webhook: https://hooks.example/…}   # or command: my-notify --stdin; problems and their end, one line each
 # image: ghcr.io/actions/actions-runner:2.338.2   # the runner version; keep a version tag, not :latest

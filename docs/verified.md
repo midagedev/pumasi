@@ -47,6 +47,20 @@
 | Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 | 미확인 | 유닛뿐 |
 | native Linux 러너로 실제 잡 | 미확인(이번) | VM 에 libicu 가 없어 러너가 뜨지 못했다(`exited before a job` 3번 → 호스트 격리까지는 설계대로). 가입 전 확인이 libicu 를 보지 않는다 |
 
+## 줄 (잡 우선순위)
+
+| 동작 | 수준 | 본 것 |
+|---|---|---|
+| high 클래스의 잡이 먼저 온 다른 클래스의 잡보다 먼저 러너를 받는다, low 는 나중 | 실물(Linux VM, 한 번에 러너 하나) | build 3 · nightly 1 · deploy 1 을 이 순서로 쌓고 `{class: deploy} high`, `{job: hold (21)} low`: 시작 순서 build → **deploy** → build → build → nightly |
+| 도는 중에 규칙을 바꾸면 바로 적용된다 | 실물 | 잡이 쌓인 뒤 파일에 규칙을 넣자 9초 안에 `priority: 2 rules read again …`, `status` 의 줄이 build·nightly·deploy → deploy·build·nightly |
+| 같은 클래스에서 high 잡 앞의 잡이 함께 당겨진다 | 실물 | 먼저 온 nightly 잡보다 build 의 두 잡(뒤의 것이 high)이 먼저 나감. `LINE` 에 `ahead of hold (42) in its class, which is high by rule 3` |
+| `pumasi priority`, `status` 의 LINE 칸 | 실물 | |
+| 30분 넘게 기다린 잡이 high 보다 앞, low 도 30분 뒤에는 앞(굶지 않음) | 유닛 | 표 테스트. 실물로 30분을 기다려 보지 않았다 |
+| 기다리는 높은 잡의 호스트를 낮은 잡에게서 지키기, 같은 등급의 빈틈 채우기 | 유닛 | |
+| 도는 잡을 건드리지 않는다 | 유닛 + 실물 | 실물에서 규칙을 바꿀 때 돌던 잡은 끝까지 돌았다 |
+| 틀린 규칙 파일은 전의 규칙을 유지 | 유닛 | |
+| 대시보드 Waiting 의 Line 칸 | 미확인 | 화면을 열어 보지 않았다 |
+
 ## 호스트가 붙는 법
 
 | 동작 | 수준 | 본 것 |
@@ -135,3 +149,7 @@
 | 잡 도중 러너가 사라짐 | 약 9분 40초 뒤 잡이 `failure`. 그동안 등록은 지울 수 없다. 자동 재시도 없음 |
 | 폐기된 러너 판 | 접속 직후 종료 코드 0 으로 끝난다 |
 | `JobStarted` 메시지 | 러너가 잡을 잡은 뒤 30 ~ 50초 늦다 |
+| `JobAvailable` 과 `AcquireJobs` (11-26) | github.com 에서는 오지 않는다. 지금까지의 메시지 250여 개와 손으로 연 세션 모두에서 잡은 `JobAssigned` 로 바로 왔고(`runnerRequestId` 0, `totalAvailableJobs` 늘 0) acquire 할 것이 없었다. **일부만 acquire 해서 고르는 길은 없다** |
+| 배정된 잡이 러너에게 나가는 순서 (11-26) | 배정된 순서. 잡 4개가 1 · 2 · 4 · 3 순으로 배정된 뒤 러너를 하나씩 띄우자 1 · 2 · 4 · 3 순으로 받았다. pumasi 가 「이 잡을 위해」 띄운 러너도 그 클래스의 가장 오래된 잡을 받는다(한 scale set 안에서 순서를 고를 수 없다) |
+| `GetMessage` 의 `maxCapacity` (11-26) | 그 scale set 에 배정되는 잡 수의 상한이고 도는 잡도 센다. 1 로 두고 잡 3개: 하나만 배정, 그 잡이 끝난 뒤 다음 poll 에서 다음 것이 배정. 100초짜리 잡이 도는 66초 동안 다음 잡은 배정되지 않았다 |
+| 상한 때문에 배정되지 않은 잡 (11-26) | `queued` 로 남고 통계에도 안 잡힌다(`totalAvailableJobs` 0). 같은 라벨의 둘째 scale set 을 열자 1초 뒤 그쪽으로 배정됐고, 같은 라벨의 일반 등록 러너를 붙이자 듣기 시작한 3초 뒤 그 러너가 받았다. (상한 없이 배정된 잡은 위 줄대로 고정 러너로 가지 않는다) |

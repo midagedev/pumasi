@@ -30,12 +30,14 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (refuses while jobs run, unless --force)
   pumasi invite  print the line that joins a host to this controller
                  (one host within the hour; --uses N and --ttl 24h say otherwise)
+  pumasi priority  the config's priority rules and where they put the jobs waiting now
+                 (edit the rules in the config; a running up reads them again by itself)
 
 On a host that joined:
   pumasi doctor  check the way to the controller, what runners need here, and the agent
   pumasi leave   remove this host from the controller and pumasi from this host
 
-Flags: -config pumasi.yaml (up, status, open, down, invite), -v (up: verbose log).
+Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log).
 up and down read the GitHub token from PUMASI_GITHUB_TOKEN.
 `
 
@@ -59,6 +61,8 @@ func main() {
 		err = runAgent(args)
 	case "invite":
 		err = runInvite(args)
+	case "priority":
+		err = runPriority(args)
 	case "join":
 		err = runJoin(args)
 	case "doctor":

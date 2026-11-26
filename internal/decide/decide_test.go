@@ -543,3 +543,105 @@ func TestNoRunnerIsStoppedForItsSize(t *testing.T) {
 		}
 	}
 }
+
+// Priority only orders the line for room that is short. It never stops a
+// runner, and nobody waits forever behind it.
+func TestPriority(t *testing.T) {
+	// Room for exactly one runner of either class.
+	tight := func() Host {
+		return Host{Name: "h1", Kind: "server", Up: true, CPUs: 2, MemBytes: 4 * gb}
+	}
+	job := func(id, class string, ago time.Duration, level int) Demand {
+		d := Demand{ID: id, Name: id, Class: class, FirstSeen: t0.Add(-ago), Level: level}
+		if level != 0 {
+			d.Ranked = levelName(level) + " by rule 1"
+		}
+		return d
+	}
+	small := Class{Name: "small", CPUs: 2, MemBytes: 3 * gb}
+	other := Class{Name: "other", CPUs: 2, MemBytes: 3 * gb}
+	big := Class{Name: "big", CPUs: 2, MemBytes: 16 * gb}
+	busy := Runner{Name: "r1", Class: "small", Host: "h1", State: "busy", JobKnown: true, Container: "running", Working: true,
+		CreatedAt: t0, ListeningAt: t0, JobStartedAt: t0, CPUs: 2, MemBytes: 3 * gb}
+	tests := []struct {
+		name    string
+		host    Host
+		demand  []Demand
+		runners []Runner
+		starts  []string // class of each start, in order
+		defers  []string // "class: priority" in the order of the line
+		reason  string   // in the first defer's reason
+	}{
+		{name: "no rules: the oldest job first",
+			demand: []Demand{job("new", "other", time.Minute, 0), job("old", "small", 2*time.Minute, 0)},
+			starts: []string{"small"}, defers: []string{"other: "}},
+		{name: "a high job goes before an older normal one",
+			demand: []Demand{job("deploy", "other", time.Minute, 1), job("build", "small", 20*time.Minute, 0)},
+			starts: []string{"other"}, defers: []string{"small: "}},
+		{name: "but not before one that has waited longer than the head start",
+			demand: []Demand{job("deploy", "other", time.Minute, 1), job("build", "small", 40*time.Minute, 0)},
+			starts: []string{"small"}, defers: []string{"other: high by rule 1"}},
+		{name: "a low job waits behind newer normal ones",
+			demand: []Demand{job("nightly", "other", 20*time.Minute, -1), job("build", "small", time.Minute, 0)},
+			starts: []string{"small"}, defers: []string{"other: low by rule 1"}},
+		{name: "and is not starved: after the head start it is first again",
+			demand: []Demand{job("nightly", "other", 40*time.Minute, -1), job("build", "small", time.Minute, 0)},
+			starts: []string{"other"}, defers: []string{"small: "}},
+		{name: "jobs before a high job in its class move up with it: GitHub serves the class oldest first",
+			demand: []Demand{job("lint", "small", 3*time.Minute, 0), job("deploy", "small", time.Minute, 1), job("build", "other", 10*time.Minute, 0)},
+			starts: []string{"small"}, defers: []string{"small: high by rule 1", "other: "}},
+		{name: "room for everything: levels change nothing",
+			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 64 * gb},
+			demand: []Demand{job("nightly", "other", time.Minute, -1), job("deploy", "small", time.Minute, 1), job("build", "small", time.Minute, 0)},
+			starts: []string{"small", "small", "other"}},
+		{name: "a high job waiting for room keeps that host from lower jobs",
+			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
+			demand: []Demand{job("release", "big", time.Minute, 1), job("build", "small", 5*time.Minute, 0)},
+			defers: []string{"big: high by rule 1", "small: "}, reason: "no host with 2.0cpu/16.0G free"},
+		{name: "jobs of the same level still fill the gap",
+			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
+			demand: []Demand{job("release", "big", 10*time.Minute, 0), job("build", "small", 5*time.Minute, 0)},
+			starts: []string{"small"}, defers: []string{"big: "}},
+		{name: "a running job is not touched for a high one",
+			demand: []Demand{job("deploy", "other", time.Minute, 1)}, runners: []Runner{busy},
+			defers: []string{"other: high by rule 1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := tt.host
+			if h.Name == "" {
+				h = tight()
+			}
+			s := snap([]Host{h}, tt.demand, tt.runners)
+			s.Now, s.Classes, s.HeadStart = t0, []Class{small, other, big}, 30*time.Minute
+			p := Decide(s)
+			var gotStarts, gotDefers []string
+			for _, st := range p.Start {
+				gotStarts = append(gotStarts, st.Class)
+			}
+			for _, d := range p.Defer {
+				gotDefers = append(gotDefers, d.Class+": "+d.Priority)
+			}
+			if !reflect.DeepEqual(gotStarts, tt.starts) || !reflect.DeepEqual(gotDefers, tt.defers) || len(p.Stop) != 0 {
+				t.Fatalf("starts %v defers %v stops %v\nwant starts %v defers %v", gotStarts, gotDefers, p.Stop, tt.starts, tt.defers)
+			}
+			if tt.reason != "" && !strings.Contains(p.Defer[0].Reason, tt.reason) {
+				t.Errorf("reason %q", p.Defer[0].Reason)
+			}
+		})
+	}
+}
+
+func TestInheritedLevelSaysWhichJobPulls(t *testing.T) {
+	ds := []Demand{{ID: "a", Name: "lint", Class: "c", FirstSeen: t0}, {ID: "b", Name: "test", Class: "c", FirstSeen: t0.Add(time.Second)},
+		{ID: "c", Name: "deploy", Class: "c", FirstSeen: t0.Add(2 * time.Second), Level: 1, Ranked: "high by rule 1 (workflow: deploy-*.yml)"},
+		{ID: "d", Name: "docs", Class: "c", FirstSeen: t0.Add(3 * time.Second)}}
+	inherit(ds)
+	want := "ahead of deploy in its class, which is high by rule 1 (workflow: deploy-*.yml)"
+	if ds[0].Level != 1 || ds[1].Level != 1 || ds[0].Ranked != want || ds[1].Ranked != want {
+		t.Errorf("before the high job: %+v %+v", ds[0], ds[1])
+	}
+	if ds[3].Level != 0 || ds[3].Ranked != "" {
+		t.Errorf("behind the high job: %+v", ds[3])
+	}
+}
