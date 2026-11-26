@@ -54,7 +54,7 @@ function renderState(s) {
       bar(h.usedMem, h.budgetMem, gib(h.usedMem) + "/" + gib(h.budgetMem)),
       td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"),
       td(h.diskFreePct === null ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
-      td(String(h.runners) + (h.listening ? " +" + h.listening + " listening" : ""), "num"),
+      td(String(h.runners), "num"),
       td(state, state === "ok" ? "muted" : "problem"),
       td(h.seenSeconds === null ? "-" : dur(h.seenSeconds) + " ago", "num opt"),
       td(h.seenSeconds === null ? "-" : Math.round(h.rttMs) + "ms", "num opt"),
@@ -66,21 +66,6 @@ function renderState(s) {
     td(dur(r.ageSeconds), "num opt"),
     td(r.cpuSec ? r.cpuSec.toFixed(0) + "s" : "-", "num opt"),
     r.memBytes ? bar(r.memBytes, r.memLimit, mib(r.memBytes) + "/" + gib(r.memLimit)) : td("-"))), "runners-empty");
-
-  const slots = s.slots || [], unknown = s.unknown || [];
-  $("slots-section").hidden = slots.length === 0;
-  fill("slots", slots.map((x) => {
-    const up = x.state === "off" || x.state === "failing";
-    return el("tr", {},
-      td(x.name), td(x.class + "/" + x.n, "opt"), td(x.host),
-      td(x.state, x.state === "failing" ? "problem" : x.state === "busy" ? "" : "muted"), td(x.job || "-"),
-      td(up ? "-" : dur(x.ageSeconds), "num opt"),
-      td(x.cpuSec ? x.cpuSec.toFixed(0) + "s" : "-", "num opt"),
-      x.memBytes ? bar(x.memBytes, x.memLimit, mib(x.memBytes) + "/" + gib(x.memLimit)) : td("-"),
-      td(x.why || "-", "muted wrap"));
-  }));
-  $("waiting-unknown").hidden = unknown.length === 0;
-  $("waiting-unknown").textContent = unknown.length ? "jobs waiting for " + unknown.join(", ") + ": unknown (GitHub hands them to whichever registered runner listens; pumasi is not told)" : "";
 
   fill("waiting", s.waiting.map((w) => el("tr", {},
     td(w.class, "waiting"), td(String(w.jobs), "num"), td(dur(w.oldestSeconds), "num"), td(w.reason || "-", "wrap"))), "waiting-empty");

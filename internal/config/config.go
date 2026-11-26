@@ -95,27 +95,6 @@ type Class struct {
 	Path []string `yaml:"path"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
-	// Slots makes the class one of registered runners instead of a scale set:
-	// every host keeps up to this many runners of the class, each registered
-	// once with a registration token (`pumasi register`) or taken over from a
-	// fixed runner (`pumasi adopt`). They listen with their own credentials,
-	// so the controller needs no GitHub token for the class and jobs are
-	// served while it is down. 0 = a scale set.
-	Slots int `yaml:"slots"`
-}
-
-// Registered: the class's runners are registered ones kept on the hosts
-// (slots: N), not runners of a scale set made per job.
-func (cl Class) Registered() bool { return cl.Slots > 0 }
-
-// NeedsToken: some class is a scale set, which only a GitHub token can serve.
-func (c *Config) NeedsToken() bool {
-	for _, cl := range c.Classes {
-		if !cl.Registered() {
-			return true
-		}
-	}
-	return false
 }
 
 // Host is a machine the controller makes join by itself: it goes there over
@@ -244,7 +223,7 @@ func (c *Config) defaults() {
 		}
 		if cl.Driver == "" {
 			cl.Driver = "native"
-			if cl.OS == "linux" && !cl.Registered() {
+			if cl.OS == "linux" {
 				cl.Driver = "docker"
 			}
 		}
@@ -359,12 +338,6 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class %s: os must be linux, macos or windows", cl.Name)
 		}
 		switch {
-		case cl.Slots < 0:
-			return fmt.Errorf("class %s: slots must not be negative", cl.Name)
-		case cl.Registered() && cl.Driver != "native":
-			return fmt.Errorf("class %s: slots: runs registered runners as processes of the host's user; leave driver out or set driver: native", cl.Name)
-		case cl.Registered() && cl.OS == "windows":
-			return fmt.Errorf("class %s: slots: is not there for windows hosts yet (leave slots out: a scale set class runs on them)", cl.Name)
 		case cl.Reserve < 0:
 			return fmt.Errorf("class %s: reserve must not be negative", cl.Name)
 		case cl.Driver != "docker" && cl.Driver != "native":

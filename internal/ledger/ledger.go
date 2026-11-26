@@ -292,34 +292,6 @@ func (l *Ledger) MarkUnregistered(name string) error {
 	return l.exec(`UPDATE runners SET unregistered=1 WHERE name=?`, name)
 }
 
-// SlotJob is an ended job of a registered runner (a class with slots:). Such
-// a runner is run by its host alone, so its row is written once, when the
-// job is over, and is never live.
-type SlotJob struct {
-	Name, Class, Host, Job string
-	State, Reason, Result  string
-	ListeningAt            time.Time
-	StartedAt, FinishedAt  time.Time
-	ProvisionMs            int64
-	LogTail                string
-	Usage
-}
-
-// InsertSlotJob records the job unless it is recorded already, and reports
-// whether it was new.
-func (l *Ledger) InsertSlotJob(j SlotJob) (bool, error) {
-	res, err := l.db.Exec(`INSERT OR IGNORE INTO runners(name, class, host, state, reason, created_at, listening_at, provision_ms,
-	    job, started_at, finished_at, result, cpu_sec, mem_peak, io_bytes, exit_code, oom_kills, removed_at, unregistered, log_tail)
-	  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`,
-		j.Name, j.Class, j.Host, j.State, j.Reason, ts(j.StartedAt), ts(j.ListeningAt), j.ProvisionMs,
-		j.Job, ts(j.StartedAt), ts(j.FinishedAt), j.Result, j.CPUSec, j.MemPeak, j.IOBytes, j.ExitCode, j.OOMKills, ts(j.FinishedAt), j.LogTail)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
-}
-
 // Job describes a job from a listener message.
 type Job struct {
 	ID, Class, Repo, Workflow, Name, Labels string

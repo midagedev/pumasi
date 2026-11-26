@@ -27,12 +27,7 @@ type Config struct {
 	BudgetMem  int64
 	Interval   time.Duration
 	StateFile  string // runner records survive an agent restart here ("" = keep nothing)
-	// SlotDir holds the host's registered runners (classes with slots:) and
-	// SlotKeep takes the files of those that stay registered when they are
-	// given up. "" = the host keeps none.
-	SlotDir  string
-	SlotKeep string
-	BootID   string // BootID(): a change means the host rebooted
+	BootID     string // BootID(): a change means the host rebooted
 }
 
 type Agent struct {
@@ -52,11 +47,6 @@ type Agent struct {
 	prevHostUsec uint64
 	prevAt       time.Time
 	dataDir      string // the driver's data directory, asked once
-
-	slots      *slotMgr      // nil = this host keeps no registered runners
-	noSlots    string        // and why
-	loadedJobs []api.SlotJob // from the state file, until the slot manager takes them
-	quiet      bool          // the host is leaving: nothing is written any more
 }
 
 type rec struct {
@@ -65,7 +55,6 @@ type rec struct {
 	pid        int
 	lastUsec   uint64
 	logsSince  time.Time // container output before this was already searched
-	taking     bool      // a slot's run that a job is on its way to
 	rebooted   bool      // loaded from a state file written before the last reboot
 }
 
@@ -89,40 +78,11 @@ func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
 	}
 	a := &Agent{cfg: cfg, drv: drv, met: met, log: log, now: time.Now, recs: map[string]*rec{}}
 	a.load()
-	if cfg.SlotDir != "" {
-		if nat := nativeOf(drv); nat == nil {
-			a.noSlots = "this host's driver runs no runners as processes"
-		} else if a.noSlots = slotsUnsupported; a.noSlots == "" {
-			a.slots = newSlotMgr(a, nat, cfg.SlotDir, cfg.SlotKeep)
-		}
-	}
 	return a
-}
-
-// nativeOf is the process driver behind drv (nil = none).
-func nativeOf(drv Driver) *Native {
-	switch d := drv.(type) {
-	case *Native:
-		return d
-	case interface{ nativeDriver() *Native }:
-		return d.nativeDriver()
-	}
-	return nil
-}
-
-// Quiet makes the agent write nothing more: the host is leaving and its
-// directory is being removed under it.
-func (a *Agent) Quiet() {
-	a.dataMu.Lock()
-	a.quiet = true
-	a.dataMu.Unlock()
 }
 
 // Run samples every Interval until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
-	if a.slots != nil {
-		go a.slots.run(ctx)
-	}
 	t := time.NewTicker(a.cfg.Interval)
 	defer t.Stop()
 	for {
@@ -189,9 +149,6 @@ func (a *Agent) Sample(ctx context.Context) {
 
 		a.dataMu.Lock()
 		r.Class, r.CPUs, r.MemBytes, r.State, r.pid = c.Class, c.CPUs, c.MemBytes, c.State, c.Pid
-		if c.Slot != "" {
-			r.Slot = c.Slot
-		}
 		if !c.StartedAt.IsZero() {
 			r.StartedAt = ptr(c.StartedAt)
 		}
@@ -299,15 +256,9 @@ func ptr[T any](v T) *T { return &v }
 
 // Snapshot returns the last sampled state.
 func (a *Agent) Snapshot() api.Snapshot {
-	var slots []api.Slot
-	var slotJobs []api.SlotJob
-	var slotPlan string
-	if a.slots != nil {
-		slots, slotJobs, slotPlan = a.slots.snapshot()
-	}
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
-	s := api.Snapshot{Slots: slots, SlotJobs: slotJobs, SlotPlan: slotPlan, NoSlots: a.noSlots,
+	s := api.Snapshot{
 		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Closed: a.host.closed, NoNative: a.host.noNative, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
@@ -317,9 +268,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 		s.InputIdleSec = ptr(int64(a.host.inputIdle.Seconds()))
 	}
 	for _, r := range a.recs {
-		if r.Slot == "" { // a slot's run is the host's own business, told under Slots
-			s.Runners = append(s.Runners, r.Runner)
-		}
+		s.Runners = append(s.Runners, r.Runner)
 	}
 	sort.Slice(s.Runners, func(i, j int) bool { return s.Runners[i].Name < s.Runners[j].Name })
 	return s
@@ -339,8 +288,7 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	var cpus float64
 	var mem int64
 	for _, r := range a.recs {
-		// A slot's idle listener holds nothing: it is stopped when the room goes.
-		if r.State != "exited" && r.State != "gone" && (r.Slot == "" || r.taking || r.JobStartedAt != nil) {
+		if r.State != "exited" && r.State != "gone" {
 			cpus += r.CPUs
 			mem += r.MemBytes
 		}
@@ -372,34 +320,6 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 	a.dataMu.Unlock()
 	a.save()
 	return out, nil
-}
-
-// startSlot launches a slot's run. It asks no budget: whether a slot may
-// listen is the slot manager's rule, and a listener holds nothing until it
-// takes a job.
-func (a *Agent) startSlot(ctx context.Context, s Spec) error {
-	received := a.now()
-	a.opMu.Lock()
-	defer a.opMu.Unlock()
-	a.dataMu.Lock()
-	if _, dup := a.recs[s.Name]; dup {
-		a.dataMu.Unlock()
-		return fmt.Errorf("runner %s exists", s.Name)
-	}
-	r := &rec{Runner: api.Runner{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, State: "starting", Slot: s.Slot}, receivedAt: received}
-	a.recs[s.Name] = r
-	a.dataMu.Unlock()
-	err := a.drv.Start(ctx, s)
-	a.dataMu.Lock()
-	if err != nil {
-		delete(a.recs, s.Name)
-		a.dataMu.Unlock()
-		return err
-	}
-	r.State = "created"
-	a.dataMu.Unlock()
-	a.save()
-	return nil
 }
 
 // Delete removes a runner and returns its last values. A running one is
@@ -484,35 +404,6 @@ func (a *Agent) Handler() http.Handler {
 		}
 		a.log.Info("runner deleted", "runner", name, "cpuSec", out.CPUSec, "memPeak", out.MemPeak)
 		writeJSON(w, http.StatusOK, out)
-	})
-	mux.HandleFunc("PUT /v1/slots/plan", func(w http.ResponseWriter, r *http.Request) {
-		var p api.SlotPlan
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if a.slots == nil {
-			http.Error(w, a.noSlots, http.StatusNotImplemented)
-			return
-		}
-		if err := a.slots.setPlan(p); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		a.log.Info("slot plan", "version", p.Version, "classes", len(p.Classes), "closed", p.Closed)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("POST /v1/slots/register", func(w http.ResponseWriter, r *http.Request) {
-		var req api.RegisterRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
-			http.Error(w, "a registration token is required", http.StatusBadRequest)
-			return
-		}
-		if a.slots == nil {
-			writeJSON(w, http.StatusOK, api.RegisterResult{Problem: a.noSlots})
-			return
-		}
-		writeJSON(w, http.StatusOK, a.slots.register(r.Context(), req))
 	})
 	mux.HandleFunc("GET /v1/check", func(w http.ResponseWriter, r *http.Request) {
 		problem := ""

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/midagedev/pumasi/internal/agent"
-	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/join"
 )
 
@@ -46,25 +45,14 @@ func runAgent(args []string) error {
 	exe, _ := os.Executable()
 	version := join.FileVersion(exe)
 	cfg := agent.Config{Host: hc.Name, Kind: hc.Kind, BudgetCPUs: hc.CPUs, BudgetMem: hc.Mem, Interval: *interval, StateFile: *state,
-		Version: shortVersion(version), BootID: agent.BootID(), SlotDir: agent.SlotsDir(filepath.Dir(*state)), SlotKeep: keepDir()}
+		Version: shortVersion(version), BootID: agent.BootID()}
 	drv, meter := agent.Platform(*tag, filepath.Dir(*state))
 	a := agent.New(cfg, drv, meter, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go a.Run(ctx)
-	return serveJoined(ctx, hc, a, exe, version, log)
-}
-
-// keepDir takes the files of registered runners that stay registered on
-// GitHub when this host gives them up. It is outside pumasi's own directory,
-// which `pumasi leave` removes.
-func keepDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "pumasi-runners")
-	}
-	return filepath.Join(home, "pumasi-runners")
+	return serveJoined(ctx, hc, a.Handler(), exe, version, log)
 }
 
 func shortVersion(v string) string {
@@ -77,26 +65,18 @@ func shortVersion(v string) string {
 // serveJoined keeps this host connected to its controller and serves the
 // agent API over that connection. It returns nil only after a leave: any other
 // end makes the service start the agent again.
-func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, version string, log *slog.Logger) error {
+func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler, exe, version string, log *slog.Logger) error {
 	p := paths()
 	left := make(chan struct{})
 	mux := http.NewServeMux()
-	mux.Handle("/", a.Handler())
+	mux.Handle("/", agentAPI)
 	// The controller's `down`: remove everything pumasi put here, then end.
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, r *http.Request) {
-		var req api.LeaveRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		// Idle listeners of registered runners close their sessions first; what
-		// still runs after that goes with the rest (the controller asked first).
-		a.LeaveSlots(r.Context(), p.dir)
 		n, err := removeRunners(r.Context(), p)
-		out := api.LeaveResult{Containers: n}
+		out := map[string]any{"containers": n}
 		if err != nil {
-			out.Problem = err.Error()
+			out["problem"] = err.Error()
 		} else {
-			out.Slots = agent.GiveUpSlots(r.Context(), p.dir, keepDir(), req.RunnerToken)
-			// From here on the agent writes nothing: its directory goes.
-			a.Quiet()
 			stopService(p, false)
 			removeFiles(p)
 		}
@@ -111,11 +91,6 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 	go watch.Run(ctx)
 	h := &join.Host{Config: hc, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Handler: mux, Log: log, Watch: watch,
 		State: func(connected bool, why string) {
-			select {
-			case <-left:
-				return // the directory is gone, and stays gone
-			default:
-			}
 			b, _ := json.Marshal(linkState{Connected: connected, At: time.Now(), Why: why})
 			_ = os.WriteFile(p.state, b, 0o600)
 		},
@@ -135,8 +110,6 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 	h.Run(hctx)
 	select {
 	case <-left:
-		// Once more: whatever was written while the directory was being removed.
-		removeFiles(p)
 		return nil
 	default:
 		return errors.New("agent stopped")

@@ -15,8 +15,6 @@ import (
 type savedState struct {
 	BootID  string        `json:"bootId"`
 	Runners []savedRunner `json:"runners"`
-	// Ended jobs of registered runners that a controller may not have seen yet.
-	SlotJobs []api.SlotJob `json:"slotJobs,omitempty"`
 }
 
 type savedRunner struct {
@@ -42,7 +40,6 @@ func (a *Agent) load() {
 		a.log.Warn("state file unreadable, starting empty", "err", err)
 		return
 	}
-	a.loadedJobs = s.SlotJobs
 	rebooted := s.BootID != "" && a.cfg.BootID != "" && s.BootID != a.cfg.BootID
 	for _, sr := range s.Runners {
 		if sr.State == "starting" { // `docker run` never returned; nothing to keep
@@ -62,16 +59,8 @@ func (a *Agent) save() {
 	if a.cfg.StateFile == "" {
 		return
 	}
-	var jobs []api.SlotJob
-	if a.slots != nil {
-		_, jobs, _ = a.slots.snapshot()
-	}
 	a.dataMu.Lock()
-	if a.quiet {
-		a.dataMu.Unlock()
-		return
-	}
-	s := savedState{BootID: a.cfg.BootID, Runners: make([]savedRunner, 0, len(a.recs)), SlotJobs: jobs}
+	s := savedState{BootID: a.cfg.BootID, Runners: make([]savedRunner, 0, len(a.recs))}
 	for _, r := range a.recs {
 		s.Runners = append(s.Runners, savedRunner{Runner: r.Runner, ReceivedAt: r.receivedAt})
 	}

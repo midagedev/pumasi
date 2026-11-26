@@ -10,8 +10,6 @@ classes:                                   # a class is a runner size: runs-on: 
 # - {name: deploy, cpus: 2, memory: 4G, reserve: 1}                       # room other classes may not take
 # - {name: shared, cpus: 4, memory: 8G, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
 # - {name: macos, cpus: 4, memory: 8G, os: macos}                         # os: macos | windows, on hosts of that OS
-# - {name: fixed, cpus: 4, memory: 8G, slots: 2, labels: [self-hosted, ci]}  # registered runners, 2 per host: no GitHub token on the controller
-#                                          (`pumasi register` once, or `pumasi adopt <dir>` on a host that has such runners)
 
 # hosts:                                   # optional: `up` runs the invite line there over ssh for you
 #   - {ssh: server1, budget: {cpus: 4, memory: 6G}}

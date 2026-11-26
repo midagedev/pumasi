@@ -20,17 +20,7 @@ const distExt = ".tar.gz"
 // runScript is the shell around run.sh ($1 = the runner's directory). It
 // leaves the exit code in a file, because a later agent is not the runner's
 // parent and cannot wait for it.
-const runScript = `cd "$1/runner" && ./run.sh $2; echo $? > "$1/exit.tmp" && mv "$1/exit.tmp" "$1/exit"`
-
-// runArgs is what run.sh gets. A registered runner listens for one job and
-// ends (--once): its copy is then replaced by a fresh one. A scale set's
-// runner is made for one job by its JIT config already.
-func runArgs(s Spec) string {
-	if s.Slot != "" {
-		return "--once"
-	}
-	return ""
-}
+const runScript = `cd "$1/runner" && ./run.sh; echo $? > "$1/exit.tmp" && mv "$1/exit.tmp" "$1/exit"`
 
 // ownDir makes p a directory of this user alone. The places runnerRoot names
 // are open to every user of the machine: one that someone else made first is

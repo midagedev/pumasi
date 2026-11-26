@@ -40,8 +40,8 @@ type tree struct {
 // terminal does not reach it and it goes on when the agent stops. The shell
 // around run.sh leaves the exit code in a file, because a later agent is not
 // its parent and cannot wait for it.
-func startTree(dir string, s Spec, env []string, log *os.File) (*tree, error) {
-	cmd := exec.Command("/bin/sh", "-c", runScript, "sh", dir, runArgs(s))
+func startTree(dir string, _ Spec, env []string, log *os.File) (*tree, error) {
+	cmd := exec.Command("/bin/sh", "-c", runScript, "sh", dir)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

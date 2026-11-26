@@ -47,7 +47,6 @@ type Native struct {
 // meta is pumasi.json.
 type meta struct {
 	Name       string    `json:"name"`
-	Slot       string    `json:"slot,omitempty"`
 	Class      string    `json:"class"`
 	CPUs       float64   `json:"cpus"`
 	MemBytes   int64     `json:"memBytes"`
@@ -80,36 +79,16 @@ func RunnerRoot(cache string) string {
 	return filepath.Join(cache, "runners")
 }
 
-// cloneDist makes dst a copy of the unpacked runner of image's version,
-// fetching it first when it is not there or was changed.
-func (n *Native) cloneDist(ctx context.Context, image, dst string) error {
-	dist, err := n.dist(ctx, image)
-	if err != nil {
-		return err
-	}
-	err = cloneTree(dist, dst)
-	if errors.Is(err, errDistChanged) {
-		// Not run as it is: fetched anew. Runners already up keep their links.
-		_ = os.RemoveAll(dst)
-		_ = removeTree(dist)
-		if dist, err = n.dist(ctx, image); err == nil {
-			err = cloneTree(dist, dst)
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("clone runner: %w", err)
-	}
-	return nil
-}
-
-func (n *Native) problem() string { return nativeProblem() }
-
 // trashDir holds what could not be deleted of removed runners.
 const trashDir = ".trash"
 
 func (n *Native) Start(ctx context.Context, s Spec) error {
 	if !runnerNameRE.MatchString(s.Name) {
 		return fmt.Errorf("bad runner name %q", s.Name)
+	}
+	dist, err := n.dist(ctx, s.Image)
+	if err != nil {
+		return err
 	}
 	dir := n.dir(s.Name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -119,29 +98,30 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 		_ = os.RemoveAll(dir)
 		return err
 	}
-	if err := n.cloneDist(ctx, s.Image, filepath.Join(dir, "runner")); err != nil {
-		return fail(err)
+	err = cloneTree(dist, filepath.Join(dir, "runner"))
+	if errors.Is(err, errDistChanged) {
+		// Not run as it is: fetched anew. Runners already up keep their links.
+		_ = os.RemoveAll(filepath.Join(dir, "runner"))
+		_ = removeTree(dist)
+		if dist, err = n.dist(ctx, s.Image); err == nil {
+			err = cloneTree(dist, filepath.Join(dir, "runner"))
+		}
+	}
+	if err != nil {
+		return fail(fmt.Errorf("clone runner: %w", err))
 	}
 	log, err := os.OpenFile(filepath.Join(dir, "log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fail(err)
 	}
 	defer log.Close()
-	env := classEnv(runnerEnv(os.Environ()), s, dir)
-	if s.install != nil {
-		// A registered runner: its credentials are files in its directory.
-		if err := s.install(filepath.Join(dir, "runner")); err != nil {
-			return fail(fmt.Errorf("slot %s: %w", s.Slot, err))
-		}
-	} else {
-		// The JIT config goes through the environment so it never lands on disk or in argv.
-		env = append(env, "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
-	}
+	// The JIT config goes through the environment so it never lands on disk or in argv.
+	env := append(classEnv(runnerEnv(os.Environ()), s, dir), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
 	t, err := startTree(dir, s, env, log)
 	if err != nil {
 		return fail(fmt.Errorf("start runner: %w", err))
 	}
-	m := meta{Name: s.Name, Slot: s.Slot, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, Pid: t.pid, Born: t.born, StartedAt: time.Now()}
+	m := meta{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, Pid: t.pid, Born: t.born, StartedAt: time.Now()}
 	if err := writeMeta(dir, m); err != nil {
 		t.kill()
 		return fail(err)
@@ -182,7 +162,7 @@ func (n *Native) List(context.Context) ([]Container, error) {
 	cs := make([]Container, 0, len(metas))
 	for _, m := range metas {
 		t := n.trees[m.Name]
-		c := Container{ID: m.Name, Name: m.Name, Slot: m.Slot, Class: m.Class, CPUs: m.CPUs, MemBytes: m.MemBytes,
+		c := Container{ID: m.Name, Name: m.Name, Class: m.Class, CPUs: m.CPUs, MemBytes: m.MemBytes,
 			State: "running", Pid: m.Pid, StartedAt: m.StartedAt}
 		if !t.alive() {
 			if m.FinishedAt.IsZero() {

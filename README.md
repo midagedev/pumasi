@@ -94,29 +94,6 @@ hosts:
 
 그 호스트가 `listen` 주소에 닿지 못하면 `up` 이 `server1 cannot reach this controller at …` 로 말한다.
 
-**토큰 없이 돌리기** — 클래스에 `slots: N` 을 적으면 scale set 대신 **등록 러너**로 돈다. 호스트마다 러너를 N개까지 한 번 등록해 두고,
-그 뒤로는 러너가 자기 자격으로 직접 잡을 받는다. controller 에 GitHub 토큰을 두지 않고, controller 가 꺼져 있어도 잡은 돈다.
-
-```yaml
-classes:
-  - {name: build, cpus: 4, memory: 8G, slots: 2}   # 호스트마다 2개까지. runs-on: [self-hosted, pumasi-build]
-```
-
-```sh
-./dist/pumasi up                                   # 모든 클래스가 slots: 면 PUMASI_GITHUB_TOKEN 이 필요 없다
-# 호스트를 붙인 뒤(위 3), 등록 토큰을 한 번 넘긴다. 1시간짜리이고 러너 등록에만 쓰인다
-gh api -X POST repos/OWNER/REPO/actions/runners/registration-token -q .token | ./dist/pumasi register
-```
-
-```
-desk1  registered build-desk1-1, build-desk1-2
-```
-
-- 등록 토큰은 GitHub 의 Settings > Actions > Runners > "New self-hosted runner" 화면에 나오는 `--token` 값과 같은 것이다. 인자로는 받지 않는다(stdin 이나 `PUMASI_RUNNER_TOKEN`).
-  controller 는 토큰을 붙어 있는 호스트에 넘기기만 하고 적어 두지 않는다. 러너의 자격 파일은 그 호스트에만 남는다.
-- 잡마다 깨끗한 러너 사본으로 돈다(작업 디렉터리는 잡이 끝나면 사본째 지운다). 등록(이름·id·라벨)은 그대로 남는다.
-- scale set 클래스와 한 설정에 섞어도 된다. 그때는 scale set 때문에 토큰이 필요하다. 달라지는 것은 [클래스](#클래스) 아래 「등록 러너」.
-
 ## 클래스
 
 클래스는 러너의 크기와 종류다. 클래스 하나가 GitHub 의 scale set 하나(`pumasi-<이름>`)이고, 잡은 `runs-on` 으로 클래스를 고른다.
@@ -135,7 +112,6 @@ desk1  registered build-desk1-1, build-desk1-2
 | `path` | native 러너의 `PATH` 앞에 붙일 디렉터리(고정 러너의 `.path`). 컨테이너 클래스에는 못 적는다 | 없음 |
 | `reserve` | 이 클래스 러너 N개가 들어갈 자리를 다른 클래스가 못 쓰게 남겨 둔다(배포 잡이 빌드 뒤에 서지 않게) | 0 |
 | `maxDuration` | 잡이 이보다 오래 돌면 러너를 멈춘다(`90m`). pumasi 가 도는 잡을 건드리는 유일한 설정이다 | 없음 |
-| `slots` | 이 클래스를 **등록 러너**로 돌린다: 호스트마다 러너를 이 수까지 등록해 두고 쓴다(아래 「등록 러너」). `driver: native` 만, Windows 호스트는 아직 안 된다 | 없음(scale set) |
 | `docker: inside` | 컨테이너 러너에 자기 docker 데몬을 준다. 잡이 띄운 컨테이너·compose 스택이 클래스 한도와 수치 안에 들어가고 러너와 함께 사라진다. 러너 컨테이너가 **privileged** 가 된다 | 없음 |
 
 ```yaml
@@ -154,67 +130,9 @@ classes:
 - **native 러너는 격리가 약하다**(Mac·Windows 는 늘 native). 잡은 호스트 사용자의 홈·자격·전역 도구를 읽고 바꿀 수 있다. 믿는 레포의 잡에만 쓴다.
 - 러너 판은 `image:` 의 태그를 따른다(기본 `ghcr.io/actions/actions-runner:2.338.2`). Mac·Windows 는 그 태그에서 판 번호만 읽으므로 **`:latest` 로 적으면 Mac·Windows 러너가 뜨지 못한다.** 판은 사람이 올린다.
 
-### 등록 러너 (`slots:`)
-
-scale set 클래스는 잡이 올 때마다 controller 가 GitHub 토큰으로 일회용 러너를 만든다. `slots: N` 클래스는 러너를 호스트에 **한 번 등록해 두고**,
-그 러너가 자기 자격(`.runner`, `.credentials`, `.credentials_rsaparams`)으로 직접 잡을 받는다.
-
-| | scale set (기본) | 등록 러너 (`slots: N`) |
-|---|---|---|
-| controller 의 GitHub 토큰 | 늘 필요 | 필요 없다 |
-| controller 가 꺼져 있을 때 | 잡이 기다린다 | 잡이 돈다(호스트가 마지막으로 받은 방침대로) |
-| 러너 수 | 예산이 허락하는 만큼 | 호스트마다 N개까지 |
-| 대기 잡 수·대기 사유 | 보인다 | **모른다** — GitHub 이 듣고 있는 러너에 바로 준다 |
-| `rerun:`, 대기 알림(`waitAlert`) | 된다 | 안 된다(토큰이 없다) |
-| 드라이버 | docker · native | native 만(Linux·Mac) |
-
-- **배치는 「몇 개가 듣느냐」로 한다.** 호스트는 도는 잡을 예산에서 빼고, 남은 자리에 들어가는 만큼만 러너를 듣게 한다.
-  클래스가 둘이면 둘 다 같은 자리를 보고 듣다가, 한쪽이 잡을 받으면 자리에 안 맞게 된 쪽의 **놀고 있는** 러너를 멈춘다.
-  잡을 받았거나 받는 중인 러너는 멈추지 않는다 — 그 사이에 양쪽이 동시에 잡을 받으면 그 잡이 끝날 때까지 예산을 넘고, `over-budget` 사건이 그렇게 말한다.
-  그 일을 줄이려고 같은 자리를 보는 클래스는 차례로 듣기 시작한다(잡을 가장 오래 못 받은 클래스 먼저, 나머지는 몇 초 뒤).
-- 큰 클래스와 작은 클래스가 한 예산을 나누면 작은 잡이 이어지는 동안 큰 클래스가 자리를 못 얻는다. 큰 쪽에 `reserve: 1` 을 준다.
-- 사람이 쓰는 머신(desktop)은 사람이 쓰는 동안 놀고 있는 러너를 멈춘다. 서버에 그 클래스의 듣는 러너가 남아 있는 동안은 desktop 의 러너를 듣게 하지 않는다(서버 먼저).
-- 러너 판은 `image:` 의 태그다. 사본은 자동 업데이트를 끄고 돈다 — 판은 사람이 올린다.
-- `pumasi status` 와 대시보드의 「Registered runners」 표가 슬롯마다 `listening`·`busy`·`off`·`failing` 과 그 이유, 도는 잡 이름을 보인다.
-- 러너를 하나 내놓으려면 그 호스트에서 `pumasi release <러너 이름>`. 잡이 돌고 있으면 끝난 뒤에 내놓는다.
-- `pumasi leave`·`pumasi down` 은 등록을 GitHub 에 **남기고** 자격 파일을 `~/pumasi-runners/<러너 이름>/` 에 둔다(무엇이 남았는지 말한다).
-  등록까지 지우려면 등록 토큰을 `PUMASI_RUNNER_TOKEN` 으로 주거나(`down` 은 `PUMASI_GITHUB_TOKEN` 도 된다) GitHub 의 러너 화면에서 지운다.
-
 ## 기존 고정 러너에서 옮기기
 
-### 가장 쉬운 길: 러너를 그대로 넘겨받기 (`pumasi adopt`)
-
-이미 등록된 고정 러너의 자격을 pumasi 의 슬롯으로 복사한다. **GitHub 쪽은 아무것도 바뀌지 않는다** — 러너의 이름·id·라벨이 그대로이고, 워크플로우도 토큰도 건드리지 않는다.
-달라지는 것은 그 러너가 호스트 예산 안에서만 듣고, 잡마다 깨끗한 사본으로 돈다는 것이다.
-
-```yaml
-classes:   # labels 는 그 러너들이 이미 가진 라벨(표시용 — 라벨은 GitHub 의 등록이 정한다)
-  - {name: shared, cpus: 4, memory: 8G, slots: 3, labels: [self-hosted, Linux, X64, ci-pool],
-     env: {JAVA_HOME: /usr/lib/jvm/java-21}, path: [/opt/tools/bin]}
-```
-
-```sh
-# controller: ./dist/pumasi up  (토큰 없이). 그 호스트를 초대 줄로 붙인 뒤, 호스트에서:
-cd ~/actions-runner && sudo ./svc.sh stop          # 옛 서비스를 멈춘다(지우지 않는다)
-pumasi adopt ~/actions-runner ~/actions-runner-2   # 디렉터리마다 슬롯 하나
-```
-
-```
-adopted ci-pool-1 as shared slot 1. It keeps its name, id and labels on GitHub; from now on it listens from a fresh copy of the runner for every job.
-  /home/ci/actions-runner is not changed. Leave its old service stopped. To go back: pumasi release ci-pool-1, then start that service again.
-```
-
-- 옛 러너가 듣고 있으면 `adopt` 가 거부하고 무엇을 멈출지 말한다. 한 등록으로 둘이 들으면 세션을 두고 다툰다.
-- 원래 디렉터리는 읽기만 한다. 그 러너의 `.env`·`.path` 는 함께 가져가고, 클래스의 `env` 가 환경에, `path` 가 그 `.path` 앞에 붙는다.
-- **러너를 하나씩 옮길 수 있다.** 같은 라벨의 고정 러너와 넘겨받은 러너가 섞여서 잡을 받는다.
-- **되돌리기**: 그 호스트에서 `pumasi release <러너 이름>` 뒤 옛 서비스를 다시 켠다(`sudo ./svc.sh start`). 전부면 `pumasi leave` — 넘겨받은 러너는 잊기만 한다.
-- 잡이 워크스페이스에 남겨 둔 것(`clean: false`, `node_modules`)에 기대면 매번 처음부터 한다. 그 밖에 달라지는 것은 [설계](docs/design.md#고정-러너에서-옮길-때-달라지는-것).
-
-### scale set 으로 옮기기
-
-러너 수를 예산이 허락하는 만큼 늘리고 줄이려면 scale set 클래스로 옮긴다. 이쪽도 워크플로우는 고치지 않는다.
-
-클래스에 고정 러너의 라벨을 그대로 적는다:
+워크플로우를 고치지 않고 옮길 수 있다. 클래스에 고정 러너의 라벨을 그대로 적는다:
 
 ```yaml
 classes:   # 워크플로우는 runs-on: [self-hosted, Linux, X64, ci-pool] 그대로
@@ -307,7 +225,6 @@ Mac 은 LaunchAgent, Linux 는 systemd user unit — [설계의 운영 절](docs
 - **Mac 의 메모리·CPU 한도.** 강제할 수단이 없다.
 - **native 러너와 에이전트는 같은 사용자다.** 잡이 에이전트의 가입 자격을 읽을 수 있다. 배포 자격을 쥔 호스트는 믿는 워크플로우의 클래스만 받게 `hosts:` 로 가른다.
 - **NAT 너머의 호스트.** 호스트가 controller 의 `listen` 주소에 직접 닿아야 한다. 중계는 없다.
-- **등록 러너 클래스의 대기 잡 수.** GitHub 이 알려 주지 않는다(토큰 없이는 물어볼 수도 없다). 「자리가 없어 기다린다」는 슬롯의 `off` 이유로만 보인다.
 - **잡을 다른 호스트로 옮기기, 도는 잡을 밀어내기.** GitHub 에 그런 길이 없어서, 죽이면 실패한 잡만 남는다.
 - VM 격리(Tart, microVM), GitHub 이외의 CI, 클라우드 인스턴스 만들기는 범위 밖이다.
 

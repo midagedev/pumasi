@@ -185,24 +185,3 @@ func TestRerunQueueHonoursTheLimit(t *testing.T) {
 		t.Fatal("second rerun refused although the limit is 2")
 	}
 }
-
-func TestInsertSlotJobOnce(t *testing.T) {
-	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	at := time.Now().UTC().Truncate(time.Second)
-	j := SlotJob{Name: "fixed-h-s1-abc123", Class: "fixed", Host: "h", Job: "build", State: "completed", Result: "succeeded",
-		ListeningAt: at, StartedAt: at.Add(5 * time.Second), FinishedAt: at.Add(65 * time.Second)}
-	if fresh, err := l.InsertSlotJob(j); err != nil || !fresh {
-		t.Fatal(fresh, err)
-	}
-	// The host reports its last jobs again after every reconnect.
-	if fresh, err := l.InsertSlotJob(j); err != nil || fresh {
-		t.Fatal("recorded twice", fresh, err)
-	}
-	if live, _ := l.LiveRunners(); len(live) != 0 {
-		t.Errorf("an ended job counts as a live runner: %+v", live)
-	}
-}

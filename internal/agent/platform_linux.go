@@ -83,8 +83,6 @@ func (l *linux) Check(ctx context.Context, image string) error { return l.docker
 
 func (l *linux) NativeProblem() string { return nativeProblem() }
 
-func (l *linux) nativeDriver() *Native { return l.native }
-
 func (l *linux) Clean(ctx context.Context) { l.docker.Clean(ctx) }
 
 func (l *linux) Runner(c Container) (Usage, error) {

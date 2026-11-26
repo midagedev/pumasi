@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -86,12 +84,8 @@ func printStatus(w io.Writer, s controller.State) {
 			seen = (time.Duration(*h.SeenSeconds) * time.Second).String() + " ago"
 			rtt = fmt.Sprintf("%.0fms", h.RTTMs)
 		}
-		runners := strconv.Itoa(h.Runners)
-		if h.Listening > 0 {
-			runners += fmt.Sprintf(" +%d listening", h.Listening)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%g/%g\t%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), h.UsedCPUs, h.BudgetCPUs,
-			gib(h.UsedMem), gib(h.BudgetMem), pressure, runners, state, seen, rtt, dash(h.Agent), dash(h.LastDrop))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%g/%g\t%s/%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), h.UsedCPUs, h.BudgetCPUs,
+			gib(h.UsedMem), gib(h.BudgetMem), pressure, h.Runners, state, seen, rtt, dash(h.Agent), dash(h.LastDrop))
 	}
 	tw.Flush()
 
@@ -110,29 +104,7 @@ func printStatus(w io.Writer, s controller.State) {
 		tw.Flush()
 	}
 
-	if len(s.Slots) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(tw, "REGISTERED RUNNER\tCLASS\tHOST\tSTATE\tJOB\tUP\tWHY")
-		for _, sl := range s.Slots {
-			up := "-"
-			if sl.State != "off" && sl.State != "failing" {
-				up = (time.Duration(sl.AgeSeconds) * time.Second).String()
-			}
-			fmt.Fprintf(tw, "%s\t%s/%d\t%s\t%s\t%s\t%s\t%s\n", sl.Name, sl.Class, sl.N, sl.Host, sl.State, dash(sl.Job), up, dash(sl.Why))
-		}
-		tw.Flush()
-	} else if len(s.Unknown) > 0 && s.Controller {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "no registered runners yet: `pumasi register` on the controller, or `pumasi adopt <dir>` on a host")
-	}
-
 	fmt.Fprintln(w)
-	if len(s.Unknown) > 0 {
-		fmt.Fprintf(w, "jobs waiting for %s: unknown (GitHub hands them to whichever registered runner listens; pumasi is not told)\n", strings.Join(s.Unknown, ", "))
-		if len(s.Waiting) == 0 {
-			return
-		}
-	}
 	if len(s.Waiting) == 0 {
 		fmt.Fprintln(w, "no jobs waiting")
 		return

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,40 +86,32 @@ func (h *host) running(ctx context.Context) ([]string, error) {
 			names = append(names, r.Name)
 		}
 	}
-	// Of the registered runners only those with a job: an idle listener is
-	// stopped without loss when the host leaves.
-	for _, sl := range s.Slots {
-		if sl.State == "busy" && sl.Runner != nil {
-			names = append(names, sl.Runner.Name)
-		}
-	}
 	return names, nil
 }
 
 // leave asks a connected host to remove itself: runners, service, files. It
 // returns how many runners that took.
-// runnerToken ("" = none) lets the host also remove the registrations of the
-// runners pumasi registered there.
-func (h *host) leave(ctx context.Context, runnerToken string) (api.LeaveResult, error) {
-	var out api.LeaveResult
-	body, _ := json.Marshal(api.LeaveRequest{RunnerToken: runnerToken})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/leave", bytes.NewReader(body))
+func (h *host) leave(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/leave", nil)
 	if err != nil {
-		return out, err
+		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := h.http.Do(req)
 	if err != nil {
-		return out, err
+		return "", err
 	}
 	defer resp.Body.Close()
+	var out struct {
+		Containers int    `json:"containers"`
+		Problem    string `json:"problem"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("the host did not clean up (%s)", resp.Status)
+		return "", fmt.Errorf("the host did not clean up (%s)", resp.Status)
 	}
 	if out.Problem != "" {
-		return out, fmt.Errorf("the host did not clean up: %s", out.Problem)
+		return "", fmt.Errorf("the host did not clean up: %s", out.Problem)
 	}
-	return out, nil
+	return fmt.Sprint(out.Containers), nil
 }
 
 func memberHost(m join.Member) config.Host {
