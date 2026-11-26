@@ -57,6 +57,9 @@ type Config struct {
 	// earlier, a low one as if this much later (default 30m).
 	PriorityHeadStart time.Duration `yaml:"priorityHeadStart"`
 
+	// GitHubApp authenticates as a GitHub App's installation instead of with
+	// a personal access token.
+	GitHubApp GitHubApp `yaml:"githubApp"`
 	// JobsMayReadCredentials ends the warning about hosts on the controller's
 	// own machine whose jobs can read the controller's GitHub token and keys:
 	// every workflow that reaches those classes is as trusted as the person
@@ -65,6 +68,17 @@ type Config struct {
 	// Path is the file the config was read from.
 	Path string `yaml:"-"`
 }
+
+// GitHubApp names a GitHub App installed on the repository or organization.
+// The private key is a file's path, never its content.
+type GitHubApp struct {
+	ID             string `yaml:"id"` // the App's client id (Iv23…) or app id
+	InstallationID int64  `yaml:"installationId"`
+	PrivateKeyFile string `yaml:"privateKeyFile"`
+}
+
+// Set reports whether any of it was given.
+func (a GitHubApp) Set() bool { return a.ID != "" || a.InstallationID != 0 || a.PrivateKeyFile != "" }
 
 // Notify says where problems are announced. Both may be set.
 type Notify struct {
@@ -268,6 +282,7 @@ func (c *Config) defaults() {
 		c.Ledger = "~/.local/state/pumasi/pumasi.db"
 	}
 	c.Ledger = expandHome(c.Ledger)
+	c.GitHubApp.PrivateKeyFile = expandHome(c.GitHubApp.PrivateKeyFile)
 	if c.EventLog == "" {
 		c.EventLog = filepath.Join(c.StateDir(), "events.jsonl")
 	}
@@ -356,6 +371,9 @@ func (c *Config) validate() error {
 	}
 	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
 		return fmt.Errorf("notify.level must be problem, recovered or all")
+	}
+	if g := c.GitHubApp; g.Set() && (g.ID == "" || g.InstallationID <= 0 || g.PrivateKeyFile == "") {
+		return fmt.Errorf("githubApp needs id, installationId and privateKeyFile")
 	}
 	if a := c.Notify.Away; a != nil && (*a < 0 || *a > 0 && *a < time.Minute) {
 		return fmt.Errorf("notify.away must be 0 (no host is asked) or at least 1m")

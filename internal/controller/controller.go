@@ -27,6 +27,7 @@ import (
 	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
+	"github.com/midagedev/pumasi/internal/ghauth"
 	"github.com/midagedev/pumasi/internal/join"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
@@ -37,7 +38,7 @@ type Controller struct {
 	noMarker             map[string]time.Time // runners warned about in markerCheck, by GitHub's job start; Evaluate's goroutine only
 	cfg                  *config.Config
 	gh                   github
-	token                string
+	auth                 ghauth.Auth
 	ledger               *ledger.Ledger
 	log                  *slog.Logger
 	// ListenerLog receives the scale set listener's own lines (one per long poll).
@@ -140,16 +141,21 @@ type deferRec struct {
 	at    time.Time
 }
 
-func New(cfg *config.Config, token string, l *ledger.Ledger, ev *EventLog, log *slog.Logger) (*Controller, error) {
-	gh, err := scaleset.NewClientWithPersonalAccessToken(scaleset.NewClientWithPersonalAccessTokenConfig{
-		GitHubConfigURL:     cfg.URL,
-		PersonalAccessToken: token,
-		SystemInfo:          scaleset.SystemInfo{System: "pumasi", Subsystem: "controller", CommitSHA: "NA", Version: "0.1.0"},
-	})
+func New(cfg *config.Config, auth ghauth.Auth, l *ledger.Ledger, ev *EventLog, log *slog.Logger) (*Controller, error) {
+	info := scaleset.SystemInfo{System: "pumasi", Subsystem: "controller", CommitSHA: "NA", Version: "0.1.0"}
+	var gh *scaleset.Client
+	var err error
+	if auth.App != nil {
+		gh, err = scaleset.NewClientWithGitHubApp(scaleset.ClientWithGitHubAppConfig{GitHubConfigURL: cfg.URL, SystemInfo: info,
+			GitHubAppAuth: scaleset.GitHubAppAuth{ClientID: auth.App.ID, InstallationID: auth.App.InstallationID, PrivateKey: auth.App.KeyPEM}})
+	} else {
+		gh, err = scaleset.NewClientWithPersonalAccessToken(scaleset.NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL: cfg.URL, PersonalAccessToken: auth.Token, SystemInfo: info})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("github client: %w", err)
 	}
-	c := &Controller{cfg: cfg, gh: gh, token: token, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
+	c := &Controller{cfg: cfg, gh: gh, auth: auth, ledger: l, log: log, ListenerLog: log, ev: ev, now: time.Now,
 		kick: make(chan struct{}, 1), inflight: map[string]time.Time{}, rebootLost: map[string][]ledger.Runner{}, rerunCheck: map[int64]time.Time{}, rerunWanted: map[string]string{}, lastDefer: map[string]deferRec{}, runCheck: map[int64]time.Time{}}
 	for _, hc := range cfg.Hosts {
 		c.hosts = append(c.hosts, newHost(hc))
@@ -355,7 +361,7 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 		}
 		if errors.Is(err, scaleset.UnauthorizedError) || strings.Contains(err.Error(), "403 Forbidden") {
 			// Retrying cannot help and hammers the API with a bad token.
-			c.book.open("github-auth", "github-auth", "GitHub", "GitHub rejects the token (401/403): no jobs are served until `pumasi up` is restarted with a valid PUMASI_GITHUB_TOKEN; running jobs go on")
+			c.book.open("github-auth", "github-auth", "GitHub", fmt.Sprintf("GitHub rejects %s (401/403): no jobs are served until `pumasi up` is restarted with credentials GitHub takes; running jobs go on", c.auth.What()))
 			return
 		}
 		if d := c.now().Sub(failingSince); d > 2*time.Minute {
@@ -1247,7 +1253,11 @@ func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (s
 	if err != nil {
 		return "", "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	bearer, err := c.auth.Bearer(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := githubREST.Do(req)
 	if err != nil {

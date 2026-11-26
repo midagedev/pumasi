@@ -147,6 +147,9 @@
 | 자격 노출 경고 (11-26) | 실물(Mac) | controller 와 같은 Mac·같은 사용자로 붙인 호스트: `up` 로그와 `status` 의 `WARNINGS` 에 클래스·이유. 같은 controller 에 붙은 Linux VM 호스트는 경고 없음. `jobsMayReadCredentials: true` 로 다시 띄우면 없음. 같은 사용자가 `ps eww` 로 controller 의 토큰 변수를 볼 수 있는 것도 확인 |
 | 자격 노출 판정: Linux 의 native·docker 사용자·`docker: inside`·상태 디렉터리 mount, 다른 사용자의 Mac | 유닛 | 표 테스트. Linux 에서 controller 와 호스트를 한 머신에 둔 실물은 보지 않았다 |
 | 자격 노출 경고의 대시보드 칸 | 미확인 | 화면을 열어 보지 않았다 |
+| GitHub App 인증 (11-26) | 유닛 + 실물 일부 | 유닛: App 의 키로 서명한 JWT 로 설치 토큰을 받고 만료 5분 전에 다시 받는다(가짜 GitHub), PKCS#1·PKCS#8 키, 설정·환경 변수·둘 다 준 경우·600 이 아닌 키. 실물: github.com 에 없는 App(id 1)으로 `up` 을 띄우자 `POST /app/installations/1/access_tokens` 가 `404 Integration not found` 로 끝남 — 서명과 요청까지는 실제 GitHub 에 닿았다. **진짜 App 으로 scale set 을 만들고 잡을 돌리는 것은 미확인**(App 을 만들려면 브라우저에서 계정 주인이 해야 한다) |
+| 토큰(PAT) 경로가 App 추가 뒤에도 그대로 | 실물 | `up` → 세션 → `down` |
+| 권한 표의 Actions: Read / Read and write 만으로 run 조회·다시 돌리기가 되는지 | 미확인 | classic PAT(`repo`)로만 돌려 봤다. 러너 등록 권한은 GitHub 문서의 표를 옮긴 것 |
 | 서비스로 띄운 controller 의 **재부팅** 뒤 | 미확인 | 노트북과 다른 일에 쓰이는 VM 뿐이라 재부팅하지 않았다. linger 가 꺼진 Linux, 화면에 로그인하지 않은 Mac 도 안내 문구만 있고 보지 않았다 |
 | 서비스에서 `hosts: - ssh:` 로 대신 붙이기 | 미확인 | 서비스에는 ssh agent 가 없다. 초대 줄로 붙인 호스트로만 봤다 |
 | 남의 부하로 스래싱하는 호스트(load 200, swap 가득) | 실물 | 에이전트가 10초 넘게 못 돌아 연결이 끊겼다 붙음. 사건이 이유와 함께, 잡 성공 |

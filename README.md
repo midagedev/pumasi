@@ -10,7 +10,7 @@
 
 - controller 머신: Go(빌드용), 그리고 호스트들이 이 머신의 포트 하나(기본 7411)에 닿을 수 있을 것(같은 망, VPN, tailnet).
 - 호스트: Linux 는 그 사용자가 쓸 수 있는 Docker 와 cgroup v2. Mac·Windows 는 아무것도 필요 없다(러너가 그 사용자의 프로세스로 돈다).
-- GitHub 토큰: 그 레포에 러너를 등록할 수 있는 권한. classic PAT 면 `repo`(조직 단위로 쓰면 `admin:org`), 레포의 admin 이어야 한다.
+- GitHub 자격: 그 레포에 러너를 등록할 수 있는 토큰(classic PAT 면 `repo`, 조직 단위면 `admin:org`. 레포의 admin 이어야 한다) 또는 GitHub App. 필요한 권한의 전부는 [GitHub 자격](#github-자격).
   모자라면 `up` 이 `create scale set …: 403` 으로 끝난다. `gh` 를 쓰면 `gh auth refresh -s repo` 뒤 `gh auth token`.
   토큰은 controller 밖으로 나가지 않는다 — 호스트로는 러너 하나짜리 일회용 설정만 간다.
 
@@ -319,13 +319,40 @@ PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi service install    # -config 
 - `dist/` 는 통째로 둔다(호스트가 거기서 자기 판을 받는다). 서비스에는 ssh agent 가 없으니 `hosts: - ssh:` 는 agent 없이 쓸 수 있는 키가 있어야 한다 — 아니면 `pumasi invite` 로 붙인다.
 - Windows 에는 이 명령이 없다. 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮추므로(zsh: nice 5) `up` 이 경고한다.
 
+## GitHub 자격
+
+pumasi 가 GitHub 에 하는 일은 셋이다: scale set 과 러너 등록을 만들고 지운다, 기다리는 잡의 run 이 끝났는지 본다, (`rerun` 을 켰으면) 실패한 잡을 다시 돌린다. 그만큼의 권한만 주면 된다.
+
+| | 레포 단위 (`url:` 이 레포) | 조직 단위 (`url:` 이 조직) |
+|---|---|---|
+| GitHub App | Repository → **Administration: Read and write**, Metadata: Read-only | Organization → **Self-hosted runners: Read and write**, Repository → Metadata: Read-only |
+| fine-grained PAT | Repository → **Administration: Read and write** | Organization → **Self-hosted runners: Read and write**, Repository → Administration: Read |
+| classic PAT | `repo` | `admin:org` |
+| 덧붙일 것 | Repository → **Actions: Read-only** (run 이 끝났는지 보기). `rerun: 1` 이상이면 **Actions: Read and write** | 같음 |
+
+- 러너 등록 권한의 표는 GitHub 문서 「Authenticating ARC to the GitHub API」와 같다(같은 scale set API 다). Actions 권한이 없으면 pumasi 는 돌지만, 취소된 run 의 잡을 기다리는 줄에서 바로 못 지우고(`run status` 경고) 다시 돌리기가 실패한다. classic PAT 의 `repo` 에는 다 들어 있다.
+- **토큰**: `PUMASI_GITHUB_TOKEN`. 서비스로 띄우면 `<상태 디렉터리>/github-token`(600).
+- **GitHub App**: 사람의 토큰 대신 App 의 설치로 인증한다 — 한 시간짜리 설치 토큰을 pumasi 가 그때그때 받아 쓴다.
+
+  ```yaml
+  githubApp:
+    id: Iv23liXXXXXXXXXXXXXX            # App 의 Client ID (App ID 숫자도 된다)
+    installationId: 12345678
+    privateKeyFile: ~/.config/pumasi/app.pem   # 경로만 적는다. 설정 파일 기준 상대 경로도 된다
+  ```
+
+  환경 변수로도 줄 수 있다: `PUMASI_GITHUB_APP_ID`, `PUMASI_GITHUB_APP_INSTALLATION_ID`, `PUMASI_GITHUB_APP_PRIVATE_KEY_FILE`(서비스에는 설정 파일로만).
+  키는 **파일 경로로만** 받는다. 내용은 메모리에만 있고 인자·로그·상태 디렉터리에 남지 않는다. 남이 읽을 수 있는 모드(600 이 아닌)인 키 파일은 쓰지 않고 그렇게 말한다. App 과 `PUMASI_GITHUB_TOKEN` 을 같이 주면 고르지 않고 끝난다.
+- App 만들기(가장 짧은 길): GitHub → Settings → Developer settings → GitHub Apps → New GitHub App. 이름·홈페이지 URL 만 채우고 **Webhook 의 Active 를 끈다**. 위 표의 권한을 준다 → Create.
+  만든 화면에서 Client ID 를 적고 「Generate a private key」로 `.pem` 을 받아 `chmod 600` 한다. 「Install App」으로 그 레포(조직)에 설치하면 주소가 `…/settings/installations/<installationId>` 다.
+
 ## 보안 모델
 
 **자격은 controller 에만 있다. 호스트에는 러너 하나가 잡 하나를 받을 일회용 등록만 간다.**
 
 | 무엇 | 어디에 | 누가 읽나 |
 |---|---|---|
-| GitHub 토큰 | controller 프로세스(환경 변수), 서비스로 띄웠으면 `<상태 디렉터리>/github-token`(600) | controller 를 띄운 사용자 |
+| GitHub 토큰 또는 App 의 개인 키 | controller 프로세스(환경 변수 / 키 파일을 읽은 메모리), 서비스로 띄웠으면 `<상태 디렉터리>/github-token`(600), App 이면 설정이 가리키는 키 파일(600) | controller 를 띄운 사용자 |
 | controller 의 TLS 키 `join.key`, 초대 토큰, 가입한 호스트의 비밀값 해시 | 상태 디렉터리(700, 파일 600) | 〃 |
 | 호스트의 가입 자격(`join.json`: controller 주소·지문, 호스트 id·비밀값) | 그 호스트의 `~/.cache/pumasi/`(700) | 에이전트의 사용자 |
 | 알림 웹훅 주소 | controller 설정, 그리고 [부재를 알릴 호스트 둘](#사건과-알림)의 `away.json`(600) | 〃 |
@@ -346,7 +373,7 @@ warning: jobs of class mac on desk1 can read this controller's GitHub token and 
 - 걸리는 경우: controller 와 같은 머신의 호스트에 ① native 러너가 controller 의 사용자로 돈다 ② (Linux) native 러너가 다른 사용자로 돌지만 그 사용자가 docker 를 쓴다 ③ `docker: inside` 클래스가 놓인다 ④ 클래스의 `mounts` 가 상태 디렉터리를 덮는다. 같은 머신의 보통 컨테이너 러너, 다른 사용자의 Mac·Windows 러너는 걸리지 않는다.
 - **막지 않고 경고한다.** 자기 노트북 한 대에서 controller 와 호스트를 같이 돌리는 것이 pumasi 를 처음 써 보는 길이고, 워크플로우가 전부 자기 것이면 문제가 없다. 그 러너에 닿는 워크플로우를 믿을 수 있는지(fork 의 pull request, 외부 기여자)는 pumasi 가 알 수 없다.
   경고는 `up` 로그, `pumasi status` 의 `WARNINGS`, 대시보드에 그 상태가 이어지는 동안 계속 보인다. 판단했으면 `jobsMayReadCredentials: true` 로 끈다.
-- 피하는 법: controller 를 잡이 안 도는 머신에 두거나, 그 머신의 호스트에는 `hosts:` 로 믿는 클래스만 보낸다. 토큰은 그 레포(조직)의 러너 관리 권한만 가진 것을 쓴다.
+- 피하는 법: controller 를 잡이 안 도는 머신에 두거나, 그 머신의 호스트에는 `hosts:` 로 믿는 클래스만 보낸다. 자격은 [필요한 권한](#github-자격)만 가진 것을 쓴다 — 사람의 classic PAT 보다 그 레포에만 설치한 GitHub App 이 새도 잃는 것이 적다.
 - 판정은 「같은 부팅의 같은 머신인가」(부팅 id 의 해시)와 사용자 id 로 한다. 같은 물리 머신 위의 VM·WSL 은 다른 머신으로 본다 — 호스트 OS 의 파일을 공유 폴더로 물려 둔 VM 은 이 경고가 잡지 못한다.
 
 ## 풀지 못하는 것

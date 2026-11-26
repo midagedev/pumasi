@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/controller"
+	"github.com/midagedev/pumasi/internal/ghauth"
 )
 
 // The controller as a service: `pumasi up`, kept running by the system's own
@@ -45,6 +47,46 @@ func githubToken(cfg *config.Config) (token, from string, err error) {
 		return "", "", fmt.Errorf("%s is empty", path)
 	}
 	return token, path, nil
+}
+
+// githubAuth is what `up` and `down` prove themselves to GitHub with: a
+// GitHub App (githubApp: in the config, or PUMASI_GITHUB_APP_ID,
+// PUMASI_GITHUB_APP_INSTALLATION_ID and PUMASI_GITHUB_APP_PRIVATE_KEY_FILE),
+// or else a token. The App's key is named by its file, never by its content.
+func githubAuth(cfg *config.Config) (ghauth.Auth, error) {
+	app, from := cfg.GitHubApp, "githubApp in "+cfg.Path
+	if !filepath.IsAbs(app.PrivateKeyFile) && app.PrivateKeyFile != "" {
+		app.PrivateKeyFile = filepath.Join(filepath.Dir(cfg.Path), app.PrivateKeyFile)
+	}
+	env := false
+	if v := os.Getenv("PUMASI_GITHUB_APP_ID"); v != "" {
+		app.ID, env = v, true
+	}
+	if v := os.Getenv("PUMASI_GITHUB_APP_INSTALLATION_ID"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return ghauth.Auth{}, errors.New("PUMASI_GITHUB_APP_INSTALLATION_ID is not a number")
+		}
+		app.InstallationID, env = n, true
+	}
+	if v := os.Getenv("PUMASI_GITHUB_APP_PRIVATE_KEY_FILE"); v != "" {
+		app.PrivateKeyFile, env = v, true
+	}
+	if env {
+		from = "PUMASI_GITHUB_APP_*"
+	}
+	if !app.Set() {
+		token, from, err := githubToken(cfg)
+		return ghauth.Auth{Token: token, From: from}, err
+	}
+	if os.Getenv("PUMASI_GITHUB_TOKEN") != "" {
+		return ghauth.Auth{}, fmt.Errorf("both a GitHub App (%s) and PUMASI_GITHUB_TOKEN are given; unset one, so that it is clear who pumasi is to GitHub", from)
+	}
+	a, err := ghauth.LoadApp(app.ID, app.InstallationID, app.PrivateKeyFile)
+	if err != nil {
+		return ghauth.Auth{}, fmt.Errorf("GitHub App (%s): %w", from, err)
+	}
+	return ghauth.Auth{App: a, From: from}, nil
 }
 
 // keepToken writes the token where the service reads it. The file is made
@@ -132,10 +174,14 @@ func (s ctlService) install() error {
 	if err := s.can(); err != nil {
 		return err
 	}
-	token, from, err := githubToken(s.cfg)
+	auth, err := githubAuth(s.cfg)
 	if err != nil {
-		return fmt.Errorf("the service needs the GitHub token once: PUMASI_GITHUB_TOKEN=$(gh auth token) pumasi service install (%w)", err)
+		return fmt.Errorf("the service needs GitHub credentials — a token once: PUMASI_GITHUB_TOKEN=$(gh auth token) pumasi service install, or githubApp: in the config (%w)", err)
 	}
+	if auth.App != nil && auth.From == "PUMASI_GITHUB_APP_*" {
+		return errors.New("the service does not have this shell's environment: put the App in the config (githubApp: {id, installationId, privateKeyFile})")
+	}
+	token, from := auth.Token, auth.From
 	// Installing again replaces the service; a controller a person started is theirs to stop.
 	if err := s.stop(); err != nil {
 		return err
@@ -145,7 +191,13 @@ func (s ctlService) install() error {
 		return fmt.Errorf("%w — the service would fight it for the same hosts and scale sets", err)
 	}
 	unlock()
-	if from != tokenFile(s.cfg) {
+	creds := fmt.Sprintf("%s (mode 600; taken from %s)", tokenFile(s.cfg), from)
+	switch {
+	case auth.App != nil:
+		// The key stays where it is; a token kept by an earlier install is not needed any more.
+		_ = os.Remove(tokenFile(s.cfg))
+		creds = fmt.Sprintf("%s, its key read from the file the config names", auth.What())
+	case from != tokenFile(s.cfg):
 		if err := keepToken(s.cfg, token); err != nil {
 			return err
 		}
@@ -154,7 +206,7 @@ func (s ctlService) install() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("installed: `pumasi up` runs as %s\n  config  %s\n  token   %s (mode 600; taken from %s)\n  log     %s\n", how, s.conf, tokenFile(s.cfg), from, s.logHow())
+	fmt.Printf("installed: `pumasi up` runs as %s\n  config  %s\n  token   %s\n  log     %s\n", how, s.conf, creds, s.logHow())
 	for _, n := range notes {
 		fmt.Println("note: " + n)
 	}

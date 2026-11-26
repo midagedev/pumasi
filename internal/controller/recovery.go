@@ -269,7 +269,11 @@ func (c *Controller) rerunFailedJobs(ctx context.Context, repo string, runID int
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	bearer, err := c.auth.Bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := githubREST.Do(req)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,7 +41,9 @@ On a host that joined:
   pumasi leave   remove this host from the controller and pumasi from this host
 
 Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log).
-up and down read the GitHub token from PUMASI_GITHUB_TOKEN, or from the file
+up and down are a GitHub App when the config has githubApp: {id, installationId,
+privateKeyFile} (or PUMASI_GITHUB_APP_ID, _INSTALLATION_ID, _PRIVATE_KEY_FILE);
+otherwise they read a token from PUMASI_GITHUB_TOKEN, or from the file
 "pumasi service install" keeps (<state dir>/github-token, mode 600).
 `
 
@@ -86,7 +89,7 @@ func main() {
 	}
 }
 
-func runController(args []string, down bool) error {
+func runController(args []string, down bool) (err error) {
 	fs := flag.NewFlagSet("pumasi", flag.ContinueOnError)
 	cfgPath := fs.String("config", "pumasi.yaml", "config file")
 	verbose := fs.Bool("v", false, "verbose log")
@@ -98,7 +101,7 @@ func runController(args []string, down bool) error {
 	if err != nil {
 		return err
 	}
-	token, _, err := githubToken(cfg)
+	auth, err := githubAuth(cfg)
 	if err != nil {
 		return err
 	}
@@ -131,7 +134,7 @@ func runController(args []string, down bool) error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(newLineHandler(os.Stdout, level))
-	c, err := controller.New(cfg, token, l, ev, log)
+	c, err := controller.New(cfg, auth, l, ev, log)
 	if err != nil {
 		return err
 	}
@@ -160,6 +163,14 @@ func runController(args []string, down bool) error {
 		fmt.Fprintln(os.Stderr, "pumasi: interrupted again, quitting now")
 		os.Exit(130)
 	}()
+	if auth.App != nil {
+		// The library's own words for a refused App are a chain of five causes.
+		defer func() {
+			if err != nil && strings.Contains(err.Error(), "GitHub App auth") {
+				err = fmt.Errorf("%w\nGitHub did not take %s (%s): check the id, the installation id (…/settings/installations/<id>) and that the key file is this App's", err, auth.What(), auth.From)
+			}
+		}()
+	}
 	if down {
 		return c.Down(ctx, *force)
 	}
