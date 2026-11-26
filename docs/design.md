@@ -159,6 +159,18 @@ ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전�
   `shell: bash` 는 WSL 이 깔린 머신에서 WSL 의 bash 로 풀리고, `shell: powershell` 은 실행 정책 `Restricted` 에 막힌다(`shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}`) — pumasi 가 아니라 Windows 러너의 성질이다.
 - **재부팅 판정**은 호스트의 boot id 로 한다(Linux boot_id, Mac `kern.bootsessionuuid`, Windows 커널 시작 시각). **Windows 의 빠른 시작(fast startup)으로 껐다 켠 것은 새 부팅이 아니다** — 그때 끝난 러너는 `rebooted` 가 아니라 `died` 로 나온다.
 
+### `{slot}`: 남는 자리
+
+클래스의 `env`·`path` 값에서 `{runner}` 는 러너와 함께 지워지는 디렉터리, `{slot}` 은 번호다. 고정 러너가 러너마다 두던 홈·gradle home 같은 **지속 디렉터리**를
+일회용 러너에 「한 번에 한 러너만 쓰는 자리」로 준다(`HOME: /srv/ci-home/{slot}`).
+
+- 번호는 **에이전트**가 준다: 그 호스트에서 에이전트가 아는 같은 클래스 러너들이 안 쓰는 가장 작은 수. 호스트 안의 일이라 controller 가 몰라도 맞고,
+  러너 기록과 함께 상태 파일에 남아 에이전트·controller 가 다시 떠도 도는 러너의 번호가 그대로다.
+- 번호는 러너가 **지워질 때** 풀린다. 끝났지만 아직 안 지운 러너도 번호를 쥔다 — 그 러너가 남긴 프로세스가 아직 그 자리를 쓰고 있을 수 있다.
+- native 러너는 번호가 든 경로 요소까지(`/srv/ci-home/3`)를 없으면 만든다. 그 아래(`.gradle`)는 잡의 몫이다. 미리 만들어 두게 하지 않는 이유: 동시에 몇 개가 뜰지는 호스트의 여유가 정하므로
+  사람이 호스트마다 디렉터리 개수를 맞춰 두게 하면 그 숫자가 또 틀린다. 같은 사용자가 빈 디렉터리를 만드는 것이라 새로 열리는 권한은 없다. 못 만들면 러너를 띄우지 않고 이유를 말한다. 지우지 않는다.
+- 컨테이너 러너에서는 `env` 값만 바뀐다(mounts 는 호스트마다 고정이다).
+
 ### 고정 러너에서 옮길 때 달라지는 것
 
 - 워크스페이스에 남겨 둔 것(`clean: false`, `node_modules`)에 기대던 잡은 매번 처음부터 한다.

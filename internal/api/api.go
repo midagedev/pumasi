@@ -51,8 +51,12 @@ type Snapshot struct {
 // the runner's exit until the controller deletes it. Values the host's OS
 // cannot measure are absent, not zero.
 type Runner struct {
-	Name     string  `json:"name"`
-	Class    string  `json:"class"`
+	Name  string `json:"name"`
+	Class string `json:"class"`
+	// Slot is the runner's number among the live runners of its class on the
+	// host, from 1: "{slot}" in the class's env and path. No two live runners
+	// of a class on a host have the same.
+	Slot     int     `json:"slot,omitempty"`
 	CPUs     float64 `json:"cpus"`
 	MemBytes int64   `json:"memBytes"`
 	State    string  `json:"state"` // created | running | exited | gone
@@ -104,7 +108,8 @@ type StartRequest struct {
 	// InnerDocker: a container runner with a docker daemon of its own.
 	InnerDocker bool `json:"innerDocker,omitempty"`
 	// Env is added to the runner's environment and Path goes in front of a
-	// native runner's PATH; "{runner}" in a value is the runner's own directory.
+	// native runner's PATH; "{runner}" in a value is the runner's own directory,
+	// "{slot}" the number the host gives the runner (Runner.Slot).
 	Env  map[string]string `json:"env,omitempty"`
 	Path []string          `json:"path,omitempty"`
 }

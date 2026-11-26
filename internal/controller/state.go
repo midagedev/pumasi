@@ -53,6 +53,8 @@ type RunnerState struct {
 	CPUSec   float64 `json:"cpuSec"`
 	MemBytes int64   `json:"memBytes"` // memory in use now
 	MemLimit int64   `json:"memLimit"` // the class size
+	// The runner's number among its class's runners on the host ({slot}); 0 = not known.
+	Slot int `json:"slot"`
 }
 
 type WaitingState struct {
@@ -122,7 +124,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		rs := RunnerState{Name: r.Name, Class: r.Class, Host: r.Host, State: r.State,
 			Job: r.Job, AgeSeconds: int64(now.Sub(r.CreatedAt).Seconds()), MemLimit: int64(size[r.Class].Memory)}
 		if a, ok := sampled[r.Name]; ok {
-			rs.CPUSec, rs.MemBytes = a.CPUSec, a.MemCurrent
+			rs.CPUSec, rs.MemBytes, rs.Slot = a.CPUSec, a.MemCurrent, a.Slot
 		}
 		out.Runners = append(out.Runners, rs)
 		if i, ok := hosts[r.Host]; ok {

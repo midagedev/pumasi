@@ -37,16 +37,55 @@ type Spec struct {
 	// InnerDocker gives a container runner a docker daemon of its own.
 	InnerDocker bool
 	// Env is added to the runner's environment; Path goes in front of a native
-	// runner's PATH. "{runner}" in a value is the runner's own directory.
+	// runner's PATH. "{runner}" in a value is the runner's own directory,
+	// "{slot}" its Slot.
 	Env  map[string]string
 	Path []string
+	// Slot is the runner's number among the live runners of its class on this
+	// host (1 = the first). 0 = none given: "{slot}" is left as it is.
+	Slot int
+}
+
+// SlotDirs are the directories the class's Env and Path name with the
+// runner's slot: places that outlive the runner, one runner at a time. Of
+// "/srv/ci/{slot}/.gradle" it is "/srv/ci/3": the path element that carries
+// the number is taken to be a directory, what lies below it is the job's.
+func (s Spec) SlotDirs() []string {
+	var out []string
+	add := func(v string) {
+		i := strings.Index(v, "{slot}")
+		if i < 0 || s.Slot == 0 || strings.Contains(v, "{runner}") {
+			return
+		}
+		if j := strings.IndexAny(v[i:], `/\`); j >= 0 {
+			v = v[:i+j]
+		}
+		if p := s.expand(v, ""); filepath.IsAbs(p) && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(s.Env)) {
+		add(s.Env[k])
+	}
+	for _, p := range s.Path {
+		add(p)
+	}
+	return out
+}
+
+func (s Spec) expand(v, dir string) string {
+	v = strings.ReplaceAll(v, "{runner}", dir)
+	if s.Slot > 0 {
+		v = strings.ReplaceAll(v, "{slot}", strconv.Itoa(s.Slot))
+	}
+	return v
 }
 
 // The runner's own directory in the runner image.
 const containerHome = "/home/runner"
 
 // classEnv is env with the class's Path in front of PATH and its Env set,
-// "{runner}" replaced by dir. Names compare the way the OS compares them.
+// "{runner}" replaced by dir and "{slot}" by the runner's slot. Names compare the way the OS compares them.
 func classEnv(env []string, s Spec, dir string) []string {
 	if len(s.Env) == 0 && len(s.Path) == 0 {
 		return env
@@ -72,7 +111,7 @@ func classEnv(env []string, s Spec, dir string) []string {
 		}
 		parts := make([]string, 0, len(s.Path)+1)
 		for _, p := range s.Path {
-			parts = append(parts, strings.ReplaceAll(p, "{runner}", dir))
+			parts = append(parts, s.expand(p, dir))
 		}
 		if old != "" {
 			parts = append(parts, old)
@@ -80,7 +119,7 @@ func classEnv(env []string, s Spec, dir string) []string {
 		set(key, strings.Join(parts, string(os.PathListSeparator)))
 	}
 	for _, k := range slices.Sorted(maps.Keys(s.Env)) {
-		set(k, strings.ReplaceAll(s.Env[k], "{runner}", dir))
+		set(k, s.expand(s.Env[k], dir))
 	}
 	return out
 }
@@ -191,7 +230,7 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 		run = []string{"sh", "-c", innerDockerScript}
 	}
 	cmd := exec.CommandContext(ctx, "docker", append(append(args, image), run...)...)
-	env := classEnv([]string{"ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig}, Spec{Env: s.Env}, containerHome)
+	env := classEnv([]string{"ACTIONS_RUNNER_INPUT_JITCONFIG=" + s.JITConfig}, Spec{Env: s.Env, Slot: s.Slot}, containerHome)
 	cmd.Stdin = strings.NewReader(strings.Join(env, "\n") + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

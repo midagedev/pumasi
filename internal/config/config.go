@@ -90,6 +90,9 @@ type Class struct {
 	// Env is added to the environment of the class's runners, and so of their
 	// jobs: what a fixed runner got from its service unit or its .env file.
 	// {runner} in a value is the runner's own directory, removed with it.
+	// {slot} is the runner's number among the class's live runners on its
+	// host (1, 2, …; the lowest free one): a place that stays, used by one
+	// runner at a time.
 	Env map[string]string `yaml:"env"`
 	// Path goes in front of PATH of a native runner (a fixed runner's .path).
 	Path []string `yaml:"path"`

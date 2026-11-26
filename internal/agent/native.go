@@ -115,6 +115,14 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 		return fail(err)
 	}
 	defer log.Close()
+	// The slot's directories are made when they are not there and never
+	// removed: the operator names the place, the host decides how many
+	// runners there are at once.
+	for _, p := range s.SlotDirs() {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			return fail(fmt.Errorf("slot %d of class %s: %w (the class names it with {slot}; make it writable for this user)", s.Slot, s.Class, err))
+		}
+	}
 	// The JIT config goes through the environment so it never lands on disk or in argv.
 	env := append(classEnv(runnerEnv(os.Environ()), s, dir), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
 	t, err := startTree(dir, s, env, log)

@@ -254,6 +254,24 @@ func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta u
 
 func ptr[T any](v T) *T { return &v }
 
+// freeSlot is the lowest number no runner of the class holds. A runner holds
+// its number for as long as the agent knows it, also after it has exited:
+// until it is removed, something of it may still be in the slot's directories.
+// Callers hold dataMu.
+func freeSlot(recs map[string]*rec, class string) int {
+	held := map[int]bool{}
+	for _, r := range recs {
+		if r.Class == class {
+			held[r.Slot] = true
+		}
+	}
+	for n := 1; ; n++ {
+		if !held[n] {
+			return n
+		}
+	}
+}
+
 // Snapshot returns the last sampled state.
 func (a *Agent) Snapshot() api.Snapshot {
 	a.dataMu.Lock()
@@ -302,11 +320,12 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 		return api.Runner{}, fmt.Errorf("%w: in use %.1f cpus/%d bytes, budget %.1f/%d, asked %.1f/%d",
 			errOverBudget, cpus, mem, a.cfg.BudgetCPUs, a.cfg.BudgetMem, req.CPUs, req.MemBytes)
 	}
-	r := &rec{Runner: api.Runner{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, State: "starting"}, receivedAt: received}
+	r := &rec{Runner: api.Runner{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, State: "starting",
+		Slot: freeSlot(a.recs, req.Class)}, receivedAt: received}
 	a.recs[req.Name] = r
 	a.dataMu.Unlock()
 
-	err := a.drv.Start(ctx, Spec{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
+	err := a.drv.Start(ctx, Spec{Slot: r.Slot, Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
 		Driver: req.Driver, Mounts: req.Mounts, WorkDir: req.WorkDir, InnerDocker: req.InnerDocker, Env: req.Env, Path: req.Path})
 
 	a.dataMu.Lock()

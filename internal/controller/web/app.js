@@ -62,7 +62,7 @@ function renderState(s) {
   }));
 
   fill("runners", s.runners.map((r) => el("tr", {},
-    td(r.name), td(r.class, "opt"), td(r.host), td(r.state, "muted"), td(r.job || "-"),
+    td(r.name), td(r.class, "opt"), td(r.host), td(r.slot ? String(r.slot) : "-", "num opt"), td(r.state, "muted"), td(r.job || "-"),
     td(dur(r.ageSeconds), "num opt"),
     td(r.cpuSec ? r.cpuSec.toFixed(0) + "s" : "-", "num opt"),
     r.memBytes ? bar(r.memBytes, r.memLimit, mib(r.memBytes) + "/" + gib(r.memLimit)) : td("-"))), "runners-empty");

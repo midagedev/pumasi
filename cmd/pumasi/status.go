@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -93,13 +94,17 @@ func printStatus(w io.Writer, s controller.State) {
 	if len(s.Runners) == 0 {
 		fmt.Fprintln(w, "no runners")
 	} else {
-		fmt.Fprintln(tw, "RUNNER\tCLASS\tHOST\tSTATE\tJOB\tAGE")
+		fmt.Fprintln(tw, "RUNNER\tCLASS\tHOST\tSLOT\tSTATE\tJOB\tAGE")
 		for _, r := range s.Runners {
 			job := r.Job
 			if job == "" {
 				job = "-"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, r.Class, r.Host, r.State, job, time.Duration(r.AgeSeconds)*time.Second)
+			slot := "-"
+			if r.Slot > 0 {
+				slot = strconv.Itoa(r.Slot)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, r.Class, r.Host, slot, r.State, job, time.Duration(r.AgeSeconds)*time.Second)
 		}
 		tw.Flush()
 	}
