@@ -206,7 +206,7 @@ func newRig(t *testing.T) *rig {
 // runner places a runner the way start and launch do and lets the agent see it.
 func (r *rig) runner(name string) {
 	r.t.Helper()
-	if err := r.ledger.InsertRunner(name, "small", "h1", *r.now, size.Estimate{}); err != nil {
+	if err := r.ledger.InsertRunner(name, "small", "linux/docker", "h1", *r.now, size.Estimate{}); err != nil {
 		r.t.Fatal(err)
 	}
 	if !r.launch(context.Background(), name, decide.Start{Class: "small", Host: "h1"}, *r.now, 0, 0) {
@@ -335,7 +335,7 @@ func TestContainerLeftByAFailedRemovalGoesNextRound(t *testing.T) {
 
 func TestLaunchOnAHostThatLeft(t *testing.T) {
 	r := newRig(t)
-	if err := r.ledger.InsertRunner("small-h9-cccc", "small", "h9", *r.now, size.Estimate{}); err != nil {
+	if err := r.ledger.InsertRunner("small-h9-cccc", "small", "linux/docker", "h9", *r.now, size.Estimate{}); err != nil {
 		t.Fatal(err)
 	}
 	r.launch(context.Background(), "small-h9-cccc", decide.Start{Class: "small", Host: "h9"}, *r.now, 0, 0)
@@ -444,7 +444,7 @@ func TestNewRunnerIsNotMissingFromAnOlderSnapshot(t *testing.T) {
 // for the hosts of the config.
 func TestSeriesHasHostsThatJoined(t *testing.T) {
 	r := newRig(t)
-	if err := r.ledger.InsertRunner("small-desk1-eeee", "small", "desk1", r.now.Add(-time.Hour), size.Estimate{}); err != nil {
+	if err := r.ledger.InsertRunner("small-desk1-eeee", "small", "linux/docker", "desk1", r.now.Add(-time.Hour), size.Estimate{}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.series(*r.now)

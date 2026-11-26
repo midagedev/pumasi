@@ -44,7 +44,7 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 	prev := int64(0)
 	for i, work := range []int64{2 * gbs, 3 * gbs, 5 * gbs} {
 		name := "small-h1-" + string(rune('a'+i))
-		if err := r.ledger.InsertRunner(name, "small", "h1", *r.now, r.estimate(cl, k)); err != nil {
+		if err := r.ledger.InsertRunner(name, "small", "linux/docker", "h1", *r.now, r.estimate(cl, k)); err != nil {
 			t.Fatal(err)
 		}
 		r.finished(name, k, 0.5, work, 0)
@@ -55,7 +55,7 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 		prev = e.MemBytes
 	}
 	// A job cut short at a limit is given more than it was seen with.
-	if err := r.ledger.InsertRunner("small-h1-oom", "small", "h1", *r.now, r.estimate(cl, k)); err != nil {
+	if err := r.ledger.InsertRunner("small-h1-oom", "small", "linux/docker", "h1", *r.now, r.estimate(cl, k)); err != nil {
 		t.Fatal(err)
 	}
 	r.finished("small-h1-oom", k, 0.5, 6*gbs, 1)
@@ -73,7 +73,7 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 		t.Errorf("another workflow: %+v", e)
 	}
 	// Until a job of it has run long enough to show what it holds now.
-	r.seenNow = map[ledger.JobKey]size.Sample{{Repo: other.Repo, Workflow: other.Workflow}: {CPUs: 1.5, MemBytes: 5 * gbs}}
+	r.seenNow = map[ledger.JobKey]size.Sample{{Repo: other.Repo, Workflow: other.Workflow, Platform: cl.Platform()}: {CPUs: 1.5, MemBytes: 5 * gbs}}
 	if e := r.estimate(cl, other); e.Blind || !e.Borrowed || e.MemBytes != 6*gbs || e.CPUs != 1.8 {
 		t.Errorf("another workflow with a job running: %+v (%s)", e, e.Source())
 	}
@@ -84,15 +84,15 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 func TestStartIsSizedByTheJobAndNotLimitedToIt(t *testing.T) {
 	r := newRig(t)
 	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml", "build")
-	if err := r.ledger.InsertRunner("small-h1-old", "small", "h1", *r.now, size.Estimate{CPUs: 1, MemBytes: gbs}); err != nil {
+	r.ag.Sample(context.Background())
+	r.classes[0].cfg.OS = r.ag.Snapshot().OS // the rig's agent says the OS the tests run on
+	if err := r.ledger.InsertRunner("small-h1-old", "small", r.classes[0].cfg.Platform(), "h1", *r.now, size.Estimate{CPUs: 1, MemBytes: gbs}); err != nil {
 		t.Fatal(err)
 	}
 	r.finished("small-h1-old", k, 0.5, 2*gbs, 0)
 	if err := r.ledger.UpsertDemand(ledger.Job{ID: "j2", Class: "small", Repo: k.Repo, Workflow: k.Workflow + "@refs/heads/x", Name: k.Job}, *r.now); err != nil {
 		t.Fatal(err)
 	}
-	r.ag.Sample(context.Background())
-	r.classes[0].cfg.OS = r.ag.Snapshot().OS // the rig's agent says the OS the tests run on
 	r.Evaluate(context.Background())
 	r.starts.Wait()
 	live, err := r.ledger.LiveRunners()
@@ -176,5 +176,46 @@ func TestPriorityRulesAreReadAgain(t *testing.T) {
 	r.reloadPriority()
 	if level, _ := r.cfg.LevelOf(job); level != 0 || r.cfg.PriorityHeadStart != config.DefaultHeadStart {
 		t.Errorf("rules removed from the file are still in force")
+	}
+}
+
+// A job's runs on one platform say nothing of it on another: the same name on
+// another OS is another program, and a container is not measured as a process
+// tree is. Rows from before the platform was recorded take their class's.
+func TestEstimateKeepsPlatformsApart(t *testing.T) {
+	r := newRig(t)
+	cl := r.cfg.Classes[0]
+	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml", "build")
+	if err := r.ledger.InsertRunner("small-h1-a", "small", cl.Platform(), "h1", *r.now, size.Estimate{}); err != nil {
+		t.Fatal(err)
+	}
+	r.finished("small-h1-a", k, 0.5, 5*gbs, 0)
+	if e := r.estimate(cl, k); e.Runs != 1 || e.MemBytes != 6*gbs {
+		t.Fatalf("on its own platform: %+v", e)
+	}
+	for _, other := range []config.Class{{Name: "mac", OS: "macos", CPUs: 1, Memory: config.Bytes(gbs)}, {Name: "proc", Driver: "native", CPUs: 1, Memory: config.Bytes(gbs)}} {
+		if e := r.estimate(other, k); !e.Blind || e.MemBytes != gbs {
+			t.Errorf("%s: %+v, want blind: nothing is measured of the job there", other.Platform(), e)
+		}
+		// Nor does the workflow's other job lend its size across platforms.
+		if e := r.estimate(other, ledger.KeyOf("o/r", k.Workflow, "lint")); !e.Blind {
+			t.Errorf("%s lint: %+v, want blind", other.Platform(), e)
+		}
+	}
+	// A row written before platforms were recorded: no platform, sizes nothing
+	// until its class says what it ran as.
+	if err := r.ledger.InsertRunner("old-h1-a", "old", "", "h1", *r.now, size.Estimate{}); err != nil {
+		t.Fatal(err)
+	}
+	old := ledger.KeyOf("o/r", "o/r/.github/workflows/old.yml", "build")
+	r.finished("old-h1-a", old, 0.5, 3*gbs, 0)
+	if e := r.estimate(cl, old); !e.Blind {
+		t.Fatalf("before the old row has a platform: %+v", e)
+	}
+	if err := r.ledger.SetPlatform("old", cl.Platform()); err != nil {
+		t.Fatal(err)
+	}
+	if e := r.estimate(cl, old); e.Runs != 1 || e.Blind || e.MemBytes < 3*gbs {
+		t.Fatalf("after: %+v", e)
 	}
 }

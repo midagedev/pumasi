@@ -172,9 +172,9 @@ func printStatus(w io.Writer, s controller.State) {
 	if len(s.Sizes) > 0 {
 		// What the next run of each job is placed with, learned from its last runs.
 		fmt.Fprintln(w)
-		fmt.Fprintln(tw, "JOB SIZE\tWORKFLOW\tNEXT RUN\tLAST RUN\tLARGEST\tRUNS")
+		fmt.Fprintln(tw, "JOB SIZE\tWORKFLOW\tRAN AS\tNEXT RUN\tLAST RUN\tLARGEST\tRUNS")
 		for _, j := range s.Sizes {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", j.Job, j.Workflow, sizeText(j.EstCPUs, j.EstMem), sizeText(j.LastCPUs, j.LastMem), sizeText(j.TopCPUs, j.TopMem), j.Runs)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", j.Job, j.Workflow, j.Platform, sizeText(j.EstCPUs, j.EstMem), sizeText(j.LastCPUs, j.LastMem), sizeText(j.TopCPUs, j.TopMem), j.Runs)
 		}
 		tw.Flush()
 	}

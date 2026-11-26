@@ -171,6 +171,9 @@ func New(cfg *config.Config, auth ghauth.Auth, l *ledger.Ledger, ev *EventLog, l
 	}
 	for _, cc := range cfg.Classes {
 		c.classes = append(c.classes, &class{cfg: cc, retaken: make(chan struct{}, 1)})
+		if err := l.SetPlatform(cc.Name, cc.Platform()); err != nil {
+			return nil, fmt.Errorf("ledger: %w", err)
+		}
 	}
 	c.book = newIncidentBook(c)
 	c.join = join.NewServer(cfg.StateDir(), "", log)
@@ -706,6 +709,9 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 			// A job that has run long enough tells what its workflow's unmeasured jobs may need.
 			if working && lr.Job != "" && !dr.JobStartedAt.IsZero() && now.Sub(dr.JobStartedAt) >= size.Settle {
 				k := ledger.KeyOf(lr.Repo, lr.Workflow, "")
+				if cl := c.classByName(lr.Class); cl != nil {
+					k.Platform = cl.cfg.Platform()
+				}
 				was := seenNow[k]
 				seenNow[k] = size.Sample{CPUs: max(was.CPUs, ar.CPUNow), MemBytes: max(was.MemBytes, memNow)}
 			}
@@ -886,6 +892,14 @@ func (c *Controller) reloadPriority() {
 	c.decision(c.now(), "", "", "priority", "", fmt.Sprintf("%d rules, head start %s", len(fresh.Priority), fresh.PriorityHeadStart))
 }
 
+// platformOf is what a class's runners run as, "" for a class not configured.
+func (c *Controller) platformOf(class string) string {
+	if cl := c.classByName(class); cl != nil {
+		return cl.cfg.Platform()
+	}
+	return ""
+}
+
 // estimate is what a job is expected to use: learned from its last measured
 // runs, or the class's first estimate while there are none.
 //
@@ -900,6 +914,7 @@ func (c *Controller) estimate(cl config.Class, k ledger.JobKey) size.Estimate {
 }
 
 func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estimate {
+	k.Platform = cl.Platform()
 	first := size.Estimate{CPUs: cl.CPUs, MemBytes: int64(cl.Memory)}
 	blind := first
 	blind.Blind = true
@@ -914,11 +929,11 @@ func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estim
 	if len(runs) > 0 {
 		return size.Learn(runs, first)
 	}
-	others, err := c.ledger.WorkflowRuns(k.Repo, k.Workflow, 3*size.Window)
+	others, err := c.ledger.WorkflowRuns(k.Repo, k.Workflow, k.Platform, 3*size.Window)
 	if err != nil {
 		c.log.Error("ledger workflow runs", "err", err)
 	}
-	if now, ok := c.seenNow[ledger.JobKey{Repo: k.Repo, Workflow: k.Workflow}]; ok {
+	if now, ok := c.seenNow[ledger.JobKey{Repo: k.Repo, Workflow: k.Workflow, Platform: k.Platform}]; ok {
 		others = append(others, now)
 	}
 	if len(others) == 0 {
@@ -1138,7 +1153,7 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	if !ok {
 		est = size.Estimate{CPUs: s.CPUs, MemBytes: s.MemBytes}
 	}
-	if err := c.ledger.InsertRunner(name, s.Class, s.Host, now, est); err != nil {
+	if err := c.ledger.InsertRunner(name, s.Class, c.platformOf(s.Class), s.Host, now, est); err != nil {
 		c.log.Error("ledger insert", "err", err)
 		return
 	}

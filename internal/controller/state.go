@@ -29,6 +29,7 @@ type JobSize struct {
 	Repo     string  `json:"repo"`
 	Workflow string  `json:"workflow"` // the workflow file's name
 	Job      string  `json:"job"`
+	Platform string  `json:"platform"` // what it ran as: "linux/docker"
 	EstCPUs  float64 `json:"estCpus"`
 	EstMem   int64   `json:"estMem"`
 	LastCPUs float64 `json:"lastCpus"` // its newest measured run
@@ -200,7 +201,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			continue
 		}
 		e := size.Learn(runs, size.Estimate{})
-		out.Sizes = append(out.Sizes, JobSize{Repo: k.Repo, Workflow: path.Base(k.Workflow), Job: k.Job, EstCPUs: e.CPUs, EstMem: e.MemBytes,
+		out.Sizes = append(out.Sizes, JobSize{Repo: k.Repo, Workflow: path.Base(k.Workflow), Job: k.Job, Platform: k.Platform, EstCPUs: e.CPUs, EstMem: e.MemBytes,
 			LastCPUs: runs[0].CPUs, LastMem: runs[0].MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs})
 	}
 

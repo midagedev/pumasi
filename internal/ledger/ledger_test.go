@@ -47,7 +47,7 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("assigned_count %d", n)
 	}
 
-	must(l.InsertRunner("r1", "linux-s", "h1", t0.Add(11*time.Minute), size.Estimate{}))
+	must(l.InsertRunner("r1", "linux-s", "linux/docker", "h1", t0.Add(11*time.Minute), size.Estimate{}))
 	must(l.SetRegistration("r1", 42, t0.Add(11*time.Minute+time.Second)))
 	must(l.MarkListening("r1", t0.Add(11*time.Minute+9*time.Second), 9000))
 	r, err := l.Runner("r1")
@@ -108,7 +108,7 @@ func TestCloseFromExitAndRevive(t *testing.T) {
 		return
 	}
 	for _, n := range []string{"a", "b"} {
-		if err := l.InsertRunner(n, "linux-s", "server1", t0, size.Estimate{}); err != nil {
+		if err := l.InsertRunner(n, "linux-s", "linux/docker", "server1", t0, size.Estimate{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -141,7 +141,7 @@ func TestOpenOrRebuildMovesDamagedFileAside(t *testing.T) {
 	if err != nil || moved != "" {
 		t.Fatalf("fresh ledger: moved %q err %v", moved, err)
 	}
-	_ = l.InsertRunner("r1", "linux-s", "h", time.Now(), size.Estimate{})
+	_ = l.InsertRunner("r1", "linux-s", "linux/docker", "h", time.Now(), size.Estimate{})
 	l.Close()
 	if err := os.WriteFile(path, []byte("this is not a database, not even close"), 0o600); err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestJobRuns(t *testing.T) {
 	run := func(i int, job, ref string, work int64, oom int, removed bool) {
 		name := fmt.Sprintf("r%d", i)
 		at := t0.Add(time.Duration(i) * time.Hour)
-		must(l.InsertRunner(name, "linux-s", "h1", at, size.Estimate{CPUs: 2, MemBytes: 4 << 30}))
+		must(l.InsertRunner(name, "linux-s", "linux/docker", "h1", at, size.Estimate{CPUs: 2, MemBytes: 4 << 30}))
 		_, err := l.JobStarted(name, Job{ID: name, Class: "linux-s", Repo: "o/r", Workflow: "o/r/.github/workflows/ci.yml@" + ref, Name: job}, at)
 		must(err)
 		must(l.SetUsage(name, Usage{CPUSec: 300, MemPeak: 15 << 30, MemWorkPeak: work, OOMKills: oom, LimitMem: 6 << 30}))
@@ -223,6 +223,7 @@ func TestJobRuns(t *testing.T) {
 	run(6, "build", "refs/heads/main", 8<<30, 0, false) // still on its host: its last sample is not in yet
 
 	k := KeyOf("o/r", "o/r/.github/workflows/ci.yml@refs/heads/other", "build")
+	k.Platform = "linux/docker"
 	runs, err := l.JobRuns(k, 10)
 	must(err)
 	want := []size.Sample{{CPUs: 3, MemBytes: 6 << 30, OOM: true}, {CPUs: 3, MemBytes: 2 << 30}, {CPUs: 3, MemBytes: 1 << 30}}

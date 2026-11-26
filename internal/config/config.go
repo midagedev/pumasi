@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -168,6 +169,20 @@ type Class struct {
 // ScaleSet is the class's scale set on GitHub, and the label its jobs ask for:
 // runs-on: [self-hosted, pumasi-<class>].
 func (cl Class) ScaleSet() string { return "pumasi-" + cl.Name }
+
+// Platform is what the class's runners run as: its OS and driver,
+// "linux/docker". Measured runs are kept apart by it.
+func (cl Class) Platform() string {
+	os := cmp.Or(cl.OS, "linux")
+	driver := cl.Driver
+	if driver == "" {
+		driver = "native"
+		if os == "linux" {
+			driver = "docker"
+		}
+	}
+	return os + "/" + driver
+}
 
 // RunsOn is the labels of the class's scale set: a job comes to it when all
 // of its runs-on labels are among them.

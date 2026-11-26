@@ -114,6 +114,8 @@ func Open(path string) (*Ledger, error) {
 		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER", "runners ADD COLUMN est_blind INTEGER",
 		// limit_mem: the memory limit the OS held the runner to (NULL or 0 = none).
 		"runners ADD COLUMN limit_mem INTEGER",
+		// platform: the OS and driver the runner ran as ("linux/docker"); part of its job's key.
+		"runners ADD COLUMN platform TEXT",
 		// event: what triggered the job's run (push, schedule, …), for the priority rules.
 		"demand ADD COLUMN event TEXT"} {
 		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -254,9 +256,18 @@ type Runner struct {
 	RemovedAt                time.Time
 }
 
-func (l *Ledger) InsertRunner(name, class, host string, at time.Time, est size.Estimate) error {
-	return l.exec(`INSERT INTO runners(name, class, host, state, created_at, est_cpus, est_mem, est_runs, est_blind) VALUES(?,?,?,'starting',?,?,?,?,?)`,
-		name, class, host, ts(at), est.CPUs, est.MemBytes, est.Runs, est.Blind)
+// InsertRunner records a runner as placed. platform is what it runs as (see
+// JobKey).
+func (l *Ledger) InsertRunner(name, class, platform, host string, at time.Time, est size.Estimate) error {
+	return l.exec(`INSERT INTO runners(name, class, platform, host, state, created_at, est_cpus, est_mem, est_runs, est_blind) VALUES(?,?,NULLIF(?,''),?,'starting',?,?,?,?,?)`,
+		name, class, platform, host, ts(at), est.CPUs, est.MemBytes, est.Runs, est.Blind)
+}
+
+// SetPlatform fills in what a class's runners ran as on the rows from before
+// that was recorded. A class's OS and driver are taken to be what they are
+// now; the rows of a class that is gone stay without one and size nothing.
+func (l *Ledger) SetPlatform(class, platform string) error {
+	return l.exec(`UPDATE runners SET platform=? WHERE class=? AND platform IS NULL`, platform, class)
 }
 
 // SetEstimate replaces what placement counts on for a runner: GitHub has
@@ -710,10 +721,13 @@ func (l *Ledger) spans(q string, since time.Time) ([]Span, error) {
 	return out, rows.Err()
 }
 
-// JobKey names a job across its runs: the repository, the workflow file and
-// the job's name as GitHub shows it (a matrix job's name carries its values).
+// JobKey names a job across its runs: the repository, the workflow file, the
+// job's name as GitHub shows it (a matrix job's name carries its values), and
+// the platform it ran as — the OS and the driver, "linux/docker". The same
+// name on another OS is another program, and a container and a process tree
+// are not measured as the same thing.
 type JobKey struct {
-	Repo, Workflow, Job string
+	Repo, Workflow, Job, Platform string
 }
 
 // KeyOf is the key of a job as GitHub's messages name it. The workflow comes
@@ -733,20 +747,20 @@ const workflowFile = `CASE WHEN instr(COALESCE(workflow,''),'@')>0 THEN substr(w
 // too much and are left out. A run that lost a process at its memory limit
 // needed more than the limit, whatever the samples caught of it before.
 func (l *Ledger) JobRuns(k JobKey, limit int) ([]size.Sample, error) {
-	return l.runs(`AND job=?`, limit, k.Repo, k.Workflow, k.Job)
+	return l.runs(`AND job=?`, limit, k.Repo, k.Workflow, k.Platform, k.Job)
 }
 
-// WorkflowRuns are the newest measured runs of any job of a workflow: what a
-// job of it that has never run is sized by.
-func (l *Ledger) WorkflowRuns(repo, workflow string, limit int) ([]size.Sample, error) {
-	return l.runs(``, limit, repo, workflow)
+// WorkflowRuns are the newest measured runs of any job of a workflow on a
+// platform: what a job of it that has never run there is sized by.
+func (l *Ledger) WorkflowRuns(repo, workflow, platform string, limit int) ([]size.Sample, error) {
+	return l.runs(``, limit, repo, workflow, platform)
 }
 
 func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, error) {
 	rows, err := l.db.Query(`SELECT COALESCE(cpu_sec,0),
 	    MAX(mem_work_peak, CASE WHEN COALESCE(oom_kills,0) > 0 THEN COALESCE(limit_mem,0) ELSE 0 END), COALESCE(oom_kills,0),
 	    COALESCE((julianday(COALESCE(finished_at, removed_at))-julianday(started_at))*86400, 0)
-	  FROM runners WHERE repo=? AND `+workflowFile+`=? `+andJob+` AND started_at IS NOT NULL
+	  FROM runners WHERE repo=? AND `+workflowFile+`=? AND COALESCE(platform,'')=? `+andJob+` AND started_at IS NOT NULL
 	    AND mem_work_peak > 0 AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
 	  ORDER BY started_at DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
@@ -782,10 +796,10 @@ func (l *Ledger) ClassJobs(class string, limit int) ([]JobKey, error) {
 }
 
 func (l *Ledger) measuredJobs(andClass string, args ...any) ([]JobKey, error) {
-	rows, err := l.db.Query(`SELECT repo, `+workflowFile+`, job FROM runners
-	  WHERE job IS NOT NULL AND repo IS NOT NULL AND started_at IS NOT NULL AND mem_work_peak > 0
+	rows, err := l.db.Query(`SELECT repo, `+workflowFile+`, job, platform FROM runners
+	  WHERE job IS NOT NULL AND repo IS NOT NULL AND platform IS NOT NULL AND started_at IS NOT NULL AND mem_work_peak > 0
 	    AND (removed_at IS NOT NULL OR state IN ('failed','lost')) `+andClass+`
-	  GROUP BY 1,2,3 ORDER BY MAX(started_at) DESC LIMIT ?`, args...)
+	  GROUP BY 1,2,3,4 ORDER BY MAX(started_at) DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +807,7 @@ func (l *Ledger) measuredJobs(andClass string, args ...any) ([]JobKey, error) {
 	var out []JobKey
 	for rows.Next() {
 		var k JobKey
-		if err := rows.Scan(&k.Repo, &k.Workflow, &k.Job); err != nil {
+		if err := rows.Scan(&k.Repo, &k.Workflow, &k.Job, &k.Platform); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
