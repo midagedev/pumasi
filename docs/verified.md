@@ -7,6 +7,7 @@
 - **미확인** — 코드는 있으나 돌려 보지 않았다.
 
 실물 호스트: Linux 서버(Docker), WSL2 Ubuntu 데스크톱(systemd 255), Apple silicon 노트북, Windows 11 x64 데스크톱. 2026-11-24 ~ 25.
+「크기」 절의 실물은 2026-11-26, 노트북과 그 위의 Linux VM(aarch64, 8cpu/32G, Docker, cgroup v2)에서 봤다.
 
 ## 배치와 장부
 
@@ -22,6 +23,29 @@
 | `mounts`: 경로 있는 호스트에만, 같은 경로로 읽고 쓰기, 없으면 대기 사유 | 실물 | 작업 디렉터리가 mount 안일 때 hard link 가 된다(링크 수 2) |
 | 설정의 모르는 키·같은 이름의 클래스 거부 | 유닛 | |
 | 대시보드 24시간 추이에 스스로 붙은 호스트 포함 | 유닛 | |
+
+## 크기 (사람이 숫자를 고치지 않는 배치)
+
+설정에는 숫자가 없었다(`classes: [{name: grow}, …]`, 호스트는 상한 없이 가입).
+
+| 동작 | 수준 | 본 것 |
+|---|---|---|
+| 처음 보는 잡은 클래스의 첫 추정으로 놓인다 | 실물 | `takes 2.0cpu/4.0G of the free 6.4cpu/22.7G for hold (1) (the class's first estimate, …)` |
+| 메모리가 커지는 잡을 추정이 따라간다 | 실물(Linux 컨테이너, Mac native) | 300 → 600 → 1200 → 2400MiB 를 쥐는 잡 4번: 추정 4.0G(첫) → 0.6G → 0.9G → 1.8G → 3.2G. Mac: 700 → 1400MiB 에서 1.1G → 1.9G |
+| 추정보다 큰 잡이 죽지 않고 끝난다 | 실물(Linux 컨테이너, Mac native) / 드라이버 테스트(native Linux, 실제 systemd) | 추정 576M 에 746M, 960M 에 1476M, 1792M 에 2767M 을 쓴 실행이 모두 success, OOM 0. Mac: 추정 1088M 에 1584M. native Linux 는 VM 에서 드라이버 테스트로: 추정 32M 인 scope 가 300M 을 쥐고 종료 코드 그대로 끝남, `memory.max` = `max` |
+| 페이지 캐시는 크기에 안 들어간다 | 실물(Linux 컨테이너) | 300MiB 를 쥐고 1.5G 파일을 쓰고 읽은 잡: cgroup peak 1950M, 장부의 작업 메모리 449M, 다음 추정 0.6G |
+| 바깥 부하가 있으면 새 러너를 미루고, 빠지면 놓는다 | 실물(Linux) | VM 에서 pumasi 밖의 프로세스가 4G 를 쥐자 자리가 22.9G → 18.4G: 첫 추정 20G 인 잡이 `no host with 2.0cpu/20.0G free (vm1 6.5cpu/18.6G)` 로 대기, 프로세스를 죽이자 다음 평가에서 `free 6.4cpu/22.7G` 로 시작(대기 기록 16초 뒤) |
+| 재 본 잡은 클래스의 숫자보다 잰 크기를 따른다 | 실물 | 첫 추정 20G 인 클래스로 간 잡이, 다른 클래스에서 잰 적 있는 잡이라 3.2G 로 놓였다(열쇠에 클래스가 없다) |
+| 클래스 `limit` 에 걸린 잡: 사건, 그리고 다음 추정이 한도 위로 | 실물(Linux 컨테이너) | `limit: {memory: 1G}` 에 1500MiB 잡: 잡 failure, `hit class tight's memory limit (1.0G)` 사건, 추정 0.2G → 1.5G. 한도에 걸린 실행을 한도 이상으로 치기 전의 판에서는 표본이 96M(죽기 전 마지막 샘플)이라 추정이 내려갔다 — 고친 뒤 다시 본 것이 위의 값 |
+| 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 | 미확인 | 걸리게 하려면 VM 메모리의 80%(25G)를 쥐어야 해서 하지 않았다. 한도 값의 계산은 유닛, 한도가 걸렸을 때의 동작은 위 `limit` 과 같은 경로 |
+| 추정 계산, 러너가 쥔 것 = max(추정, 실측), 자리 계산, 메모리 압박 닫힘 | 유닛 | `internal/size`, `internal/decide` 의 표 테스트 |
+| 크기를 이유로 멈추는 러너가 없다 | 유닛 | 추정의 1 ~ 1000배, 압박 0·99, 상태 셋의 조합 전부에서 Stop 0 |
+| 숫자 없는 설정이 통한다, `limit` 파싱 | 유닛 + 실물 | 실물은 위 설정 |
+| `status` 의 EST·NOW·JOB SIZE, 로그의 `estimate` 줄 | 실물 | `EST 2.0cpu/4.0G (first)  NOW 0.0cpu/0.4G`, `hold (1)  labels.yml  0.4cpu/3.2G  0.3cpu/2.7G  0.3cpu/2.7G  4` |
+| 대시보드의 Job sizes 표와 러너의 now/est 칸 | 미확인 | 코드만. 화면을 열어 보지 않았다 |
+| Windows 에서의 추정·실측 | 미확인 | 빌드와 vet 만 |
+| Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 | 미확인 | 유닛뿐 |
+| native Linux 러너로 실제 잡 | 미확인(이번) | VM 에 libicu 가 없어 러너가 뜨지 못했다(`exited before a job` 3번 → 호스트 격리까지는 설계대로). 가입 전 확인이 libicu 를 보지 않는다 |
 
 ## 호스트가 붙는 법
 
@@ -45,10 +69,10 @@
 
 | 동작 | 수준 | 본 것 |
 |---|---|---|
-| 메모리 한도(컨테이너, native Linux, `docker: inside`) | 실물 | 넘은 프로세스만 137 로 죽고 잡은 실패로 보고, OOM 사건, peak = 한도 |
+| 메모리 한도(컨테이너, native Linux, `docker: inside`) | 실물 | 넘은 프로세스만 137 로 죽고 잡은 실패로 보고, OOM 사건, peak = 한도. 한도가 클래스 크기였던 판에서 본 것이고, 지금 판(`limit`)은 컨테이너만 다시 봤다 |
 | Windows 메모리 한도 | 실물 | 할당이 거절되고 사건, peak = 한도 |
 | Windows CPU 한도의 강제 | 미확인 | |
-| Mac: 클래스를 넘은 러너 | 실물 | `ran over its class` 사건 한 번, 잡은 성공 |
+| Mac: 추정을 넘은 러너 | 실물 | 잡은 성공, 사건 없음(전 판의 `ran over its class` 사건은 없앴다) |
 | 잡이 남긴 자식 정리 | 실물 | Linux native(`setsid` 포함), Mac(`setsid` 포함), Windows |
 | native Linux: 호스트의 경로·docker 사용, 잡 사이에 파일 넘기기 | 실물 | |
 | native Linux: cgroup 위임이 없으면 띄우지 않고 이유를 말한다 | 유닛 | 드라이버 테스트 |

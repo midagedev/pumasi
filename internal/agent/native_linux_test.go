@@ -44,7 +44,7 @@ func read(t *testing.T, path string) string {
 
 func TestScopeTree(t *testing.T) {
 	dir, log := scopeRunner(t, "sleep 600 &\ni=0; while [ $i -lt 300000 ]; do i=$((i+1)); done\nsleep 1\nexit 7\n")
-	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1.5, MemBytes: 256 << 20}, runnerEnv(os.Environ()), log)
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 64 << 20, LimitCPUs: 1.5, LimitMem: 256 << 20}, runnerEnv(os.Environ()), log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,11 +89,43 @@ func TestScopeTree(t *testing.T) {
 	}
 }
 
-// A process of the job that goes over the class's memory is killed by the
-// kernel and counted; the runner itself goes on and reports.
+// The size a runner was placed with is an estimate, not a limit: a job that
+// uses several times as much is not held to it and not killed for it.
+func TestScopeOverItsEstimateIsNotKilled(t *testing.T) {
+	dir, log := scopeRunner(t, "head -c 300M /dev/zero | tail > /dev/null\necho after\nexit 3\n")
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 0.1, MemBytes: 32 << 20}, runnerEnv(os.Environ()), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.kill()
+	if got := read(t, filepath.Join(tr.cg, "memory.max")); got != "max" {
+		t.Errorf("memory.max %s, want max: no limit was asked for", got)
+	}
+	// Without a quota systemd may not even enable the cpu controller for the scope.
+	if b, err := os.ReadFile(filepath.Join(tr.cg, "cpu.max")); err == nil && !strings.HasPrefix(string(b), "max ") {
+		t.Errorf("cpu.max %s, want max", b)
+	}
+	var top int64
+	for i := 0; i < 300 && tr.alive(); i++ {
+		time.Sleep(50 * time.Millisecond)
+		tr.refresh()
+		top = max(top, tr.usage().MemWork)
+	}
+	u := tr.usage()
+	code, _ := tr.exitCode()
+	if u.OOMKills != 0 || code != 3 {
+		t.Errorf("exit %d, %d oom kills: the job must finish untouched", code, u.OOMKills)
+	}
+	if top < 200<<20 {
+		t.Errorf("working memory peaked at %d: the 300M the job held was not seen", top)
+	}
+}
+
+// A process of the job that goes over the runner's memory limit is killed by
+// the kernel and counted; the runner itself goes on and reports.
 func TestScopeMemoryLimit(t *testing.T) {
 	dir, log := scopeRunner(t, "head -c 600M /dev/zero | tail > /dev/null\necho after\nsleep 2\nexit 3\n")
-	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 200 << 20}, runnerEnv(os.Environ()), log)
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 64 << 20, LimitMem: 200 << 20}, runnerEnv(os.Environ()), log)
 	if err != nil {
 		t.Fatal(err)
 	}

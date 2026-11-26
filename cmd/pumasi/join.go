@@ -74,8 +74,8 @@ Windows (PowerShell, in a window on that machine's desktop):
   $env:PUMASI_TOKEN='%[3]s'; & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey '%[1]s' https://%[2]s/join.ps1 | Out-String)))
 
 curl's -k is safe here: --pinnedpubkey accepts only this controller's key, whatever the certificate says.
-The host lends half of its cpus and memory under its hostname; to say otherwise, add
---name NAME, --cpus N or --mem 6G at the end. A Mac, a Windows machine and a Linux machine
+The host joins under its hostname and lends what it has free, measured as it goes; to
+say otherwise, add --name NAME, or --cpus N and --mem 6G to cap what it lends. A Mac, a Windows machine and a Linux machine
 with a screen session join as a desktop (someone works on it: theirs first); --server or
 --desktop says otherwise. On macOS and Windows runners are processes of the user who ran
 the line, not containers.
@@ -145,8 +145,8 @@ func runJoin(args []string) error {
 	hostname, _ := os.Hostname()
 	fs := flag.NewFlagSet("pumasi join", flag.ContinueOnError)
 	name := fs.String("name", strings.Trim(hostNameRE.ReplaceAllString(hostname, "-"), "-."), "the host's name at the controller")
-	cpus := fs.Float64("cpus", 0, "cpus to lend (default: half of this machine)")
-	memStr := fs.String("mem", "", "memory to lend, e.g. 6G (default: half of this machine)")
+	cpus := fs.Float64("cpus", 0, "the most cpus to lend (default: what is free)")
+	memStr := fs.String("mem", "", "the most memory to lend, e.g. 6G (default: what is free)")
 	desktop := fs.Bool("desktop", false, "someone works on this machine: it is filled after the servers and takes no new runners while they are at it")
 	server := fs.Bool("server", false, "nobody works on this machine")
 	if err := fs.Parse(args); err != nil {
@@ -177,17 +177,6 @@ func runJoin(args []string) error {
 	}
 	if hc.Mem, err = config.ParseBytes(*memStr); err != nil {
 		return fmt.Errorf("--mem: %w", err)
-	}
-	if hc.CPUs == 0 {
-		hc.CPUs = max(1, float64(runtime.NumCPU()/2))
-	}
-	if hc.Mem == 0 {
-		_, meter := agent.Platform("pumasi", p.dir)
-		hu, err := meter.Host()
-		if err != nil || hu.MemBytes <= 0 {
-			return fmt.Errorf("cannot read this machine's memory (%v); pass --mem", err)
-		}
-		hc.Mem = hu.MemBytes / 2
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -230,7 +219,11 @@ func runJoin(args []string) error {
 		}
 		return fmt.Errorf("registered as %s, but the agent is not connected: %s\nsee %s, then `pumasi doctor`", hc.Name, why, p.log)
 	}
-	fmt.Printf("joined as %s (%s): lends %g cpus and %s, runs as %s\n", hc.Name, hc.Kind, hc.CPUs, gib(hc.Mem), how)
+	lends := "what it has free"
+	if hc.CPUs > 0 || hc.Mem > 0 {
+		lends = "at most " + cond(hc.CPUs > 0, fmt.Sprintf("%g cpus", hc.CPUs), "any cpu") + " and " + cond(hc.Mem > 0, gib(hc.Mem), "any memory")
+	}
+	fmt.Printf("joined as %s (%s): lends %s, runs as %s\n", hc.Name, hc.Kind, lends, how)
 	if kindWhy != "" {
 		fmt.Println(kindWhy)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/midagedev/pumasi/internal/size"
 	"io"
 	"log/slog"
 	"net/http"
@@ -108,11 +109,16 @@ type fakeDriver struct {
 	ev        map[string]agent.LogEvents
 	removed   []string
 	removeErr error
+	specs     map[string]agent.Spec
 }
 
 func (d *fakeDriver) Start(_ context.Context, s agent.Spec) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.specs == nil {
+		d.specs = map[string]agent.Spec{}
+	}
+	d.specs[s.Name] = s
 	d.cs[s.Name] = agent.Container{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, State: "running"}
 	return nil
 }
@@ -200,10 +206,10 @@ func newRig(t *testing.T) *rig {
 // runner places a runner the way start and launch do and lets the agent see it.
 func (r *rig) runner(name string) {
 	r.t.Helper()
-	if err := r.ledger.InsertRunner(name, "small", "h1", *r.now); err != nil {
+	if err := r.ledger.InsertRunner(name, "small", "h1", *r.now, size.Estimate{}); err != nil {
 		r.t.Fatal(err)
 	}
-	if !r.launch(context.Background(), name, decide.Start{Class: "small", Host: "h1"}, *r.now) {
+	if !r.launch(context.Background(), name, decide.Start{Class: "small", Host: "h1"}, *r.now, 0, 0) {
 		r.t.Fatal("launch did not finish")
 	}
 	r.ag.Sample(context.Background())
@@ -329,10 +335,10 @@ func TestContainerLeftByAFailedRemovalGoesNextRound(t *testing.T) {
 
 func TestLaunchOnAHostThatLeft(t *testing.T) {
 	r := newRig(t)
-	if err := r.ledger.InsertRunner("small-h9-cccc", "small", "h9", *r.now); err != nil {
+	if err := r.ledger.InsertRunner("small-h9-cccc", "small", "h9", *r.now, size.Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	r.launch(context.Background(), "small-h9-cccc", decide.Start{Class: "small", Host: "h9"}, *r.now)
+	r.launch(context.Background(), "small-h9-cccc", decide.Start{Class: "small", Host: "h9"}, *r.now, 0, 0)
 	if got := r.state("small-h9-cccc"); got != "failed+removed" {
 		t.Fatalf("ledger %s", got)
 	}
@@ -438,7 +444,7 @@ func TestNewRunnerIsNotMissingFromAnOlderSnapshot(t *testing.T) {
 // for the hosts of the config.
 func TestSeriesHasHostsThatJoined(t *testing.T) {
 	r := newRig(t)
-	if err := r.ledger.InsertRunner("small-desk1-eeee", "small", "desk1", r.now.Add(-time.Hour)); err != nil {
+	if err := r.ledger.InsertRunner("small-desk1-eeee", "small", "desk1", r.now.Add(-time.Hour), size.Estimate{}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.series(*r.now)

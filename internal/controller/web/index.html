@@ -22,7 +22,7 @@
   <section>
     <h2>Hosts</h2>
     <div class="scroll"><table id="hosts">
-      <thead><tr><th>Host</th><th class="opt">Kind</th><th class="opt">OS</th><th>CPUs</th><th>Memory</th><th class="num opt">CPU pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th>State</th><th class="num opt">Seen</th><th class="num opt">RTT</th><th class="opt">Agent</th><th class="opt">Last drop</th></tr></thead>
+      <thead><tr><th>Host</th><th class="opt">Kind</th><th class="opt">OS</th><th>CPUs held</th><th>Memory held</th><th class="num">Free now</th><th class="opt">Lends</th><th class="num opt">CPU pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th>State</th><th class="num opt">Seen</th><th class="num opt">RTT</th><th class="opt">Agent</th><th class="opt">Last drop</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -31,7 +31,7 @@
     <h2>Runners</h2>
     <p class="empty" id="runners-empty" hidden>no runners</p>
     <div class="scroll"><table id="runners">
-      <thead><tr><th>Runner</th><th class="opt">Class</th><th>Host</th><th class="num opt">Slot</th><th>State</th><th>Job</th><th class="num opt">Age</th><th class="num opt">CPU</th><th>Memory</th></tr></thead>
+      <thead><tr><th>Runner</th><th class="opt">Class</th><th>Host</th><th class="num opt">Slot</th><th>State</th><th>Job</th><th class="num opt">Age</th><th class="num opt">CPU</th><th class="num">Cores now/est</th><th>Memory now/est</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -46,10 +46,19 @@
   </section>
 
   <section>
+    <h2>Job sizes</h2>
+    <p class="empty" id="sizes-empty" hidden>no measured job yet: a job never seen starts from its class's first estimate</p>
+    <div class="scroll"><table id="sizes">
+      <thead><tr><th>Job</th><th class="opt">Workflow</th><th class="num">Next run placed with</th><th class="num">Last run used</th><th class="num opt">Largest of last runs</th><th class="num">Runs</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
     <h2>Recent jobs</h2>
     <p class="empty" id="jobs-empty" hidden>no finished jobs yet</p>
     <div class="scroll"><table id="jobs">
-      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num opt">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak</th></tr></thead>
+      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num opt">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak / estimate</th></tr></thead>
       <tbody></tbody>
     </table></div>
     <button id="jobs-more" type="button" hidden></button>

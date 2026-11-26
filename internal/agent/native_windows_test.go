@@ -27,7 +27,7 @@ func TestJobObjectTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 256 << 20}, runnerEnv(os.Environ()), log)
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 64 << 20, LimitMem: 256 << 20}, runnerEnv(os.Environ()), log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestJobMemoryLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 300 << 20}, runnerEnv(os.Environ()), log)
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 64 << 20, LimitMem: 300 << 20}, runnerEnv(os.Environ()), log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestJobMemoryLimitAfterAdopt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 300 << 20}, runnerEnv(os.Environ()), log)
+	tr, err := startTree(dir, Spec{Name: "t", CPUs: 1, MemBytes: 64 << 20, LimitMem: 300 << 20}, runnerEnv(os.Environ()), log)
 	if err != nil {
 		t.Fatal(err)
 	}

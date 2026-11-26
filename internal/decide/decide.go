@@ -15,7 +15,9 @@ import (
 type Class struct {
 	Name string
 	// OS the class's jobs need: linux | macos | windows. Empty = linux.
-	OS         string
+	OS string
+	// What a job of the class is taken to need while nothing is known of it:
+	// the first estimate. A job with finished runs comes with its own size.
 	CPUs       float64
 	MemBytes   int64
 	MaxRunners int
@@ -45,7 +47,11 @@ type Host struct {
 	BudgetMem    int64
 	NonRunnerCPU float64
 	NonRunnerMem int64
-	PSICPU       float64
+	// KeepMem is left free on the machine whatever the budget says: memory
+	// does not stretch, and what the others use is a sample a few seconds old.
+	KeepMem int64
+	PSICPU  float64
+	PSIMem  float64
 	// Closed: why the host takes no new runners although it is up
 	// ("quarantined", "disk 4% free"). Empty = open.
 	Closed string
@@ -57,9 +63,11 @@ type Host struct {
 
 // Runner joins the ledger row with what the host's agent reports.
 type Runner struct {
-	Name     string
-	Class    string
-	Host     string
+	Name  string
+	Class string
+	Host  string
+	// What the runner holds of its host's room: what its job is expected to
+	// use, or what it uses now when that is more (0 = the class's first estimate).
 	CPUs     float64
 	MemBytes int64
 	// Ledger state: starting | idle | busy | done. Empty = not in the ledger (orphan).
@@ -86,6 +94,11 @@ type Demand struct {
 	ID        string
 	Class     string
 	FirstSeen time.Time
+	// What the job is expected to use (0 = the class's first estimate), and
+	// where that comes from, for the reason of its start.
+	CPUs     float64
+	MemBytes int64
+	Sized    string
 }
 
 type Snapshot struct {
@@ -95,6 +108,7 @@ type Snapshot struct {
 	Demand           []Demand
 	Runners          []Runner
 	PSICPUThreshold  float64
+	PSIMemThreshold  float64
 	ProvisionTimeout time.Duration
 	IdleTimeout      time.Duration
 	HostLostAfter    time.Duration
@@ -102,6 +116,10 @@ type Snapshot struct {
 
 type Start struct {
 	Class, Host, Reason string
+	// The job the runner is started for and the room taken for it.
+	Job      string
+	CPUs     float64
+	MemBytes int64
 }
 
 // Stop removes a runner. State is the ledger state to set ("" = keep).
@@ -149,7 +167,7 @@ func Decide(s Snapshot) Plan {
 			continue
 		}
 		cpus, mem := r.CPUs, float64(r.MemBytes)
-		if c, ok := classes[r.Class]; ok {
+		if c, ok := classes[r.Class]; ok && cpus == 0 && mem == 0 {
 			cpus, mem = c.CPUs, float64(c.MemBytes)
 		}
 		a := alloc[r.Host]
@@ -199,6 +217,11 @@ func Decide(s Snapshot) Plan {
 			deferred(c.Name, fmt.Sprintf("at maxRunners %d", c.MaxRunners))
 			continue
 		}
+		// The job's own size where it is known; the class's first estimate otherwise.
+		needCPU, needMem := c.CPUs, float64(c.MemBytes)
+		if d.CPUs > 0 && d.MemBytes > 0 {
+			needCPU, needMem = d.CPUs, float64(d.MemBytes)
+		}
 		best, bestSlots := "", -1.0
 		var why []string
 		lacking := "" // a path no host that could otherwise take the class has
@@ -220,15 +243,15 @@ func Decide(s Snapshot) Plan {
 			case !ok:
 				why = append(why, reason)
 				continue
-			case freeCPU+1e-9 < c.CPUs || freeMem < float64(c.MemBytes):
+			case freeCPU+1e-9 < needCPU || freeMem < needMem:
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				continue
 			}
-			if r := reservedFor(s, c, hn, hosts, alloc, live); r != "" {
+			if r := reservedFor(s, c, hn, needCPU, needMem, hosts, alloc, live); r != "" {
 				why = append(why, hn+" reserved for "+r)
 				continue
 			}
-			slots := math.Min(freeCPU/c.CPUs, freeMem/float64(c.MemBytes))
+			slots := math.Min(freeCPU/needCPU, freeMem/needMem)
 			if best == "" || better(h, slots, hosts[best], bestSlots) {
 				best, bestSlots = hn, slots
 			}
@@ -244,15 +267,18 @@ func Decide(s Snapshot) Plan {
 			if len(why) == 0 {
 				why = append(why, "no allowed host")
 			}
-			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", c.CPUs, gib(float64(c.MemBytes)), strings.Join(why, ", ")))
+			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
 			continue
 		}
 		h := hosts[best]
 		freeCPU, freeMem := free(h, alloc[best])
-		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: fmt.Sprintf(
-			"free %.1fcpu/%s", freeCPU, gib(freeMem))})
+		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", needCPU, gib(needMem), freeCPU, gib(freeMem))
+		if d.Sized != "" {
+			reason += " " + d.Sized
+		}
+		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: needCPU, MemBytes: int64(needMem)})
 		a := alloc[best]
-		alloc[best] = [2]float64{a[0] + c.CPUs, a[1] + float64(c.MemBytes)}
+		alloc[best] = [2]float64{a[0] + needCPU, a[1] + needMem}
 		live[c.Name]++
 	}
 	return p
@@ -275,6 +301,8 @@ func takes(s Snapshot, c Class, h Host) (ok bool, reason string) {
 		return false, h.Name + " " + h.Closed
 	case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
 		return false, fmt.Sprintf("%s cpu pressure %.0f", h.Name, h.PSICPU)
+	case s.PSIMemThreshold > 0 && h.PSIMem >= s.PSIMemThreshold:
+		return false, fmt.Sprintf("%s memory pressure %.0f", h.Name, h.PSIMem)
 	case c.Native && h.NoNative != "":
 		return false, h.Name + ": " + h.NoNative
 	case missing(c.Paths, h.Paths) != "":
@@ -299,7 +327,7 @@ func room(s Snapshot, c Class, hosts map[string]Host, alloc map[string][2]float6
 // into ("" = none). A class with reserve: N is promised room for N runners;
 // those it already has count. Another class is held back only where its
 // runner would take that room away, not when the room is not there anyway.
-func reservedFor(s Snapshot, c Class, host string, hosts map[string]Host, alloc map[string][2]float64, live map[string]int) string {
+func reservedFor(s Snapshot, c Class, host string, cpus, mem float64, hosts map[string]Host, alloc map[string][2]float64, live map[string]int) string {
 	var with map[string][2]float64
 	for _, r := range s.Classes {
 		need := r.Reserve - live[r.Name]
@@ -309,7 +337,7 @@ func reservedFor(s Snapshot, c Class, host string, hosts map[string]Host, alloc 
 		if with == nil {
 			with = maps.Clone(alloc)
 			a := with[host]
-			with[host] = [2]float64{a[0] + c.CPUs, a[1] + float64(c.MemBytes)}
+			with[host] = [2]float64{a[0] + cpus, a[1] + mem}
 		}
 		if before := room(s, r, hosts, alloc); room(s, r, hosts, with) < min(need, before) {
 			return r.Name
@@ -376,11 +404,17 @@ func failedUnlessJob(r Runner) string {
 	return "failed"
 }
 
-// free is what a class may still take on a host: the smaller of what the budget
-// leaves and what the machine leaves after everyone else's use.
-func free(h Host, a [2]float64) (cpu, mem float64) {
+// free is what a runner may still take on a host: what the machine has left
+// after the runners' charges and everyone else's measured use, and no more
+// than the budget leaves when the host has one. Nobody sets the first number:
+// it moves with the machine.
+func free(h Host, a [2]float64) (cpu, mem float64) { return Free(h, a[0], a[1]) }
+
+// Free is free for a host whose runners hold cpus and mem.
+func Free(h Host, cpus, held float64) (cpu, mem float64) {
+	a := [2]float64{cpus, held}
 	cpu = h.CPUs - a[0] - h.NonRunnerCPU
-	mem = float64(h.MemBytes) - a[1] - float64(h.NonRunnerMem)
+	mem = float64(h.MemBytes) - a[1] - float64(h.NonRunnerMem) - float64(h.KeepMem)
 	if h.BudgetCPUs > 0 {
 		cpu = math.Min(cpu, h.BudgetCPUs-a[0])
 	}

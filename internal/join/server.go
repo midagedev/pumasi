@@ -282,8 +282,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	case reg.Kind != "server" && reg.Kind != "desktop":
 		http.Error(w, "kind must be server or desktop", http.StatusBadRequest)
 		return
-	case reg.CPUs <= 0 || reg.Mem <= 0:
-		http.Error(w, "the budget needs cpus and memory above zero (pass --cpus and --mem)", http.StatusBadRequest)
+	case reg.CPUs < 0 || reg.Mem < 0:
+		http.Error(w, "--cpus and --mem must not be negative (leave them out to lend what is free)", http.StatusBadRequest)
 		return
 	}
 	known, isMember := s.member(reg.ID)

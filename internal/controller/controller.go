@@ -28,6 +28,7 @@ import (
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/join"
 	"github.com/midagedev/pumasi/internal/ledger"
+	"github.com/midagedev/pumasi/internal/size"
 )
 
 type Controller struct {
@@ -55,7 +56,9 @@ type Controller struct {
 	mu sync.Mutex // guards class.stats and inflight
 	// Runners whose start request the agent has not answered yet (zero), or
 	// answered at that time: a snapshot asked for before then cannot show them.
-	inflight    map[string]time.Time
+	inflight map[string]time.Time
+	// sized: what each waiting job was taken to need in the last decision (under mu).
+	sized       map[string]size.Estimate
 	starts      sync.WaitGroup
 	lastDefer   map[string]deferRec
 	runCheck    map[int64]time.Time
@@ -195,7 +198,13 @@ func (c *Controller) EnsureScaleSets(ctx context.Context) error {
 			return fmt.Errorf("scale set %s exists with the labels [%s], the config asks for [%s]: labels cannot be changed, run `pumasi down` first (or rename the class)",
 				name, strings.Join(has, ", "), strings.Join(want, ", "))
 		}
-		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]", cl.cfg.Name, strings.Join(cl.cfg.RunsOn(), ", ")))
+		held := "held only to what protects its host"
+		if l := cl.cfg.Limit; l.CPUs > 0 || l.Memory > 0 {
+			held = "held to limit:" + cond(l.CPUs > 0, fmt.Sprintf(" %gcpu", l.CPUs), "") + cond(l.Memory > 0, " "+gib(int64(l.Memory)), "")
+		}
+		// cpus and memory were a limit once; say what they are now on every start.
+		c.log.Info(fmt.Sprintf("class %s  runs-on: [%s]  first estimate %gcpu/%s (for a job never measured; not a limit), %s",
+			cl.cfg.Name, strings.Join(cl.cfg.RunsOn(), ", "), cl.cfg.CPUs, gib(int64(cl.cfg.Memory)), held))
 		if generic := genericOnly(cl.cfg.RunsOn()); len(cl.cfg.Labels) > 0 && len(generic) > 0 {
 			// GitHub sends a job here when all of its labels are among the class's.
 			c.log.Warn(fmt.Sprintf("class %s also takes jobs that ask for less than all of its labels, like runs-on: [%s]; a job that takes that way is named when it comes",
@@ -420,6 +429,9 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		}
 		if !ours {
 			c.log.Warn("job started on a runner not in the ledger", "class", cls, "runner", j.RunnerName)
+		} else if err := c.ledger.SetEstimate(j.RunnerName, c.estimate(s.cl.cfg, ledger.KeyOf(j.OwnerName+"/"+j.RepositoryName, j.JobWorkflowRef, j.JobDisplayName))); err != nil {
+			// The runner was started for the oldest waiting job; GitHub may have given it another.
+			return err
 		}
 		c.log.Info(fmt.Sprintf("job %s on %s", j.JobDisplayName, j.RunnerName))
 		c.rerunNamed(j.RunnerName, job(cls, j.JobMessageBase))
@@ -606,7 +618,6 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 				if ar.OOMKills > 0 && lr.OOMKills == 0 {
 					c.reportOOM(lr, ar)
 				}
-				c.reportOverClass(h, lr, ar)
 				if ar.ListeningAt != nil && lr.ListeningAt.IsZero() {
 					ms := ar.ProvisionMs
 					if !lr.PostedAt.IsZero() {
@@ -633,7 +644,10 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 				}
 				c.markerCheck(h, lr, ar)
 			}
-			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: ar.CPUs, MemBytes: ar.MemBytes,
+			// What it holds of the host: its estimate, or its use now when that is more.
+			est := size.Estimate{CPUs: cmp.Or(lr.EstCPUs, ar.CPUs), MemBytes: cmp.Or(lr.EstMem, ar.MemBytes)}
+			cpus, mem := size.Charge(est, ar.CPUNow, cmp.Or(ar.MemWork, ar.MemCurrent))
+			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: cpus, MemBytes: mem,
 				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost, JobStartedAt: lr.StartedAt}
 			if ar.JobStartedAt != nil && ok {
 				dr.JobStartedAt = *ar.JobStartedAt
@@ -652,7 +666,7 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 			continue
 		}
 		dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State, JobKnown: lr.JobID != "",
-			CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt}
+			CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, CPUs: lr.EstCPUs, MemBytes: lr.EstMem}
 		if answered, ok := c.inflight[lr.Name]; ok {
 			// Missing from a snapshot that was asked for before the agent answered
 			// the start says nothing: the runner was not there to be listed yet.
@@ -706,7 +720,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 		}
 		return nil
 	}
-	u := ledger.Usage{CPUSec: r.CPUSec, MemPeak: r.MemPeak, IOBytes: r.IOBytes, ExitCode: r.ExitCode,
+	u := ledger.Usage{CPUSec: r.CPUSec, MemPeak: r.MemPeak, MemWorkPeak: r.MemWorkPeak, LimitMem: r.LimitMem, IOBytes: r.IOBytes, ExitCode: r.ExitCode,
 		PSICPUSec: psi("cpu"), PSIMemSec: psi("memory"), PSIIOSec: psi("io"), OOMKills: r.OOMKills}
 	if err := c.ledger.SetUsage(r.Name, u); err != nil {
 		c.log.Error("ledger usage", "runner", r.Name, "err", err)
@@ -714,7 +728,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 }
 
 func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) decide.Snapshot {
-	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold,
+	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold, PSIMemThreshold: c.cfg.PSIMemThreshold,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
 		if h.snap != nil {
@@ -727,6 +741,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		} else {
 			a := h.snap
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
+			dh.PSIMem, dh.KeepMem = a.PSI["memory"], keepMem(a.MemBytes)
 			dh.BudgetCPUs = minPositive(dh.BudgetCPUs, a.BudgetCPUs)
 			dh.BudgetMem = int64(minPositive(float64(dh.BudgetMem), float64(a.BudgetMem)))
 			if a.Kind != "" {
@@ -742,13 +757,23 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	if err != nil {
 		c.log.Error("ledger demand", "err", err)
 	}
-	perClass := map[string]int{}
-	for _, d := range open {
-		s.Demand = append(s.Demand, decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen})
-		perClass[d.Class]++
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	perClass := map[string]int{}
+	c.sized = map[string]size.Estimate{}
+	for _, d := range open {
+		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen}
+		if cl := c.classByName(d.Class); cl != nil {
+			est := c.estimate(cl.cfg, ledger.KeyOf(d.Repo, d.Workflow, d.Job))
+			c.sized[d.JobID] = est
+			dd.CPUs, dd.MemBytes, dd.Sized = est.CPUs, est.MemBytes, "("+est.Source()+")"
+			if d.Job != "" {
+				dd.Sized = "for " + d.Job + " " + dd.Sized
+			}
+		}
+		s.Demand = append(s.Demand, dd)
+		perClass[d.Class]++
+	}
 	for _, cl := range c.classes {
 		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
@@ -761,6 +786,38 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		}
 	}
 	return s
+}
+
+// estimate is what a job is expected to use: learned from its last measured
+// runs, or the class's first estimate while there are none.
+func (c *Controller) estimate(cl config.Class, k ledger.JobKey) size.Estimate {
+	first := size.Estimate{CPUs: cl.CPUs, MemBytes: int64(cl.Memory)}
+	if k.Job == "" {
+		return first
+	}
+	runs, err := c.ledger.JobRuns(k, size.Window)
+	if err != nil {
+		c.log.Error("ledger job runs", "err", err)
+		return first
+	}
+	return size.Learn(runs, first)
+}
+
+// keepMem is what stays free on a machine whatever else is true: a tenth of
+// its memory, between 1G and 4G.
+func keepMem(total int64) int64 { return min(max(total/10, 1<<30), 4<<30) }
+
+// limits are what a runner of the class is held to on a host. The class's
+// own limit when it has one. Otherwise no cpu limit (a busy cpu slows jobs,
+// it breaks nothing) and a memory limit that is not about the job at all: it
+// keeps one runaway job from taking the machine down with every other job on
+// it. Four fifths of the machine, or the host's budget when that is less.
+func limits(cl config.Class, budgetMem, hostMem int64) (cpus float64, mem int64) {
+	cpus, mem = cl.Limit.CPUs, int64(cl.Limit.Memory)
+	if mem == 0 {
+		mem = int64(minPositive(float64(hostMem/5*4), float64(budgetMem)))
+	}
+	return cpus, mem
 }
 
 func mountPaths(mounts []string) []string {
@@ -831,9 +888,6 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 			if f.State != "unknown" {
 				final = &f
 				c.recordUsage(f)
-				if before.Name != "" {
-					c.reportOverClass(h, before, f)
-				}
 				if f.OOMKills > 0 && before.OOMKills == 0 && before.Name != "" {
 					c.reportOOM(before, f)
 				}
@@ -883,6 +937,9 @@ func (c *Controller) stop(ctx context.Context, st decide.Stop, now time.Time) {
 	if removed {
 		if err := c.ledger.MarkRemoved(st.Runner, now); err != nil {
 			c.log.Error("ledger removed", "err", err)
+		}
+		if final != nil {
+			c.learned(before, *final, now) // its last sample is in the ledger now
 		}
 	}
 }
@@ -951,9 +1008,20 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	name := fmt.Sprintf("%s-%s-%s", s.Class, s.Host, uuid.NewString()[:8])
 	c.log.Info(fmt.Sprintf("start %s on %s  %s  (%s)", s.Class, s.Host, s.Reason, name))
 	c.decision(now, s.Class, s.Host, "start", name, s.Reason)
-	if err := c.ledger.InsertRunner(name, s.Class, s.Host, now); err != nil {
+	c.mu.Lock()
+	est, ok := c.sized[s.Job]
+	c.mu.Unlock()
+	if !ok {
+		est = size.Estimate{CPUs: s.CPUs, MemBytes: s.MemBytes}
+	}
+	if err := c.ledger.InsertRunner(name, s.Class, s.Host, now, est); err != nil {
 		c.log.Error("ledger insert", "err", err)
 		return
+	}
+	var limCPUs float64
+	var limMem int64
+	if h, cl := c.hostOf(s.Host), c.classByName(s.Class); h != nil && cl != nil && h.snap != nil {
+		limCPUs, limMem = limits(cl.cfg, int64(minPositive(float64(h.cfg.Budget.Memory), float64(h.snap.BudgetMem))), h.snap.MemBytes)
 	}
 	c.mu.Lock()
 	c.inflight[name] = time.Time{}
@@ -961,7 +1029,7 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	c.starts.Add(1)
 	go func() {
 		defer c.starts.Done()
-		answered := c.launch(ctx, name, s, now)
+		answered := c.launch(ctx, name, s, now, limCPUs, limMem)
 		c.mu.Lock()
 		if _, ok := c.inflight[name]; ok && answered {
 			c.inflight[name] = time.Now()
@@ -974,7 +1042,7 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 // reports whether the outcome is known. When the agent did not answer (a
 // timeout, a connection that broke), the runner may still come up: its row
 // stays "starting" and the provision timeout closes it if it never shows.
-func (c *Controller) launch(ctx context.Context, name string, s decide.Start, now time.Time) bool {
+func (c *Controller) launch(ctx context.Context, name string, s decide.Start, now time.Time, limCPUs float64, limMem int64) bool {
 	cl := c.classByName(s.Class)
 	h := c.hostByName(s.Host)
 	fail := func(reason string) bool {
@@ -998,8 +1066,8 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 	}
 	cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cl.cfg.CPUs,
-		MemBytes: int64(cl.cfg.Memory), Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
+	_, err = h.agent.Start(cctx, api.StartRequest{Name: name, Class: s.Class, CPUs: cmp.Or(s.CPUs, cl.cfg.CPUs),
+		MemBytes: cmp.Or(s.MemBytes, int64(cl.cfg.Memory)), LimitCPUs: limCPUs, LimitMem: limMem, Image: c.cfg.Image, JITConfig: jit.EncodedJITConfig,
 		Driver: cl.cfg.Driver, Mounts: cl.cfg.Mounts, WorkDir: workDir, InnerDocker: cl.cfg.Docker == "inside",
 		Env: cl.cfg.Env, Path: cl.cfg.Path})
 	var se *api.StatusError
@@ -1180,7 +1248,7 @@ func (c *Controller) startAgents(ctx context.Context) error {
 					return
 				}
 			}
-			c.log.Info(fmt.Sprintf("host %s  %s  budget %gcpu/%s", h.cfg.Name, did, h.cfg.Budget.CPUs, gib(int64(h.cfg.Budget.Memory))))
+			c.log.Info(fmt.Sprintf("host %s  %s  %s", h.cfg.Name, did, lends(h.cfg.Budget.CPUs, int64(h.cfg.Budget.Memory))))
 		}()
 	}
 	wg.Wait()
@@ -1575,4 +1643,19 @@ func (l *EventLog) Close() {
 	if l != nil && l.f != nil {
 		l.f.Close()
 	}
+}
+
+func cond(ok bool, a, b string) string {
+	if ok {
+		return a
+	}
+	return b
+}
+
+// lends says what a host lends: its cap, or what it measures free.
+func lends(cpus float64, mem int64) string {
+	if cpus <= 0 && mem <= 0 {
+		return "lends what it has free"
+	}
+	return "lends at most " + cond(cpus > 0, fmt.Sprintf("%gcpu", cpus), "any cpu") + "/" + cond(mem > 0, gib(mem), "any memory")
 }

@@ -55,19 +55,26 @@ func bootstrapScript(h config.Host, pin, token string, addrs []string) string {
 	if h.Desktop {
 		kind = "--desktop"
 	}
+	budget := ""
+	if h.Budget.CPUs > 0 {
+		budget += fmt.Sprintf(" --cpus %g", h.Budget.CPUs)
+	}
+	if h.Budget.Memory > 0 {
+		budget += fmt.Sprintf(" --mem %d", int64(h.Budget.Memory))
+	}
 	return fmt.Sprintf(`export PUMASI_TOKEN='%s'
 pin='%s'
 why=
 for a in %s; do
   if s=$(curl -fsSk --connect-timeout 5 --pinnedpubkey "$pin" "https://$a/join.sh" 2>&1); then
-    printf '%%s\n' "$s" | sh -s -- --name %s --cpus %g --mem %d %s
+    printf '%%s\n' "$s" | sh -s -- --name %s%s %s
     exit $?
   fi
   why=$s
 done
 echo "$why"
 exit %d
-`, token, pin, strings.Join(addrs, " "), h.Name, h.Budget.CPUs, int64(h.Budget.Memory), kind, exitUnreachable)
+`, token, pin, strings.Join(addrs, " "), h.Name, budget, kind, exitUnreachable)
 }
 
 // bootstrap makes a host of the config join: it runs the invite line there

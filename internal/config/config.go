@@ -33,6 +33,7 @@ type Config struct {
 	IdleTimeout     time.Duration `yaml:"-"` // listening -> JobStarted
 	DemandTTL       time.Duration `yaml:"-"`
 	PSICPUThreshold float64       `yaml:"-"`
+	PSIMemThreshold float64       `yaml:"-"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -62,9 +63,16 @@ type Class struct {
 	Name string `yaml:"name"`
 	// OS the class's jobs need: linux (default), macos or windows. A class is
 	// placed only on hosts of its OS.
-	OS     string  `yaml:"os"`
+	OS string `yaml:"os"`
+	// CPUs and Memory are the first estimate: what a job is taken to need
+	// while no run of it has finished (default 2 cpus, 4G). After that the
+	// job is placed by what its last runs used. They are not a limit.
 	CPUs   float64 `yaml:"cpus"`
 	Memory Bytes   `yaml:"memory"`
+	// Limit holds every runner of the class to these numbers (a job that goes
+	// over memory loses a process to the kernel). Left out, a runner is held
+	// only to what protects its host.
+	Limit Size `yaml:"limit"`
 	// Hosts binds the class to these hosts (empty = every host). Jobs that hand
 	// each other files in a host directory need the same machine.
 	Hosts []string `yaml:"hosts"`
@@ -116,6 +124,18 @@ func (cl Class) RunsOn() []string {
 	return []string{"self-hosted", cl.ScaleSet()}
 }
 
+// Size is an amount of cpus and memory; zero = not said.
+type Size struct {
+	CPUs   float64 `yaml:"cpus"`
+	Memory Bytes   `yaml:"memory"`
+}
+
+// The first estimate of a class that gives none.
+const (
+	DefaultCPUs   = 2
+	DefaultMemory = 4 << 30
+)
+
 type Host struct {
 	Name string `yaml:"name"` // default: the ssh destination
 	SSH  string `yaml:"ssh"`  // ssh destination (alias from ~/.ssh/config)
@@ -123,10 +143,9 @@ type Host struct {
 	// a Windows host running WSL uses "wsl -e sh -s".
 	Shell   string `yaml:"shell"`
 	Desktop bool   `yaml:"desktop"` // someone works on it: filled after servers, and theirs first
-	Budget  struct {
-		CPUs   float64 `yaml:"cpus"`
-		Memory Bytes   `yaml:"memory"`
-	} `yaml:"budget"`
+	// Budget caps what pumasi lends on the host. Left out, pumasi lends what
+	// the machine has free as it measures it.
+	Budget Size `yaml:"budget"`
 }
 
 // Kind is server or desktop.
@@ -201,7 +220,7 @@ func (c *Config) defaults() {
 	def(&c.ProvisionTimeout, 3*time.Minute)
 	def(&c.HostLostAfter, 2*time.Minute)
 	def(&c.WaitAlert, 10*time.Minute)
-	c.IdleTimeout, c.DemandTTL, c.PSICPUThreshold = 5*time.Minute, 24*time.Hour, 40
+	c.IdleTimeout, c.DemandTTL, c.PSICPUThreshold, c.PSIMemThreshold = 5*time.Minute, 24*time.Hour, 40, 10
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
 	}
@@ -223,6 +242,12 @@ func (c *Config) defaults() {
 		cl := &c.Classes[i]
 		if cl.OS == "" {
 			cl.OS = "linux"
+		}
+		if cl.CPUs == 0 {
+			cl.CPUs = DefaultCPUs
+		}
+		if cl.Memory == 0 {
+			cl.Memory = DefaultMemory
 		}
 		if cl.Driver == "" {
 			cl.Driver = "native"
@@ -309,8 +334,8 @@ func (c *Config) validate() error {
 		if !nameRE.MatchString(h.Name) {
 			return fmt.Errorf("host %q: set name to letters, digits, '.', '_' or '-'", h.Name)
 		}
-		if h.Budget.CPUs <= 0 || h.Budget.Memory <= 0 {
-			return fmt.Errorf("host %s: budget needs cpus and memory, e.g. budget: {cpus: 4, memory: 6G}", h.Name)
+		if h.Budget.CPUs < 0 || h.Budget.Memory < 0 {
+			return fmt.Errorf("host %s: budget must not be negative", h.Name)
 		}
 		if hosts[h.Name] {
 			return fmt.Errorf("duplicate host %s", h.Name)
@@ -319,8 +344,11 @@ func (c *Config) validate() error {
 	}
 	classes := map[string]bool{}
 	for _, cl := range c.Classes {
-		if !nameRE.MatchString(cl.Name) || cl.CPUs <= 0 || cl.Memory <= 0 {
-			return fmt.Errorf("class needs name, cpus and memory: %+v", cl)
+		if !nameRE.MatchString(cl.Name) {
+			return fmt.Errorf("class needs a name of letters, digits, '.', '_' or '-': %+v", cl)
+		}
+		if cl.CPUs < 0 || cl.Memory < 0 || cl.Limit.CPUs < 0 || cl.Limit.Memory < 0 {
+			return fmt.Errorf("class %s: cpus, memory and limit must not be negative", cl.Name)
 		}
 		// Two classes of one name would be two listeners on one scale set.
 		if classes[cl.Name] {

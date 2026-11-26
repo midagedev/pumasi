@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/midagedev/pumasi/internal/size"
 	_ "modernc.org/sqlite"
 )
 
@@ -107,7 +108,12 @@ func Open(path string) (*Ledger, error) {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	// Columns added after the first release; "duplicate column" means it is there.
-	for _, col := range []string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER"} {
+	for _, col := range []string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER",
+		// mem_work_peak: the most memory held that was not page cache (mem_peak counts the cache too).
+		// est_*: what placement counted on for this runner; est_runs = finished runs it was learned from.
+		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER",
+		// limit_mem: the memory limit the OS held the runner to (NULL or 0 = none).
+		"runners ADD COLUMN limit_mem INTEGER"} {
 		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("schema: %w", err)
@@ -234,14 +240,26 @@ type Runner struct {
 	JobID, Job               string // Job is the job's display name, known from JobStarted on
 	Repo, Result             string
 	RunID                    int64
-	OOMKills                 int       // processes killed at the class's memory limit
-	MemPeak                  int64     // the most memory the runner has been seen using
+	Workflow                 string  // the job's workflow file with its ref, as GitHub names it
+	OOMKills                 int     // processes killed at the runner's memory limit
+	MemPeak                  int64   // the most memory the runner has been seen using, page cache included
+	MemWorkPeak              int64   // the same without page cache: what the job needs to be given
+	EstCPUs                  float64 // what placement counts on for it (0 = a row from before estimates)
+	EstMem                   int64
+	EstRuns                  int
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
 }
 
-func (l *Ledger) InsertRunner(name, class, host string, at time.Time) error {
-	return l.exec(`INSERT INTO runners(name, class, host, state, created_at) VALUES(?,?,?,'starting',?)`, name, class, host, ts(at))
+func (l *Ledger) InsertRunner(name, class, host string, at time.Time, est size.Estimate) error {
+	return l.exec(`INSERT INTO runners(name, class, host, state, created_at, est_cpus, est_mem, est_runs) VALUES(?,?,?,'starting',?,?,?,?)`,
+		name, class, host, ts(at), est.CPUs, est.MemBytes, est.Runs)
+}
+
+// SetEstimate replaces what placement counts on for a runner: GitHub has
+// named its job, and it is not always the job the runner was started for.
+func (l *Ledger) SetEstimate(name string, est size.Estimate) error {
+	return l.exec(`UPDATE runners SET est_cpus=?, est_mem=?, est_runs=? WHERE name=?`, est.CPUs, est.MemBytes, est.Runs, name)
 }
 
 func (l *Ledger) SetRegistration(name string, runnerID int64, postedAt time.Time) error {
@@ -270,7 +288,8 @@ func (l *Ledger) MarkBusy(name string, at time.Time) error {
 // measure it; the column stays NULL.
 type Usage struct {
 	CPUSec                         float64
-	MemPeak                        int64
+	MemPeak, MemWorkPeak           int64
+	LimitMem                       int64 // the memory limit the runner ran under (0 = none)
 	IOBytes                        *int64
 	PSICPUSec, PSIMemSec, PSIIOSec *float64
 	ExitCode                       *int
@@ -278,10 +297,10 @@ type Usage struct {
 }
 
 func (l *Ledger) SetUsage(name string, u Usage) error {
-	return l.exec(`UPDATE runners SET cpu_sec=MAX(COALESCE(cpu_sec,0),?), mem_peak=MAX(COALESCE(mem_peak,0),?),
+	return l.exec(`UPDATE runners SET cpu_sec=MAX(COALESCE(cpu_sec,0),?), mem_peak=MAX(COALESCE(mem_peak,0),?), mem_work_peak=MAX(COALESCE(mem_work_peak,0),?), limit_mem=MAX(COALESCE(limit_mem,0),?),
 	  io_bytes=MAX(COALESCE(io_bytes,0),?), psi_cpu_sec=COALESCE(?, psi_cpu_sec), psi_mem_sec=COALESCE(?, psi_mem_sec), psi_io_sec=COALESCE(?, psi_io_sec), exit_code=COALESCE(?, exit_code),
 	  oom_kills=MAX(COALESCE(oom_kills,0),?) WHERE name=?`,
-		u.CPUSec, u.MemPeak, u.IOBytes, u.PSICPUSec, u.PSIMemSec, u.PSIIOSec, u.ExitCode, u.OOMKills, name)
+		u.CPUSec, u.MemPeak, u.MemWorkPeak, u.LimitMem, u.IOBytes, u.PSICPUSec, u.PSIMemSec, u.PSIIOSec, u.ExitCode, u.OOMKills, name)
 }
 
 func (l *Ledger) MarkRemoved(name string, at time.Time) error {
@@ -345,12 +364,13 @@ func (l *Ledger) CloseOpenDemand(servedBy string, at time.Time) error {
 
 type Demand struct {
 	JobID, Class, Repo  string
+	Workflow, Job       string
 	RunID               int64
 	FirstSeen, LastSeen time.Time
 }
 
 func (l *Ledger) OpenDemand() ([]Demand, error) {
-	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(run_id,0), first_seen, last_seen FROM demand WHERE closed_at IS NULL ORDER BY first_seen`)
+	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(run_id,0), first_seen, last_seen FROM demand WHERE closed_at IS NULL ORDER BY first_seen`)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +379,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 	for rows.Next() {
 		var d Demand
 		var first, last sql.NullString
-		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.RunID, &first, &last); err != nil {
+		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.RunID, &first, &last); err != nil {
 			return nil, err
 		}
 		d.FirstSeen, d.LastSeen = parseTS(first), parseTS(last)
@@ -369,7 +389,8 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 }
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
-  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0)`
+  COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0),
+  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0)`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -382,7 +403,8 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var r Runner
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
-			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak); err != nil {
+			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak,
+			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -567,8 +589,12 @@ type FinishedJob struct {
 	ProvisionMs int64     `json:"provisionMs"`
 	CPUSec      float64   `json:"cpuSec"`
 	MemPeak     int64     `json:"memPeak"`
-	ExitCode    *int      `json:"exitCode"`
-	OOMKills    int       `json:"oomKills"`
+	// MemWorkPeak leaves the page cache out; Est* is what placement counted on.
+	MemWorkPeak int64   `json:"memWorkPeak"`
+	EstCPUs     float64 `json:"estCpus"`
+	EstMem      int64   `json:"estMem"`
+	ExitCode    *int    `json:"exitCode"`
+	OOMKills    int     `json:"oomKills"`
 }
 
 // RecentJobs are the newest runners that are over, newest first.
@@ -577,7 +603,8 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 	    r.state, COALESCE(r.result,''), COALESCE(r.reason,''), r.created_at, r.started_at, r.finished_at,
 	    COALESCE((julianday(r.started_at)-julianday(d.first_seen))*86400, 0),
 	    COALESCE((julianday(r.finished_at)-julianday(r.started_at))*86400, 0),
-	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code, COALESCE(r.oom_kills,0)
+	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code, COALESCE(r.oom_kills,0),
+	    COALESCE(r.mem_work_peak,0), COALESCE(r.est_cpus,0), COALESCE(r.est_mem,0)
 	  FROM runners r LEFT JOIN demand d ON d.job_id = r.assigned_job_id
 	  WHERE r.removed_at IS NOT NULL OR r.state IN ('failed','lost')
 	  ORDER BY COALESCE(r.finished_at, r.removed_at, r.created_at) DESC LIMIT ?`, limit)
@@ -591,7 +618,8 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 		var created, started, finished sql.NullString
 		var exit sql.NullInt64
 		if err := rows.Scan(&j.Runner, &j.Class, &j.Host, &j.Job, &j.Repo, &j.RunID, &j.State, &j.Result, &j.Reason,
-			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit, &j.OOMKills); err != nil {
+			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit, &j.OOMKills,
+			&j.MemWorkPeak, &j.EstCPUs, &j.EstMem); err != nil {
 			return nil, err
 		}
 		j.CreatedAt, j.StartedAt, j.FinishedAt = parseTS(created), parseTS(started), parseTS(finished)
@@ -673,6 +701,78 @@ func (l *Ledger) spans(q string, since time.Time) ([]Span, error) {
 		}
 		s.From, s.To = parseTS(from), parseTS(to)
 		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// JobKey names a job across its runs: the repository, the workflow file and
+// the job's name as GitHub shows it (a matrix job's name carries its values).
+type JobKey struct {
+	Repo, Workflow, Job string
+}
+
+// KeyOf is the key of a job as GitHub's messages name it. The workflow comes
+// with its ref ("o/r/.github/workflows/ci.yml@refs/heads/main"); runs of the
+// same job on any branch are the same job.
+func KeyOf(repo, workflowRef, job string) JobKey {
+	wf, _, _ := strings.Cut(workflowRef, "@")
+	return JobKey{Repo: repo, Workflow: wf, Job: job}
+}
+
+// SQL for a runner row's workflow without its ref.
+const workflowFile = `CASE WHEN instr(COALESCE(workflow,''),'@')>0 THEN substr(workflow,1,instr(workflow,'@')-1) ELSE COALESCE(workflow,'') END`
+
+// JobRuns are the newest finished runs of a job that were measured, newest
+// first. A run counts when its runner is gone (its last sample is in) and its
+// memory without page cache was seen: rows from before that was measured say
+// too much and are left out. A run that lost a process at its memory limit
+// needed more than the limit, whatever the samples caught of it before.
+func (l *Ledger) JobRuns(k JobKey, limit int) ([]size.Sample, error) {
+	rows, err := l.db.Query(`SELECT COALESCE(cpu_sec,0),
+	    MAX(mem_work_peak, CASE WHEN COALESCE(oom_kills,0) > 0 THEN COALESCE(limit_mem,0) ELSE 0 END), COALESCE(oom_kills,0),
+	    COALESCE((julianday(COALESCE(finished_at, removed_at))-julianday(started_at))*86400, 0)
+	  FROM runners WHERE repo=? AND job=? AND `+workflowFile+`=? AND started_at IS NOT NULL
+	    AND mem_work_peak > 0 AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
+	  ORDER BY started_at DESC LIMIT ?`, k.Repo, k.Job, k.Workflow, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []size.Sample
+	for rows.Next() {
+		var cpuSec, sec float64
+		var oom int
+		var s size.Sample
+		if err := rows.Scan(&cpuSec, &s.MemBytes, &oom, &sec); err != nil {
+			return nil, err
+		}
+		if sec >= 1 {
+			s.CPUs = cpuSec / sec
+		}
+		s.OOM = oom > 0
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// MeasuredJobs are the jobs with a measured run among the newest finished
+// runners, the most recently run first.
+func (l *Ledger) MeasuredJobs(limit int) ([]JobKey, error) {
+	rows, err := l.db.Query(`SELECT repo, `+workflowFile+`, job FROM runners
+	  WHERE job IS NOT NULL AND repo IS NOT NULL AND started_at IS NOT NULL AND mem_work_peak > 0
+	    AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
+	  GROUP BY 1,2,3 ORDER BY MAX(started_at) DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobKey
+	for rows.Next() {
+		var k JobKey
+		if err := rows.Scan(&k.Repo, &k.Workflow, &k.Job); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }

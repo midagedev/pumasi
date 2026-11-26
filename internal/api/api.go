@@ -66,16 +66,26 @@ type Runner struct {
 	// Agent clock: from POST /v1/runners received to "Listening for Jobs".
 	ProvisionMs int64 `json:"provisionMs,omitempty"`
 	// From the runner's "Running job" line: earlier than GitHub's JobStarted message.
-	JobStartedAt *time.Time         `json:"jobStartedAt,omitempty"`
-	CPUSec       float64            `json:"cpuSec"`
-	MemPeak      int64              `json:"memPeak"`
-	MemCurrent   int64              `json:"memCurrent"`
-	IOBytes      *int64             `json:"ioBytes,omitempty"`
-	OOMKills     int                `json:"oomKills,omitempty"`    // processes killed at the memory limit
-	PressureSec  map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
-	StartedAt    *time.Time         `json:"startedAt,omitempty"`
-	ExitedAt     *time.Time         `json:"exitedAt,omitempty"`
-	ExitCode     *int               `json:"exitCode,omitempty"`
+	JobStartedAt *time.Time `json:"jobStartedAt,omitempty"`
+	CPUSec       float64    `json:"cpuSec"`
+	MemPeak      int64      `json:"memPeak"`
+	MemCurrent   int64      `json:"memCurrent"`
+	// MemWork is the memory in use that is not page cache, now and at its
+	// highest sample: what the job needs, as far as a sample every few
+	// seconds sees it. On macOS and Windows the same as MemCurrent.
+	MemWork     int64 `json:"memWork"`
+	MemWorkPeak int64 `json:"memWorkPeak"`
+	// CPUNow: cores in use over the last sample interval.
+	CPUNow float64 `json:"cpuNow"`
+	// What the host enforces on the runner (0 = nothing).
+	LimitCPUs   float64            `json:"limitCpus,omitempty"`
+	LimitMem    int64              `json:"limitMem,omitempty"`
+	IOBytes     *int64             `json:"ioBytes,omitempty"`
+	OOMKills    int                `json:"oomKills,omitempty"`    // processes killed at the memory limit
+	PressureSec map[string]float64 `json:"pressureSec,omitempty"` // some-stall seconds
+	StartedAt   *time.Time         `json:"startedAt,omitempty"`
+	ExitedAt    *time.Time         `json:"exitedAt,omitempty"`
+	ExitCode    *int               `json:"exitCode,omitempty"`
 	// Only in the answer to DELETE: the last lines the runner printed.
 	LogTail string `json:"logTail,omitempty"`
 	// Only in the answer to DELETE: what of the runner the host could not
@@ -92,10 +102,14 @@ const PersonAway = 15 * time.Minute
 
 // StartRequest is POST /v1/runners.
 type StartRequest struct {
-	Name      string  `json:"name"`
-	Class     string  `json:"class"`
+	Name  string `json:"name"`
+	Class string `json:"class"`
+	// CPUs and MemBytes: what the runner is expected to use (its place in the
+	// host's room). LimitCPUs and LimitMem: what the host enforces, 0 = nothing.
 	CPUs      float64 `json:"cpus"`
 	MemBytes  int64   `json:"memBytes"`
+	LimitCPUs float64 `json:"limitCpus,omitempty"`
+	LimitMem  int64   `json:"limitMem,omitempty"`
 	Image     string  `json:"image"`
 	JITConfig string  `json:"jitConfig"`
 	// docker | native. Empty = the host's own way (Linux: docker; macOS, Windows: native).

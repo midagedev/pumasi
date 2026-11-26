@@ -22,8 +22,14 @@ type Stats struct {
 	CPUUsec    uint64
 	MemCurrent uint64
 	MemPeak    uint64
-	IOBytes    uint64
-	OOMKills   uint64 // memory.events oom_kill: processes killed at the memory limit
+	// MemWork is what the cgroup holds that the kernel cannot simply give
+	// back: memory.current without the page cache (file), with shared and
+	// tmpfs memory (shmem) counted back in. memory.current and memory.peak
+	// fill up to the limit with cache on any job that reads files; this is
+	// the number a job needs. Equal to MemCurrent where memory.stat is not there.
+	MemWork  uint64
+	IOBytes  uint64
+	OOMKills uint64 // memory.events oom_kill: processes killed at the memory limit
 	// Some-stall totals in microseconds, keyed by cpu|memory|io.
 	Pressure map[string]uint64
 }
@@ -201,6 +207,10 @@ func (r Reader) Read(dir string) (Stats, error) {
 		st.MemPeak, _ = ParseUint(s)
 	}
 	st.MemPeak = max(st.MemPeak, st.MemCurrent)
+	st.MemWork = st.MemCurrent
+	if s, err = readString(filepath.Join(dir, "memory.stat")); err == nil {
+		st.MemWork = WorkingSet(st.MemCurrent, s)
+	}
 	if s, err = readString(filepath.Join(dir, "io.stat")); err == nil {
 		st.IOBytes, _ = ParseIOStat(s, r.hasHolders)
 	}
@@ -216,6 +226,26 @@ func (r Reader) Read(dir string) (Stats, error) {
 		}
 	}
 	return st, nil
+}
+
+// WorkingSet is memory.current without the page cache: current - file + shmem,
+// from the cgroup's memory.stat.
+func WorkingSet(current uint64, stat string) uint64 {
+	var file, shmem uint64
+	for _, line := range strings.Split(stat, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		switch f[0] {
+		case "file":
+			file, _ = strconv.ParseUint(f[1], 10, 64)
+		case "shmem":
+			shmem, _ = strconv.ParseUint(f[1], 10, 64)
+		}
+	}
+	cache := file - min(shmem, file)
+	return current - min(cache, current)
 }
 
 // hasHolders reports whether a block device is used by another block device

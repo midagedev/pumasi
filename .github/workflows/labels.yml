@@ -16,6 +16,12 @@ on:
       show:
         description: "environment variables to print (grep -E pattern on NAME=value)"
         default: "^(LANG)="
+      mem:
+        description: "MiB of memory each job holds while it runs"
+        default: "0"
+      cache:
+        description: "MiB each job writes to a file and reads back (page cache, not memory it needs)"
+        default: "0"
 
 jobs:
   hold:
@@ -30,4 +36,14 @@ jobs:
         run: |
           echo "runner=$RUNNER_NAME job=${{ matrix.i }}"
           env | grep -E '${{ inputs.show }}' | sort || true
-          sleep ${{ inputs.seconds }}
+          if [ "${{ inputs.cache }}" != 0 ]; then
+            dd if=/dev/zero of="$RUNNER_TEMP/cache" bs=1048576 count=${{ inputs.cache }} 2>/dev/null
+            cat "$RUNNER_TEMP/cache" > /dev/null
+          fi
+          if command -v perl > /dev/null; then
+            perl -e '$x = "x" x ($ARGV[0] * 1048576); sleep $ARGV[1]' ${{ inputs.mem }} ${{ inputs.seconds }}
+          else
+            # tail keeps a line until it ends, and this one never does: it holds
+            # the bytes for as long as the sleep keeps the pipe open (GNU tail; BSD's takes minutes).
+            (head -c $((${{ inputs.mem }} * 1048576)) /dev/zero; sleep ${{ inputs.seconds }}) | tail > /dev/null
+          fi

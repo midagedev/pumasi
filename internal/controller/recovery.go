@@ -11,6 +11,7 @@ import (
 	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/ledger"
+	"github.com/midagedev/pumasi/internal/size"
 )
 
 const (
@@ -149,36 +150,41 @@ func endCause(before ledger.Runner, st decide.Stop, final *api.Runner) string {
 	return endNormal
 }
 
-// reportOOM tells once per runner that its job hit the class's memory limit.
+// reportOOM tells once per runner that its job hit the runner's memory limit:
+// the class's own limit: when it has one, otherwise the one that protects the host.
 func (c *Controller) reportOOM(lr ledger.Runner, ar api.Runner) {
-	limit := ar.MemBytes
-	if cl := c.classByName(lr.Class); cl != nil {
-		limit = int64(cl.cfg.Memory)
+	limit, which := cmp.Or(ar.LimitMem, ar.MemBytes), "the memory limit that protects the host"
+	todo := "none: its next run is placed with a bigger estimate, on a host with that much free; not rerun"
+	if cl := c.classByName(lr.Class); cl != nil && cl.cfg.Limit.Memory > 0 {
+		which = "class " + lr.Class + "'s memory limit"
+		todo = "none: raise or drop the class's limit, or fix the job; not rerun"
 	}
 	what := "the kernel killed a process of the job"
 	if h := c.hostByName(lr.Host); h != nil && h.os == "windows" {
 		what = "Windows refused the job more memory" // a Job Object fails the allocation, it kills nothing
 	}
 	c.book.report("problem", "oom/"+lr.Name, "out-of-memory", lr.Name, fmt.Sprintf(
-		"%s hit the %s %s memory limit on %s (peak %s); %s",
-		jobName(lr), lr.Class, gib(limit), lr.Host, gib(ar.MemPeak), what), "none: raise the class's memory or fix the job; not rerun")
+		"%s hit %s (%s) on %s; %s",
+		jobName(lr), which, gib(limit), lr.Host, what), todo)
 }
 
-// reportOverClass tells once per runner that it used more memory than its
-// class. macOS cannot hold a process tree to a limit, so there the class size
-// is only what placement counted on; the job is not stopped.
-func (c *Controller) reportOverClass(h *host, lr ledger.Runner, ar api.Runner) {
-	cl := c.classByName(lr.Class)
-	if h.snap == nil || h.snap.OS != "macos" || cl == nil {
+// learned says so when a finished run moved its job's estimate by much. Going
+// over an estimate is not a problem and is not reported as one: the run
+// finished, and the next one is placed with the new size.
+func (c *Controller) learned(before ledger.Runner, final api.Runner, now time.Time) {
+	cl := c.classByName(before.Class)
+	if cl == nil || before.Job == "" || before.EstMem == 0 || final.MemWorkPeak == 0 {
 		return
 	}
-	limit := int64(cl.cfg.Memory)
-	if ar.MemPeak <= limit || lr.MemPeak > limit {
+	was := size.Estimate{CPUs: before.EstCPUs, MemBytes: before.EstMem, Runs: before.EstRuns}
+	est := c.estimate(cl.cfg, ledger.KeyOf(before.Repo, before.Workflow, before.Job))
+	if est.Runs == 0 || !size.Moved(was, est) {
 		return
 	}
-	c.book.report("problem", "over-class/"+lr.Name, "ran-over-class", lr.Name, fmt.Sprintf(
-		"%s ran over its class: %s is %s, it used %s on %s (macOS cannot enforce the limit, so the job went on)",
-		jobName(lr), lr.Class, gib(limit), gib(ar.MemPeak), lr.Host), "none: raise the class's memory or fix the job")
+	reason := fmt.Sprintf("%s: %.1fcpu/%s -> %.1fcpu/%s after a run that held %s (%s)", before.Job,
+		was.CPUs, gib(was.MemBytes), est.CPUs, gib(est.MemBytes), gib(final.MemWorkPeak), est.Source())
+	c.log.Info("estimate " + reason)
+	c.decision(now, before.Class, before.Host, "estimate", before.Name, reason)
 }
 
 // requestRerun queues the run of a job lost to an infrastructure failure.

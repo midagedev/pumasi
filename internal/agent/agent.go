@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,7 @@ type rec struct {
 	receivedAt time.Time
 	pid        int
 	lastUsec   uint64
+	lastAt     time.Time // when lastUsec was read
 	logsSince  time.Time // container output before this was already searched
 	rebooted   bool      // loaded from a state file written before the last reboot
 }
@@ -133,7 +135,7 @@ func (a *Agent) Sample(ctx context.Context) {
 				st = &u
 				runnerUsecDelta += u.CPUUsec - min(r.lastUsec, u.CPUUsec)
 				if c.State == "running" {
-					runnerMem += u.MemCurrent
+					runnerMem += cmp.Or(u.MemWork, u.MemCurrent)
 				}
 			}
 		}
@@ -148,7 +150,10 @@ func (a *Agent) Sample(ctx context.Context) {
 		}
 
 		a.dataMu.Lock()
-		r.Class, r.CPUs, r.MemBytes, r.State, r.pid = c.Class, c.CPUs, c.MemBytes, c.State, c.Pid
+		r.Class, r.State, r.pid = c.Class, c.State, c.Pid
+		if !ok {
+			r.CPUs, r.MemBytes = c.CPUs, c.MemBytes
+		}
 		if !c.StartedAt.IsZero() {
 			r.StartedAt = ptr(c.StartedAt)
 		}
@@ -164,10 +169,10 @@ func (a *Agent) Sample(ctx context.Context) {
 		}
 		r.rebooted = false // either it survived (not a real reboot of its world) or it is marked now
 		if st != nil {
-			applyStats(r, *st)
+			applyStats(r, *st, now)
 		}
 		if c.State == "exited" {
-			r.MemCurrent = 0
+			r.MemCurrent, r.MemWork, r.CPUNow = 0, 0, 0
 		}
 		if !ev.Listening.IsZero() && r.ListeningAt == nil {
 			r.ListeningAt = ptr(ev.Listening)
@@ -201,8 +206,13 @@ func (a *Agent) Sample(ctx context.Context) {
 	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem)
 }
 
-func applyStats(r *rec, u Usage) {
-	r.lastUsec = u.CPUUsec
+func applyStats(r *rec, u Usage, now time.Time) {
+	if dt := now.Sub(r.lastAt).Seconds(); !r.lastAt.IsZero() && dt > 0.5 && u.CPUUsec >= r.lastUsec {
+		r.CPUNow = float64(u.CPUUsec-r.lastUsec) / 1e6 / dt
+	}
+	r.lastUsec, r.lastAt = u.CPUUsec, now
+	r.MemWork = cmp.Or(u.MemWork, u.MemCurrent)
+	r.MemWorkPeak = max(r.MemWorkPeak, r.MemWork)
 	r.CPUSec = float64(u.CPUUsec) / 1e6
 	r.MemCurrent = u.MemCurrent
 	r.MemPeak = max(r.MemPeak, u.MemPeak)
@@ -321,11 +331,12 @@ func (a *Agent) Start(ctx context.Context, req api.StartRequest) (api.Runner, er
 			errOverBudget, cpus, mem, a.cfg.BudgetCPUs, a.cfg.BudgetMem, req.CPUs, req.MemBytes)
 	}
 	r := &rec{Runner: api.Runner{Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, State: "starting",
+		LimitCPUs: req.LimitCPUs, LimitMem: req.LimitMem,
 		Slot: freeSlot(a.recs, req.Class)}, receivedAt: received}
 	a.recs[req.Name] = r
 	a.dataMu.Unlock()
 
-	err := a.drv.Start(ctx, Spec{Slot: r.Slot, Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
+	err := a.drv.Start(ctx, Spec{Slot: r.Slot, LimitCPUs: req.LimitCPUs, LimitMem: req.LimitMem, Name: req.Name, Class: req.Class, CPUs: req.CPUs, MemBytes: req.MemBytes, Image: req.Image, JITConfig: req.JITConfig,
 		Driver: req.Driver, Mounts: req.Mounts, WorkDir: req.WorkDir, InnerDocker: req.InnerDocker, Env: req.Env, Path: req.Path})
 
 	a.dataMu.Lock()
@@ -353,7 +364,7 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 	if ok && r.State == "running" {
 		if u, err := a.met.Runner(Container{Name: name, State: r.State, Pid: r.pid}); err == nil {
 			a.dataMu.Lock()
-			applyStats(r, u)
+			applyStats(r, u, a.now())
 			a.dataMu.Unlock()
 		}
 	}

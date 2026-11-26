@@ -20,7 +20,7 @@
 url: https://github.com/OWNER/REPO
 listen: 0.0.0.0:7411                       # 호스트가 붙으러 오는 주소 (기본값)
 classes:
-  - {name: small, cpus: 1, memory: 1G}     # 워크플로우: runs-on: [self-hosted, pumasi-small]
+  - {name: small}                          # 워크플로우: runs-on: [self-hosted, pumasi-small]
 ```
 
 **2. controller 를 띄운다**
@@ -61,10 +61,10 @@ ok    token accepted, the name desk1 is free
 ok    docker 27.3.1 reachable as this user
 ok    cgroup v2 with memory and cpu controllers
 
-joined as desk1 (server): lends 6 cpus and 9.0G, runs as the systemd user unit pumasi.service
+joined as desk1 (server): lends what it has free, runs as the systemd user unit pumasi.service
 ```
 
-- 기본은 그 머신의 **절반**을 hostname 으로 빌려준다. 줄 끝에 `--name desk1 --cpus 6 --mem 9G` 로 바꾼다.
+- 기본은 hostname 으로 붙고, **그때그때 재서 비어 있는 만큼** 빌려준다. 줄 끝의 `--name desk1` 로 이름을, `--cpus 6 --mem 9G` 로 빌려주는 양의 상한을 정한다.
 - 초대 줄은 호스트 하나, 1시간 동안만 통한다(`pumasi invite --uses 5 --ttl 24h`). `-k` 는 위험하지 않다 — `--pinnedpubkey` 가 이 controller 의 키만 받는다.
 - 주소가 여럿인 머신이면 `invite` 가 나머지도 알려 준다. 호스트가 닿는 주소를 쓴다.
 
@@ -88,22 +88,23 @@ joined as desk1 (server): lends 6 cpus and 9.0G, runs as the systemd user unit p
 
 ```yaml
 hosts:
-  - {ssh: server1, budget: {cpus: 4, memory: 6G}}
-  - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}   # WSL 을 쓰는 Windows 면 shell: wsl -e sh -s
+  - {ssh: server1}
+  - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}   # budget 은 상한이다(없으면 비어 있는 만큼). WSL 을 쓰는 Windows 면 shell: wsl -e sh -s
 ```
 
 그 호스트가 `listen` 주소에 닿지 못하면 `up` 이 `server1 cannot reach this controller at …` 로 말한다.
 
 ## 클래스
 
-클래스는 러너의 크기와 종류다. 클래스 하나가 GitHub 의 scale set 하나(`pumasi-<이름>`)이고, 잡은 `runs-on` 으로 클래스를 고른다.
+클래스는 러너의 종류다(OS, 드라이버, 붙일 경로, 라벨). 크기는 적지 않아도 된다 — [잡의 크기는 pumasi 가 잰다](#숫자를-고치지-않는-배치). 클래스 하나가 GitHub 의 scale set 하나(`pumasi-<이름>`)이고, 잡은 `runs-on` 으로 클래스를 고른다.
 모르는 키나 같은 이름의 클래스가 둘이면 `up` 이 거부한다.
 
 | 키 | 뜻 | 기본 |
 |---|---|---|
 | `name` | `runs-on: [self-hosted, pumasi-<name>]` | 필수 |
 | `labels` | scale set 의 라벨을 직접 정한다. 잡의 `runs-on` 라벨이 전부 이 안에 있으면 그 잡을 받는다 — 기존 고정 러너의 라벨을 그대로 적으면 워크플로우를 안 고치고 옮긴다(아래) | `[self-hosted, pumasi-<name>]` |
-| `cpus`, `memory` | 러너 하나의 크기. 배치할 때 호스트 예산에서 빼고, Linux·Windows 에서는 한도로 강제한다 | 필수 |
+| `cpus`, `memory` | **첫 추정.** 한 번도 재 본 적 없는 잡을 놓을 때 잡아 두는 크기다. 한도가 아니다. 한 번 돌고 나면 그 잡은 잰 크기로 놓인다 | 2, 4G |
+| `limit: {cpus, memory}` | 이 클래스의 러너를 이 숫자로 묶는다(Linux·Windows). 메모리를 넘으면 넘은 프로세스가 죽는다 | 없음 — 호스트를 지키는 한도만 |
 | `os` | `linux` · `macos` · `windows`. 같은 OS 의 호스트에만 놓인다 | `linux` |
 | `driver` | `docker`(컨테이너) 또는 `native`(호스트 사용자의 프로세스 — 호스트의 경로·자격·docker 가 그대로 보인다) | linux 는 `docker`, macos·windows 는 `native` 만 |
 | `mounts` | 컨테이너 러너에 호스트 경로를 같은 경로로 붙인다(`/srv/cache`, `/srv/keys:ro`). 그 경로가 모두 있는 호스트에만 놓인다 | 없음 |
@@ -116,12 +117,14 @@ hosts:
 
 ```yaml
 classes:
-  - {name: small,   cpus: 1, memory: 1G}                                  # 컨테이너. 호스트의 것은 안 보인다
-  - {name: e2e,     cpus: 4, memory: 8G, docker: inside, maxDuration: 2h} # 잡이 compose 스택을 띄운다
-  - {name: cache,   cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}
-  - {name: build,   cpus: 4, memory: 8G, driver: native, hosts: [server1]} # 고정 러너처럼 호스트를 그대로 쓴다
-  - {name: deploy,  cpus: 2, memory: 4G, reserve: 1}
-  - {name: macos,   cpus: 4, memory: 8G, os: macos}
+  - {name: small}                                              # 컨테이너. 호스트의 것은 안 보인다
+  - {name: e2e,     docker: inside, maxDuration: 2h}           # 잡이 compose 스택을 띄운다
+  - {name: cache,   mounts: [/srv/ci-cache]}
+  - {name: build,   driver: native, hosts: [server1]}          # 고정 러너처럼 호스트를 그대로 쓴다
+  - {name: deploy,  reserve: 1}
+  - {name: macos,   os: macos}
+  - {name: heavy,   cpus: 8, memory: 24G}                      # 처음 보는 잡도 크게 잡고 시작한다
+  - {name: fenced,  limit: {memory: 8G}}                       # 8G 를 넘는 잡은 죽는다
 ```
 
 - 러너는 **잡 하나로 끝난다.** 작업 디렉터리·도구 캐시(`setup-node` 등)는 남지 않는다. 잡 사이에 남길 것은 `mounts` 나 native 클래스의 호스트 디렉터리, 캐시 액션에 둔다.
@@ -129,6 +132,35 @@ classes:
 - `driver: native`(Linux) 는 systemd user 세션과 cpu·memory 위임, linger 가 필요하다. 없으면 한도 없이 띄우지 않고 대기 사유에 호스트가 이유를 말한다.
 - **native 러너는 격리가 약하다**(Mac·Windows 는 늘 native). 잡은 호스트 사용자의 홈·자격·전역 도구를 읽고 바꿀 수 있다. 믿는 레포의 잡에만 쓴다.
 - 러너 판은 `image:` 의 태그를 따른다(기본 `ghcr.io/actions/actions-runner:2.338.2`). Mac·Windows 는 그 태그에서 판 번호만 읽으므로 **`:latest` 로 적으면 Mac·Windows 러너가 뜨지 못한다.** 판은 사람이 올린다.
+
+## 숫자를 고치지 않는 배치
+
+잡이 얼마나 쓰는지는 사람이 적지 않는다. pumasi 가 재고, 다음에는 잰 대로 놓는다.
+
+- **잡의 크기.** 레포 · 워크플로우 파일 · 잡 이름이 같으면 같은 잡이다(브랜치는 가리지 않는다. 매트릭스 잡은 이름에 값이 들어 있어 따로다).
+  끝난 실행 가운데 최근 10번에서 가장 컸던 것에 20% 를 얹은 것이 다음 실행의 크기다. 메모리는 페이지 캐시를 뺀 값(Linux: cgroup 의 anon + shmem + kernel)으로,
+  CPU 는 잡이 도는 동안의 평균 코어 수로 잰다. 커진 잡은 바로 다음 실행부터 크게 놓이고, 작아진 잡은 큰 실행이 10번 밖으로 밀려나야 작아진다.
+- **처음 보는 잡**은 클래스의 `cpus`·`memory`(없으면 2cpu/4G)로 놓는다.
+- **호스트의 자리.** 머신 전체에서 러너들이 쥔 것, pumasi 밖의 프로세스가 지금 쓰는 것, 남겨 두는 메모리(머신의 10%, 1 ~ 4G)를 뺀 것이 새 러너가 쓸 수 있는 자리다.
+  러너가 쥔 것은 추정과 지금 쓰는 양 중 큰 쪽이다. 다른 일로 바쁜 호스트에는 덜 놓이고, 한가해지면 다시 놓인다. `budget` 은 그 위에 얹는 상한일 뿐이다.
+  메모리 압박(Linux PSI 10% 이상, Mac 의 memory pressure)이 있으면 그 호스트에 새 러너를 놓지 않는다.
+- **추정을 넘어도 잡을 죽이지 않는다.** 추정은 배치가 세는 숫자일 뿐 한도가 아니다. 넘은 잡은 끝까지 돌고, 그동안 그 호스트에 새 러너가 덜 놓이고, 다음 실행은 큰 크기로 놓인다.
+- **호스트를 지키는 한도**는 따로 있다(Linux·Windows): 러너 하나가 머신 메모리의 80%(`budget` 의 memory 가 더 작으면 그 값)를 넘으면 넘은 프로세스가 죽는다.
+  잡의 크기와는 상관없는 값이고, 한 잡이 폭주해 그 머신의 다른 잡을 전부 죽이는 것을 막는다. CPU 는 기본으로 묶지 않는다(바쁘면 느려질 뿐이다).
+  그 한도에 걸린 잡은 `out-of-memory` 사건이 되고, 다음 실행은 한도의 1.5배를 쥐고 그만큼 비어 있는 호스트에 놓인다(없으면 사유와 함께 기다린다).
+  더 좁게 묶고 싶을 때만 클래스에 `limit:` 를 적는다.
+
+보이는 곳: `pumasi status` 의 `EST`(배치가 센 크기)·`NOW`(지금 쓰는 양)와 맨 아래 `JOB SIZE` 표(다음 실행의 크기 · 지난 실행 · 최근 최대 · 실행 수), 대시보드의 Job sizes.
+추정이 4분의 1 넘게 움직이면 `up` 의 로그에 한 줄이 남는다:
+
+```
+start grow on vm1  takes 0.4cpu/1.8G of the free 6.4cpu/22.8G for build (learned from 3 runs, the largest 0.3cpu/1.4G)
+estimate build: 0.4cpu/1.8G -> 0.4cpu/3.2G after a run that held 2.7G (learned from 4 runs, the largest 0.3cpu/2.7G)
+```
+
+**전 판에서 올리면 달라지는 것.** `cpus`·`memory` 는 한도였고 필수였다. 이제 첫 추정이고 없어도 된다 — 그 숫자로 러너를 묶던 것을 그대로 두려면 `limit: {cpus: …, memory: …}` 로 옮겨 적는다.
+호스트의 `budget` 과 초대 줄의 `--cpus`·`--mem` 은 필수에서 상한으로 바뀌었고, 초대 줄의 기본은 "머신의 절반"에서 "비어 있는 만큼"이 되었다(이미 붙은 호스트는 다시 붙일 때까지 전의 값을 상한으로 쥐고 있다).
+`up` 은 뜰 때 클래스마다 지금의 뜻을 한 줄로 말한다.
 
 ## 기존 고정 러너에서 옮기기
 
@@ -166,13 +198,13 @@ classes:   # 워크플로우는 runs-on: [self-hosted, Linux, X64, ci-pool] 그�
 | | Linux | Mac | Windows |
 |---|---|---|---|
 | 러너 | docker 컨테이너(또는 native) | 사용자의 프로세스 | 사용자의 프로세스(Job Object) |
-| CPU·메모리 한도 | 강제 (넘으면 그 프로세스가 죽고 OOM 사건) | **강제 못 함** — 넘으면 `ran over its class` 사건만, 잡은 계속 | 강제 (넘는 할당이 실패) |
+| 호스트를 지키는 메모리 한도, 클래스의 `limit` | 강제 (넘으면 그 프로세스가 죽고 OOM 사건) | **강제 못 함** — 배치가 재서 피할 뿐이다 | 강제 (넘는 할당이 실패) |
 | 에이전트를 지키는 것 | systemd user unit | 로그인한 사용자의 LaunchAgent | 로그온 때 뜨는 프로세스 |
 | join 기본 종류 | 화면 세션이 있으면 desktop, 없으면 server | desktop | desktop |
 
-- **server** 는 예산이 차는 대로 먼저 채운다. **desktop** 은 서버가 찬 뒤에 쓰고, 누가 쓰고 있는 동안(마지막 키보드·마우스 입력 15분 안)에는 새 러너를 받지 않는다. 도는 잡은 끝까지 돈다. 설정은 없다.
+- **server** 는 자리가 있는 대로 먼저 채운다. **desktop** 은 서버가 찬 뒤에 쓰고, 누가 쓰고 있는 동안(마지막 키보드·마우스 입력 15분 안)에는 새 러너를 받지 않는다. 도는 잡은 끝까지 돈다. 설정은 없다.
 - 종류는 초대 줄 끝의 `--server` / `--desktop` 으로 바꾼다. 아무도 앉지 않는 Mac mini 는 `--server` 로 붙인다.
-- Mac 에서는 사람이 있는 동안 도는 러너를 background 우선순위로 내린다. Mac 은 한도가 없으니 예산을 넉넉히 남겨 잡는다.
+- Mac 에서는 사람이 있는 동안 도는 러너를 background 우선순위로 내린다. Mac 은 한도를 걸 수단이 없으니, 다른 것과 같이 쓰는 Mac 은 `--cpus`·`--mem` 으로 상한을 둔다.
 - Mac·Windows 의 초대 줄은 그 머신의 화면에 로그인한 세션에서 실행한다. 그래야 잡이 키체인으로 서명하고 창을 띄우며, 재부팅 뒤에도 에이전트가 올라온다.
 - 호스트의 디스크 여유가 10% 아래면 그 호스트에 새 러너를 놓지 않는다(`diskMinFree`). 디스크가 늘 차 있는 노트북은 이 값에 걸린다.
 
@@ -199,7 +231,8 @@ pumasi 는 도는 잡을 건드리지 않고(예외: `maxDuration`, `down --forc
 | 호스트 연결 끊김·에이전트 죽음 | 그 호스트에 새 러너를 놓지 않는다. 도는 잡은 그대로. 2분 넘으면 사건(끊긴 이유와 함께), 돌아오면 해제 |
 | 호스트 재부팅, 잡 도중 러너가 죽음 | 사건 + 잃은 잡 목록. `rerun: 1` 이면 그 run 의 실패한 잡을 한 번 다시 돌린다 |
 | 러너가 못 뜸 | 지우고 다시 배치. 같은 호스트에서 세 번 연속이면 그 호스트 격리, 5분마다 점검 |
-| 메모리 한도에 걸림 | `hit the e2e 8.0G memory limit on server1 (peak 8.0G)`. 다시 돌리지 않는다(코드나 클래스 크기의 문제) |
+| 메모리 한도에 걸림 | `build hit the memory limit that protects the host (25.6G) on server1`. 다시 돌리지 않는다. 그 잡의 다음 실행은 더 큰 크기로 놓인다. 클래스의 `limit` 에 걸린 것이면 `hit class fenced's memory limit (8.0G)` |
+| 잡이 추정보다 많이 씀 | 사건이 아니다. 잡은 끝까지 돌고 다음 실행의 크기가 커진다(로그의 `estimate …` 한 줄) |
 | 잡이 10분 넘게 기다림 | 사건 + 사유(`no host with 2cpu/3G free …`) |
 | 지우지 못한 파일(잡이 컨테이너로 남긴 root 의 파일) | 러너는 지우고 그 디렉터리는 치워 둔 뒤 `leftover` 사건이 경로를 말한다. 지우는 것은 사람이 한다 |
 
@@ -226,7 +259,9 @@ Mac 은 LaunchAgent, Linux 는 systemd user unit — [설계의 운영 절](docs
 
 - **한 run 의 잡들을 같은 머신에 보내기.** scale set 안에서는 어느 러너가 어느 잡을 받을지 정할 수 없다. 호스트에 띄운 것을 뒤 잡이 이어 쓰는 워크플로우는 호스트마다 클래스를 하나씩 두고(`hosts:`) 앞 잡이 run 전체의 클래스를 고르게 한다.
 - **native 잡이 호스트 docker 로 띄운 컨테이너의 사용량.** 러너의 한도에도 수치에도 안 잡히고 호스트 전체 압박으로만 보인다. 컨테이너 클래스는 `docker: inside` 로 안에 넣을 수 있다.
-- **Mac 의 메모리·CPU 한도.** 강제할 수단이 없다.
+- **Mac 의 메모리·CPU 한도.** 강제할 수단이 없다. 폭주하는 잡에서 Mac 을 지키는 것은 배치가 재서 새 러너를 안 놓는 것뿐이다.
+- **호스트 전체의 메모리가 바닥나는 것.** 러너 하나는 한도로 막지만, 여러 러너가 함께 커져 머신이 바닥나면 커널이 고르는 프로세스가 죽는다. 남겨 두는 메모리와 압박 감지가 그 전에 새 러너를 멈출 뿐이다.
+- **처음 보는 큰 잡.** 첫 실행은 클래스의 첫 추정으로 놓이므로, 실제로 훨씬 크면 그 한 번은 호스트가 빡빡해질 수 있다. 큰 잡이 올 클래스는 `cpus`·`memory` 를 크게 적어 둔다.
 - **native 러너와 에이전트는 같은 사용자다.** 잡이 에이전트의 가입 자격을 읽을 수 있다. 배포 자격을 쥔 호스트는 믿는 워크플로우의 클래스만 받게 `hosts:` 로 가른다.
 - **NAT 너머의 호스트.** 호스트가 controller 의 `listen` 주소에 직접 닿아야 한다. 중계는 없다.
 - **잡을 다른 호스트로 옮기기, 도는 잡을 밀어내기.** GitHub 에 그런 길이 없어서, 죽이면 실패한 잡만 남는다.

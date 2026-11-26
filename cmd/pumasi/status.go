@@ -65,7 +65,9 @@ func printStatus(w io.Writer, s controller.State) {
 		fmt.Fprintln(w)
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tKIND\tOS\tCPUS\tMEMORY\tCPU PRESSURE\tRUNNERS\tSTATE\tSEEN\tRTT\tAGENT\tLAST DROP")
+	// HELD: what the runners there hold (each its estimate, or its use when that is more).
+	// FREE: what a new runner could take now, as measured. CAP: the most pumasi lends there.
+	fmt.Fprintln(tw, "HOST\tKIND\tOS\tHELD\tFREE\tCAP\tCPU PRESSURE\tRUNNERS\tSTATE\tSEEN\tRTT\tAGENT\tLAST DROP")
 	for _, h := range s.Hosts {
 		pressure, state := "-", "unknown"
 		if h.CPUPressure != nil {
@@ -85,8 +87,15 @@ func printStatus(w io.Writer, s controller.State) {
 			seen = (time.Duration(*h.SeenSeconds) * time.Second).String() + " ago"
 			rtt = fmt.Sprintf("%.0fms", h.RTTMs)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%g/%g\t%s/%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), h.UsedCPUs, h.BudgetCPUs,
-			gib(h.UsedMem), gib(h.BudgetMem), pressure, h.Runners, state, seen, rtt, dash(h.Agent), dash(h.LastDrop))
+		free, limit := "-", "auto"
+		if h.MemBytes > 0 {
+			free = sizeText(h.FreeCPUs, h.FreeMem)
+		}
+		if h.BudgetCPUs > 0 || h.BudgetMem > 0 {
+			limit = cond(h.BudgetCPUs > 0, fmt.Sprintf("%gcpu", h.BudgetCPUs), "any") + "/" + cond(h.BudgetMem > 0, gib(h.BudgetMem), "any")
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Kind, cmp.Or(h.OS, "-"), sizeText(h.UsedCPUs, h.UsedMem),
+			free, limit, pressure, h.Runners, state, seen, rtt, dash(h.Agent), dash(h.LastDrop))
 	}
 	tw.Flush()
 
@@ -94,7 +103,9 @@ func printStatus(w io.Writer, s controller.State) {
 	if len(s.Runners) == 0 {
 		fmt.Fprintln(w, "no runners")
 	} else {
-		fmt.Fprintln(tw, "RUNNER\tCLASS\tHOST\tSLOT\tSTATE\tJOB\tAGE")
+		// EST: what placement counts on for the runner's job. NOW: what it uses.
+		// Over the estimate is fine: the job goes on and its next run is placed bigger.
+		fmt.Fprintln(tw, "RUNNER\tCLASS\tHOST\tSLOT\tSTATE\tJOB\tAGE\tEST\tNOW")
 		for _, r := range s.Runners {
 			job := r.Job
 			if job == "" {
@@ -104,7 +115,14 @@ func printStatus(w io.Writer, s controller.State) {
 			if r.Slot > 0 {
 				slot = strconv.Itoa(r.Slot)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, r.Class, r.Host, slot, r.State, job, time.Duration(r.AgeSeconds)*time.Second)
+			est, cur := sizeText(r.EstCPUs, r.EstMem), "-"
+			if r.EstRuns == 0 {
+				est += " (first)"
+			}
+			if r.MemBytes > 0 {
+				cur = sizeText(r.CPUNow, r.MemBytes)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, r.Class, r.Host, slot, r.State, job, time.Duration(r.AgeSeconds)*time.Second, est, cur)
 		}
 		tw.Flush()
 	}
@@ -112,17 +130,36 @@ func printStatus(w io.Writer, s controller.State) {
 	fmt.Fprintln(w)
 	if len(s.Waiting) == 0 {
 		fmt.Fprintln(w, "no jobs waiting")
-		return
-	}
-	fmt.Fprintln(tw, "WAITING\tJOBS\tWHY")
-	for _, wt := range s.Waiting {
-		reason := wt.Reason
-		if reason == "" {
-			reason = "-"
+	} else {
+		fmt.Fprintln(tw, "WAITING\tJOBS\tWHY")
+		for _, wt := range s.Waiting {
+			reason := wt.Reason
+			if reason == "" {
+				reason = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%s\n", wt.Class, wt.Jobs, reason)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\n", wt.Class, wt.Jobs, reason)
+		tw.Flush()
 	}
-	tw.Flush()
+
+	if len(s.Sizes) > 0 {
+		// What the next run of each job is placed with, learned from its last runs.
+		fmt.Fprintln(w)
+		fmt.Fprintln(tw, "JOB SIZE\tWORKFLOW\tNEXT RUN\tLAST RUN\tLARGEST\tRUNS")
+		for _, j := range s.Sizes {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", j.Job, j.Workflow, sizeText(j.EstCPUs, j.EstMem), sizeText(j.LastCPUs, j.LastMem), sizeText(j.TopCPUs, j.TopMem), j.Runs)
+		}
+		tw.Flush()
+	}
+}
+
+func sizeText(cpus float64, mem int64) string { return fmt.Sprintf("%.1fcpu/%s", cpus, gib(mem)) }
+
+func cond(ok bool, a, b string) string {
+	if ok {
+		return a
+	}
+	return b
 }
 
 func dash(s string) string {

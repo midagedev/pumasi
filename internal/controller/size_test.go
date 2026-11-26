@@ -1,0 +1,128 @@
+package controller
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/midagedev/pumasi/internal/config"
+	"github.com/midagedev/pumasi/internal/ledger"
+	"github.com/midagedev/pumasi/internal/size"
+)
+
+const gbs = int64(1) << 30
+
+// finished records one finished, measured run of a job the way the controller does.
+func (r *rig) finished(name string, k ledger.JobKey, cpus float64, work int64, oom int) {
+	r.t.Helper()
+	at := *r.now
+	j := ledger.Job{ID: name, Class: "small", Repo: k.Repo, Workflow: k.Workflow + "@refs/heads/main", Name: k.Job}
+	_, err1 := r.ledger.JobStarted(name, j, at)
+	err2 := r.ledger.SetUsage(name, ledger.Usage{CPUSec: cpus * 100, MemPeak: 2 * work, MemWorkPeak: work, OOMKills: oom})
+	err3 := r.ledger.JobCompleted(name, j, "succeeded", at.Add(100*time.Second))
+	err4 := r.ledger.MarkRemoved(name, at.Add(101*time.Second))
+	for _, err := range []error{err1, err2, err3, err4} {
+		if err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	*r.now = at.Add(time.Hour)
+}
+
+// The estimate follows the job: a job that grows run by run is placed bigger
+// each time, by nobody's hand.
+func TestEstimateFollowsTheLedger(t *testing.T) {
+	r := newRig(t)
+	cl := r.cfg.Classes[0] // 1 cpu, 1G
+	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml@refs/heads/main", "build")
+	if e := r.estimate(cl, k); e.Runs != 0 || e.CPUs != 1 || e.MemBytes != gbs {
+		t.Fatalf("a job never seen: %+v, want the class's first estimate", e)
+	}
+	prev := int64(0)
+	for i, work := range []int64{2 * gbs, 3 * gbs, 5 * gbs} {
+		name := "small-h1-" + string(rune('a'+i))
+		if err := r.ledger.InsertRunner(name, "small", "h1", *r.now, r.estimate(cl, k)); err != nil {
+			t.Fatal(err)
+		}
+		r.finished(name, k, 0.5, work, 0)
+		e := r.estimate(cl, k)
+		if e.Runs != i+1 || e.MemBytes < work || e.MemBytes <= prev {
+			t.Fatalf("after a run that held %d: %+v", work, e)
+		}
+		prev = e.MemBytes
+	}
+	// A job cut short at a limit is given more than it was seen with.
+	if err := r.ledger.InsertRunner("small-h1-oom", "small", "h1", *r.now, r.estimate(cl, k)); err != nil {
+		t.Fatal(err)
+	}
+	r.finished("small-h1-oom", k, 0.5, 6*gbs, 1)
+	if e := r.estimate(cl, k); e.MemBytes != 9*gbs {
+		t.Errorf("after a run cut short at 6G: %s", e.Source())
+	}
+	// Another job of the same workflow has learned nothing from it.
+	if e := r.estimate(cl, ledger.KeyOf("o/r", k.Workflow, "lint")); e.Runs != 0 {
+		t.Errorf("lint: %+v", e)
+	}
+}
+
+// A waiting job is placed with what it learned, and its runner is started
+// without a limit at that size: the size is only what placement counts on.
+func TestStartIsSizedByTheJobAndNotLimitedToIt(t *testing.T) {
+	r := newRig(t)
+	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml", "build")
+	if err := r.ledger.InsertRunner("small-h1-old", "small", "h1", *r.now, size.Estimate{CPUs: 1, MemBytes: gbs}); err != nil {
+		t.Fatal(err)
+	}
+	r.finished("small-h1-old", k, 0.5, 2*gbs, 0)
+	if err := r.ledger.UpsertDemand(ledger.Job{ID: "j2", Class: "small", Repo: k.Repo, Workflow: k.Workflow + "@refs/heads/x", Name: k.Job}, *r.now); err != nil {
+		t.Fatal(err)
+	}
+	r.ag.Sample(context.Background())
+	r.classes[0].cfg.OS = r.ag.Snapshot().OS // the rig's agent says the OS the tests run on
+	r.Evaluate(context.Background())
+	r.starts.Wait()
+	live, err := r.ledger.LiveRunners()
+	if err != nil || len(live) != 1 {
+		t.Fatalf("live runners %+v (%v); deferred: %s", live, err, r.ledger.LastDefer("small"))
+	}
+	if lr := live[0]; lr.EstMem != 2496<<20 || lr.EstRuns != 1 {
+		t.Errorf("placed with %+v, want 2.4G learned from 1 run", lr)
+	}
+	r.drv.mu.Lock()
+	defer r.drv.mu.Unlock()
+	spec, ok := r.drv.specs[live[0].Name]
+	if !ok {
+		t.Fatal("the driver was not asked to start it")
+	}
+	// The limit is what protects the host (the rig's lends 8G), not the job's size.
+	if spec.MemBytes != 2496<<20 || spec.LimitCPUs != 0 || spec.LimitMem <= spec.MemBytes {
+		t.Errorf("spec size %d, limits %g/%d", spec.MemBytes, spec.LimitCPUs, spec.LimitMem)
+	}
+	ds, _, _ := r.ledger.RunnerHistory(live[0].Name)
+	if len(ds) == 0 || !strings.Contains(ds[0].Reason, "for build (learned from 1 run") {
+		t.Errorf("decision %+v: it does not say what the size comes from", ds)
+	}
+}
+
+func TestLimits(t *testing.T) {
+	plain := config.Class{Name: "a", CPUs: 2, Memory: 4 << 30}
+	held := plain
+	held.Limit.CPUs, held.Limit.Memory = 4, 8<<30
+	tests := []struct {
+		name            string
+		cl              config.Class
+		budget, machine int64
+		cpus            float64
+		mem             int64
+	}{
+		{"no limit said: four fifths of the machine, no cpu limit", plain, 0, 40 * gbs, 0, 32 * gbs},
+		{"a host that lends less is held to that", plain, 6 * gbs, 40 * gbs, 0, 6 * gbs},
+		{"the class's own limit is the limit", held, 6 * gbs, 40 * gbs, 4, 8 * gbs},
+	}
+	for _, tt := range tests {
+		if cpus, mem := limits(tt.cl, tt.budget, tt.machine); cpus != tt.cpus || mem != tt.mem {
+			t.Errorf("%s: %g/%d", tt.name, cpus, mem)
+		}
+	}
+}

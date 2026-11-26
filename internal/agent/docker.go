@@ -20,10 +20,15 @@ import (
 
 // Spec is one runner to start.
 type Spec struct {
-	Name      string
-	Class     string
+	Name  string
+	Class string
+	// CPUs and MemBytes are what the runner is expected to use: what it
+	// holds of the host's room. LimitCPUs and LimitMem are what the OS
+	// enforces (0 = no limit): a guard for the host, wider than the estimate.
 	CPUs      float64
 	MemBytes  int64
+	LimitCPUs float64
+	LimitMem  int64
 	Image     string
 	JITConfig string
 	// Driver: docker | native. Empty = the host's own way (Linux: docker).
@@ -183,9 +188,16 @@ func (d Docker) Start(ctx context.Context, s Spec) error {
 	args := []string{"run", "-d", "--name", s.Name,
 		"--label", labelTag + "=" + d.Tag, "--label", labelClass + "=" + s.Class,
 		"--label", labelCPUs + "=" + cpus, "--label", labelMem + "=" + mem,
-		"--cpus", cpus, "--memory", mem, "--memory-swap", mem,
 		// The JIT config goes over stdin so it never lands on disk or in argv.
 		"--env-file", "/dev/stdin"}
+	// The limits protect the host; they are not the size the runner was placed with.
+	if s.LimitCPUs > 0 {
+		args = append(args, "--cpus", strconv.FormatFloat(s.LimitCPUs, 'f', -1, 64))
+	}
+	if s.LimitMem > 0 {
+		lim := strconv.FormatInt(s.LimitMem, 10)
+		args = append(args, "--memory", lim, "--memory-swap", lim)
+	}
 	for _, m := range s.Mounts {
 		// --mount, not -v: docker must refuse a path the host does not have, not create it as root.
 		path, ro := strings.CutSuffix(m, ":ro")

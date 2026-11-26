@@ -15,9 +15,12 @@ type Usage struct {
 	CPUUsec    uint64
 	MemCurrent int64
 	MemPeak    int64
-	IOBytes    *int64
-	OOMKills   int               // processes killed (Linux) or refused memory (Windows) at the limit
-	Pressure   map[string]uint64 // some-stall microseconds by cpu|memory|io
+	// MemWork: memory in use that is not page cache. 0 = this OS's MemCurrent
+	// is that number already (process memory on macOS and Windows).
+	MemWork  int64
+	IOBytes  *int64
+	OOMKills int               // processes killed (Linux) or refused memory (Windows) at the limit
+	Pressure map[string]uint64 // some-stall microseconds by cpu|memory|io
 }
 
 // HostUsage is the machine as a whole.
@@ -75,7 +78,7 @@ func (m *CgroupMeter) Runner(c Container) (Usage, error) {
 		return Usage{}, err
 	}
 	io := int64(s.IOBytes)
-	return Usage{CPUUsec: s.CPUUsec, MemCurrent: int64(s.MemCurrent), MemPeak: int64(s.MemPeak),
+	return Usage{CPUUsec: s.CPUUsec, MemCurrent: int64(s.MemCurrent), MemPeak: int64(s.MemPeak), MemWork: int64(s.MemWork),
 		IOBytes: &io, OOMKills: int(s.OOMKills), Pressure: s.Pressure}, nil
 }
 

@@ -2,6 +2,8 @@ package ledger
 
 import (
 	"fmt"
+	"github.com/midagedev/pumasi/internal/size"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,7 +47,7 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("assigned_count %d", n)
 	}
 
-	must(l.InsertRunner("r1", "linux-s", "h1", t0.Add(11*time.Minute)))
+	must(l.InsertRunner("r1", "linux-s", "h1", t0.Add(11*time.Minute), size.Estimate{}))
 	must(l.SetRegistration("r1", 42, t0.Add(11*time.Minute+time.Second)))
 	must(l.MarkListening("r1", t0.Add(11*time.Minute+9*time.Second), 9000))
 	r, err := l.Runner("r1")
@@ -106,7 +108,7 @@ func TestCloseFromExitAndRevive(t *testing.T) {
 		return
 	}
 	for _, n := range []string{"a", "b"} {
-		if err := l.InsertRunner(n, "linux-s", "server1", t0); err != nil {
+		if err := l.InsertRunner(n, "linux-s", "server1", t0, size.Estimate{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,7 +141,7 @@ func TestOpenOrRebuildMovesDamagedFileAside(t *testing.T) {
 	if err != nil || moved != "" {
 		t.Fatalf("fresh ledger: moved %q err %v", moved, err)
 	}
-	_ = l.InsertRunner("r1", "linux-s", "h", time.Now())
+	_ = l.InsertRunner("r1", "linux-s", "h", time.Now(), size.Estimate{})
 	l.Close()
 	if err := os.WriteFile(path, []byte("this is not a database, not even close"), 0o600); err != nil {
 		t.Fatal(err)
@@ -183,5 +185,64 @@ func TestRerunQueueHonoursTheLimit(t *testing.T) {
 	}
 	if ok, _ := l.RequestRerun("o/r", 1, "runner died again", now, 2); !ok {
 		t.Fatal("second rerun refused although the limit is 2")
+	}
+}
+
+// A job is the same job on every branch; its measured runs come back newest
+// first, and runs from before working memory was measured do not count.
+func TestJobRuns(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	t0 := time.Date(2026, 11, 26, 1, 0, 0, 0, time.UTC)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(i int, job, ref string, work int64, oom int, removed bool) {
+		name := fmt.Sprintf("r%d", i)
+		at := t0.Add(time.Duration(i) * time.Hour)
+		must(l.InsertRunner(name, "linux-s", "h1", at, size.Estimate{CPUs: 2, MemBytes: 4 << 30}))
+		_, err := l.JobStarted(name, Job{ID: name, Class: "linux-s", Repo: "o/r", Workflow: "o/r/.github/workflows/ci.yml@" + ref, Name: job}, at)
+		must(err)
+		must(l.SetUsage(name, Usage{CPUSec: 300, MemPeak: 15 << 30, MemWorkPeak: work, OOMKills: oom, LimitMem: 6 << 30}))
+		must(l.JobCompleted(name, Job{ID: name}, "succeeded", at.Add(100*time.Second)))
+		if removed {
+			must(l.MarkRemoved(name, at.Add(101*time.Second)))
+		}
+	}
+	run(1, "build", "refs/heads/main", 1<<30, 0, true)
+	run(2, "build", "refs/pull/7/merge", 2<<30, 0, true)
+	run(3, "build", "refs/heads/main", 0, 0, true)      // from before working memory was measured
+	run(4, "test", "refs/heads/main", 9<<30, 0, true)   // another job
+	run(5, "build", "refs/heads/main", 3<<30, 1, true)  // cut short at its 6G limit before a sample saw more than 3G
+	run(6, "build", "refs/heads/main", 8<<30, 0, false) // still on its host: its last sample is not in yet
+
+	k := KeyOf("o/r", "o/r/.github/workflows/ci.yml@refs/heads/other", "build")
+	runs, err := l.JobRuns(k, 10)
+	must(err)
+	want := []size.Sample{{CPUs: 3, MemBytes: 6 << 30, OOM: true}, {CPUs: 3, MemBytes: 2 << 30}, {CPUs: 3, MemBytes: 1 << 30}}
+	for i := range runs {
+		runs[i].CPUs = math.Round(runs[i].CPUs*1000) / 1000 // julianday is a float of days
+	}
+	if fmt.Sprint(runs) != fmt.Sprint(want) {
+		t.Fatalf("runs %+v, want %+v", runs, want)
+	}
+	if runs, _ := l.JobRuns(k, 2); len(runs) != 2 || runs[0].MemBytes != 6<<30 {
+		t.Errorf("the newest two: %+v", runs)
+	}
+	keys, err := l.MeasuredJobs(10)
+	must(err)
+	if len(keys) != 2 || keys[0] != k || keys[1].Job != "test" {
+		t.Errorf("measured jobs %+v", keys)
+	}
+	r, err := l.Runner("r1")
+	must(err)
+	if r.EstCPUs != 2 || r.EstMem != 4<<30 || r.MemWorkPeak != 1<<30 || r.MemPeak != 15<<30 {
+		t.Errorf("runner %+v", r)
 	}
 }

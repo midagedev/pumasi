@@ -50,8 +50,11 @@ function renderState(s) {
     const state = h.reachable === null ? "unknown" : h.reachable ? (h.closed || "ok") : "unreachable";
     return el("tr", {},
       td(h.name), td(h.kind, "muted opt"), td(h.os || "-", "muted opt"),
-      bar(h.usedCpus, h.budgetCpus, h.usedCpus + "/" + h.budgetCpus),
-      bar(h.usedMem, h.budgetMem, gib(h.usedMem) + "/" + gib(h.budgetMem)),
+      // Held by the runners, against what pumasi lends here: the budget, or the machine.
+      bar(h.usedCpus, h.budgetCpus || h.cpus, h.usedCpus.toFixed(1) + "/" + (h.budgetCpus || h.cpus || "-")),
+      bar(h.usedMem, h.budgetMem || h.memBytes, gib(h.usedMem) + "/" + (h.budgetMem || h.memBytes ? gib(h.budgetMem || h.memBytes) : "-")),
+      td(h.memBytes ? h.freeCpus.toFixed(1) + "cpu / " + gib(h.freeMem) : "-", "num"),
+      td(h.budgetCpus || h.budgetMem ? "capped" : "auto", "muted opt"),
       td(h.cpuPressure === null ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"),
       td(h.diskFreePct === null ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(String(h.runners), "num"),
@@ -65,7 +68,16 @@ function renderState(s) {
     td(r.name), td(r.class, "opt"), td(r.host), td(r.slot ? String(r.slot) : "-", "num opt"), td(r.state, "muted"), td(r.job || "-"),
     td(dur(r.ageSeconds), "num opt"),
     td(r.cpuSec ? r.cpuSec.toFixed(0) + "s" : "-", "num opt"),
-    r.memBytes ? bar(r.memBytes, r.memLimit, mib(r.memBytes) + "/" + gib(r.memLimit)) : td("-"))), "runners-empty");
+    td(r.memBytes ? r.cpuNow.toFixed(1) + "/" + r.estCpus.toFixed(1) : "-/" + r.estCpus.toFixed(1), "num"),
+    // Use now against the estimate. A full bar is a job over its estimate: it goes on.
+    bar(r.memBytes, r.estMem, (r.memBytes ? gib(r.memBytes) : "-") + "/" + gib(r.estMem) + (r.estRuns ? "" : " first")))), "runners-empty");
+
+  fill("sizes", s.sizes.map((j) => el("tr", {},
+    td(j.job), td(j.workflow, "muted opt"),
+    td(j.estCpus.toFixed(1) + "cpu / " + gib(j.estMem), "num"),
+    td(j.lastCpus.toFixed(1) + "cpu / " + gib(j.lastMem), "num"),
+    td(j.topCpus.toFixed(1) + "cpu / " + gib(j.topMem), "num opt"),
+    td(String(j.runs), "num"))), "sizes-empty");
 
   fill("waiting", s.waiting.map((w) => el("tr", {},
     td(w.class, "waiting"), td(String(w.jobs), "num"), td(dur(w.oldestSeconds), "num"), td(w.reason || "-", "wrap"))), "waiting-empty");
@@ -97,7 +109,7 @@ function renderJobs(all) {
       td(j.startedAt && j.job ? dur(j.waitSec) : "-", "num opt"),
       td(j.finishedAt && j.startedAt ? dur(j.runSec) : "-", "num"),
       td(j.cpuSec ? j.cpuSec.toFixed(0) + "s" : "-", "num opt"),
-      td(j.memPeak ? mib(j.memPeak) : "-", "num"));
+      td(j.memWorkPeak || j.memPeak ? mib(j.memWorkPeak || j.memPeak) + (j.estMem ? " / est " + gib(j.estMem) : "") : "-", "num"));
     tr.onclick = () => { openJob = openJob === j.runner ? "" : j.runner; renderJobs(all); };
     rows.push(tr);
     if (openJob === j.runner) rows.push(detailRow(j));

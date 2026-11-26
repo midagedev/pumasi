@@ -445,3 +445,101 @@ func TestReserveOnBoundHostLeavesOthersFree(t *testing.T) {
 		t.Errorf("plan %+v", p)
 	}
 }
+
+// Placement by what jobs are expected to use, and what hosts are measured to
+// have: nobody's hand-set number decides it.
+func TestPlacementBySize(t *testing.T) {
+	// A machine of 16 cpus and 32G with no budget; 3G is kept free.
+	open := func() Host {
+		return Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 32 * gb, KeepMem: 3 * gb}
+	}
+	job := func(id string, cpus float64, mem int64) Demand {
+		return Demand{ID: id, Class: "linux-s", FirstSeen: t0, CPUs: cpus, MemBytes: mem, Sized: "for build (learned from 10 runs, the largest 3.0cpu/16.0G)"}
+	}
+	busy := func(name string, cpus float64, mem int64) Runner {
+		return Runner{Name: name, Class: "linux-s", Host: "h1", State: "busy", JobKnown: true, Container: "running", Working: true,
+			CreatedAt: t0, ListeningAt: t0, JobStartedAt: t0, CPUs: cpus, MemBytes: mem}
+	}
+	tests := []struct {
+		name    string
+		host    func(*Host)
+		demand  []Demand
+		runners []Runner
+		starts  int
+		reason  string // of the first start or defer
+	}{
+		{name: "a job never seen takes the class's first estimate",
+			demand: demand("linux-s", 1), starts: 1, reason: "takes 1.0cpu/1.0G of the free 16.0cpu/29.0G"},
+		{name: "a job that learned to be big takes that much, whatever the class says",
+			demand: []Demand{job("a", 4, 20*gb)}, starts: 1, reason: "takes 4.0cpu/20.0G of the free 16.0cpu/29.0G for build (learned from 10 runs, the largest 3.0cpu/16.0G)"},
+		{name: "two big jobs do not fit together: the second waits and says its size",
+			demand: []Demand{job("a", 4, 20*gb), job("b", 4, 20*gb)}, starts: 1, reason: "takes 4.0cpu/20.0G"},
+		{name: "small jobs pack by their own size, not the class's",
+			demand: []Demand{job("a", 0.5, gb/2), job("b", 0.5, gb/2), job("c", 0.5, gb/2), job("d", 0.5, gb/2)}, starts: 4},
+		{name: "a runner over its estimate holds what it uses: the next job waits",
+			runners: []Runner{busy("r1", 2, 27*gb)}, demand: []Demand{job("a", 1, 4*gb)}, starts: 0,
+			reason: "no host with 1.0cpu/4.0G free (h1 14.0cpu/2.0G)"},
+		{name: "load from outside pumasi takes the room away",
+			host: func(h *Host) { h.NonRunnerMem = 27 * gb }, demand: []Demand{job("a", 1, 4*gb)}, starts: 0,
+			reason: "no host with 1.0cpu/4.0G free (h1 16.0cpu/2.0G)"},
+		{name: "the same job goes when the outside load is gone",
+			demand: []Demand{job("a", 1, 4*gb)}, starts: 1},
+		{name: "a host short of memory right now gets no new runner",
+			host: func(h *Host) { h.PSIMem = 25 }, demand: []Demand{job("a", 1, 4*gb)}, starts: 0,
+			reason: "h1 memory pressure 25"},
+		{name: "a budget is a cap on top of what is measured",
+			host: func(h *Host) { h.BudgetMem = 6 * gb }, demand: []Demand{job("a", 1, 4*gb), job("b", 1, 4*gb)}, starts: 1},
+		{name: "the memory kept free is not lent",
+			demand: []Demand{job("a", 1, 30*gb)}, starts: 0, reason: "no host with 1.0cpu/30.0G free (h1 16.0cpu/29.0G)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := open()
+			if tt.host != nil {
+				tt.host(&h)
+			}
+			s := snap([]Host{h}, tt.demand, tt.runners)
+			s.PSIMemThreshold = 10
+			p := Decide(s)
+			if len(p.Start) != tt.starts || len(p.Stop) != 0 {
+				t.Fatalf("starts %v stops %v defers %v, want %d starts and no stop", p.Start, p.Stop, p.Defer, tt.starts)
+			}
+			got := ""
+			switch {
+			case tt.reason == "":
+				return
+			case tt.starts > 0:
+				got = p.Start[0].Reason
+			case len(p.Defer) > 0:
+				got = p.Defer[0].Reason
+			}
+			if !strings.Contains(got, tt.reason) {
+				t.Errorf("reason %q, want %q in it", got, tt.reason)
+			}
+		})
+	}
+}
+
+// The invariant: no size is a reason to stop a runner. However far a job goes
+// over what it was expected to use, and however little room its host has
+// left, the plan never stops it. It only stops getting company.
+func TestNoRunnerIsStoppedForItsSize(t *testing.T) {
+	for _, state := range []string{"starting", "idle", "busy"} {
+		for _, over := range []float64{1, 2, 10, 1000} {
+			for _, pressure := range []float64{0, 99} {
+				h := Host{Name: "h1", Kind: "server", Up: true, CPUs: 4, MemBytes: 8 * gb, KeepMem: gb,
+					BudgetCPUs: 2, BudgetMem: 2 * gb, NonRunnerMem: 7 * gb, NonRunnerCPU: 4, PSICPU: pressure, PSIMem: pressure}
+				r := Runner{Name: "r1", Class: "linux-s", Host: "h1", State: state, JobKnown: state == "busy", Container: "running",
+					Working: state == "busy", CreatedAt: t0, ListeningAt: t0, CPUs: 1 * over, MemBytes: int64(float64(gb) * over)}
+				if state == "busy" {
+					r.JobStartedAt = t0
+				}
+				s := snap([]Host{h}, demand("linux-s", 3), []Runner{r})
+				s.PSIMemThreshold = 10
+				if p := Decide(s); len(p.Stop) != 0 {
+					t.Errorf("%s runner at %gx its estimate, pressure %g: stopped: %+v", state, over, pressure, p.Stop)
+				}
+			}
+		}
+	}
+}

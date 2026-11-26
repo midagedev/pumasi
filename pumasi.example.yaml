@@ -2,18 +2,22 @@
 url: https://github.com/OWNER/REPO         # repo, org or enterprise
 listen: 0.0.0.0:7411                       # where hosts connect (the default); `pumasi invite` prints the line that joins one
 
-classes:                                   # a class is a runner size: runs-on: [self-hosted, pumasi-<name>]
-  - {name: small, cpus: 1, memory: 1G}
-# - {name: e2e,   cpus: 4, memory: 8G, docker: inside, maxDuration: 2h}   # the job's own docker daemon, inside the limits
-# - {name: cache, cpus: 2, memory: 3G, mounts: [/srv/ci-cache]}           # a host path, only on hosts that have it
-# - {name: build, cpus: 4, memory: 8G, driver: native, hosts: [server1]}  # a process of the host's user, on that host only
-# - {name: deploy, cpus: 2, memory: 4G, reserve: 1}                       # room other classes may not take
-# - {name: shared, cpus: 4, memory: 8G, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
-# - {name: macos, cpus: 4, memory: 8G, os: macos}                         # os: macos | windows, on hosts of that OS
+# A class is a kind of runner: runs-on: [self-hosted, pumasi-<name>]. No sizes: pumasi measures
+# what each job uses and places its next run by that.
+classes:
+  - {name: small}
+# - {name: e2e,   docker: inside, maxDuration: 2h}                        # the job's own docker daemon
+# - {name: cache, mounts: [/srv/ci-cache]}                                # a host path, only on hosts that have it
+# - {name: build, driver: native, hosts: [server1]}                       # a process of the host's user, on that host only
+# - {name: deploy, reserve: 1}                                            # room other classes may not take
+# - {name: shared, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
+# - {name: macos, os: macos}                                              # os: macos | windows, on hosts of that OS
+# - {name: heavy, cpus: 8, memory: 24G}                                   # the first estimate for a job never measured (default 2, 4G); not a limit
+# - {name: fenced, limit: {memory: 8G}}                                   # a hard limit, for when you want one
 
 # hosts:                                   # optional: `up` runs the invite line there over ssh for you
-#   - {ssh: server1, budget: {cpus: 4, memory: 6G}}
-#   - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}          # someone works there: used last, theirs first
+#   - {ssh: server1}                                                     # lends what it has free, as measured
+#   - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}          # someone works there: used last, theirs first; budget caps what it lends
 
 # rerun: 1                                 # rerun a run's failed jobs once after a failure on pumasi's side
 # notify: {webhook: https://hooks.example/…}   # or command: my-notify --stdin; problems and their end, one line each

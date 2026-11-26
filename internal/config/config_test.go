@@ -37,11 +37,21 @@ hosts:
 	}
 }
 
-func TestBudgetRequired(t *testing.T) {
+// A config without a number in it is a whole config: the class starts from
+// the default first estimate and the host lends what it measures free.
+func TestNoNumbersNeeded(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "pumasi.yaml")
-	os.WriteFile(p, []byte("url: u\nclasses: [{name: a, cpus: 1, memory: 1G}]\nhosts: [{ssh: h}]\n"), 0o600)
-	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "budget") {
-		t.Errorf("err %v", err)
+	os.WriteFile(p, []byte("url: u\nclasses: [{name: a}, {name: b, limit: {memory: 8G}}]\nhosts: [{ssh: h}]\n"), 0o600)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := c.Classes[0], c.Classes[1]
+	if a.CPUs != DefaultCPUs || a.Memory != DefaultMemory || a.Limit != (Size{}) || b.Limit.Memory != 8<<30 {
+		t.Errorf("classes %+v %+v", a, b)
+	}
+	if c.Hosts[0].Budget != (Size{}) {
+		t.Errorf("budget %+v", c.Hosts[0].Budget)
 	}
 }
 

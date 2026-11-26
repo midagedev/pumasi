@@ -93,8 +93,14 @@ func startTree(dir string, s Spec, env []string, log *os.File) (*tree, error) {
 	t := &tree{dir: dir, unit: unitName(dir)}
 	args := []string{"--user", "--scope", "--quiet", "--collect", "--unit=" + t.unit,
 		"--description=pumasi runner " + s.Name,
-		"-p", fmt.Sprintf("CPUQuota=%d%%", max(1, int(math.Round(s.CPUs*100)))),
-		"-p", fmt.Sprintf("MemoryMax=%d", s.MemBytes), "-p", "MemorySwapMax=0"}
+		"-p", "MemorySwapMax=0"}
+	// The limits protect the host; they are not the size the runner was placed with.
+	if s.LimitCPUs > 0 {
+		args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", max(1, int(math.Round(s.LimitCPUs*100)))))
+	}
+	if s.LimitMem > 0 {
+		args = append(args, "-p", fmt.Sprintf("MemoryMax=%d", s.LimitMem))
+	}
 	if systemdVersion() >= 253 {
 		// A process of the job killed at the memory limit must not take the
 		// runner with it: the runner reports the failed step.
@@ -162,7 +168,7 @@ func (t *tree) refresh() {
 	if err != nil {
 		return
 	}
-	u := Usage{CPUUsec: s.CPUUsec, MemCurrent: int64(s.MemCurrent), MemPeak: int64(s.MemPeak), OOMKills: int(s.OOMKills)}
+	u := Usage{CPUUsec: s.CPUUsec, MemCurrent: int64(s.MemCurrent), MemPeak: int64(s.MemPeak), MemWork: int64(s.MemWork), OOMKills: int(s.OOMKills)}
 	// The io controller is often not delegated to users: then nothing is known.
 	if _, err := os.Stat(filepath.Join(t.cg, "io.stat")); err == nil {
 		io := int64(s.IOBytes)

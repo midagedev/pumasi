@@ -159,17 +159,22 @@ func startTree(dir string, s Spec, env []string, log *os.File) (t *tree, err err
 	if t.job, err = windows.CreateJobObject(nil, jobName(dir)); err != nil {
 		return nil, fmt.Errorf("job object: %w", err)
 	}
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{JobMemoryLimit: uintptr(s.MemBytes)}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_JOB_MEMORY
-	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		return nil, fmt.Errorf("job limits: %w", err)
+	// The limits protect the host; they are not the size the runner was placed with.
+	if s.LimitMem > 0 {
+		limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{JobMemoryLimit: uintptr(s.LimitMem)}
+		limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_JOB_MEMORY
+		if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+			return nil, fmt.Errorf("job limits: %w", err)
+		}
 	}
-	rate := jobCPURate{ControlFlags: cpuRateEnable | cpuRateHardCap,
-		CPURate: uint32(min(10000, max(1, s.CPUs/float64(runtime.NumCPU())*10000)))}
-	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectCpuRateControlInformation,
-		uintptr(unsafe.Pointer(&rate)), uint32(unsafe.Sizeof(rate))); err != nil {
-		return nil, fmt.Errorf("job cpu rate: %w", err)
+	if s.LimitCPUs > 0 {
+		rate := jobCPURate{ControlFlags: cpuRateEnable | cpuRateHardCap,
+			CPURate: uint32(min(10000, max(1, s.LimitCPUs/float64(runtime.NumCPU())*10000)))}
+		if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectCpuRateControlInformation,
+			uintptr(unsafe.Pointer(&rate)), uint32(unsafe.Sizeof(rate))); err != nil {
+			return nil, fmt.Errorf("job cpu rate: %w", err)
+		}
 	}
 	if err = t.watch(); err != nil {
 		return nil, err

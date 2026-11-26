@@ -181,7 +181,7 @@ func (c *Controller) syncJoined(announce bool) {
 			if !p.Link().Connected {
 				continue
 			}
-			c.log.Info(fmt.Sprintf("host %s joined  budget %gcpu/%s", m.Name, m.CPUs, gib(m.Mem)))
+			c.log.Info(fmt.Sprintf("host %s joined  %s", m.Name, lends(m.CPUs, m.Mem)))
 		}
 		h := newHost(memberHost(m))
 		h.id = m.ID
