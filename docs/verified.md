@@ -9,6 +9,22 @@
 실물 호스트: Linux 서버(Docker), WSL2 Ubuntu 데스크톱(systemd 255), Apple silicon 노트북, Windows 11 x64 데스크톱. 2026-11-24 ~ 25.
 「크기」 절의 실물은 2026-11-26, 노트북과 그 위의 Linux VM(aarch64, 8cpu/32G, Docker, cgroup v2)에서 봤다.
 
+## 미확인 한눈에
+
+아래 표들에 흩어진 「미확인」을 모은 것이다. 자세한 사정은 각 절의 그 줄에 있다.
+
+| 묶음 | 돌려 보지 않은 것 |
+|---|---|
+| Windows | 추정·실측(빌드와 vet 만) · CPU 한도의 강제 · 책상에 로그온한 세션(입력 감지, 로그온 때 시작, 창) · fast startup 뒤의 `died` 판정 · 판이 다른 controller 를 만나 스스로 바꾸기 |
+| 재부팅 | 호스트의 진짜 재부팅(boot id 를 바꾼 흉내만) · 서비스로 띄운 controller 의 재부팅 뒤 · linger 가 꺼진 Linux, 화면에 로그인하지 않은 Mac |
+| 한도·압박 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 · Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 · 부하 걸린 Mac 에서 controller 를 수 시간 |
+| 인증·권한 | 진짜 GitHub App 으로 scale set 을 만들고 잡 돌리기 · fine-grained 권한(Actions: Read / Read and write)만으로 run 조회·다시 돌리기 |
+| 대시보드 | Job sizes 표와 러너의 now/est 칸 · Waiting 의 Line 칸 · 자격 노출 경고 칸 — 셋 다 화면을 열어 보지 않았다 |
+| 알림 | 부재 알림: 호스트의 네트워크만 끊긴 경우, 자다 깬 노트북 호스트, 기본값 5분 그대로 |
+| 사람 우선 | Linux 화면 세션, Windows 입력 시각 |
+| 설정 조합 | `image` 가 `:latest` 일 때 native 러너 · 서비스에서 `hosts: - ssh:` 로 대신 붙이기 |
+| 원인을 못 가린 것 | WSL 호스트에서 `down` 뒤 파일이 다시 생기던 것(막은 뒤로는 안 생겼으나 고치기 전 판으로 재현하지 않았다) · Mac 을 `after` 뒤 클래스로 뒀을 때의 31초(압박 때문인지) · 서로 다른 워크플로우가 같은 잡 이름으로 같은 reusable 파일을 부를 때 열쇠가 뭉치는 것(이름 규칙에서 따라 나올 뿐) |
+
 ## 배치와 장부
 
 | 동작 | 수준 | 본 것 |
@@ -40,6 +56,7 @@
 | 페이지 캐시는 크기에 안 들어간다 | 실물(Linux 컨테이너) | 300MiB 를 쥐고 1.5G 파일을 쓰고 읽은 잡: cgroup peak 1950M, 장부의 작업 메모리 449M, 다음 추정 0.6G |
 | 바깥 부하가 있으면 새 러너를 미루고, 빠지면 놓는다 | 실물(Linux) | VM 에서 pumasi 밖의 프로세스가 4G 를 쥐자 자리가 22.9G → 18.4G: 첫 추정 20G 인 잡이 `no host with 2.0cpu/20.0G free (vm1 6.5cpu/18.6G)` 로 대기, 프로세스를 죽이자 다음 평가에서 `free 6.4cpu/22.7G` 로 시작(대기 기록 16초 뒤) |
 | 재 본 잡은 클래스의 숫자보다 잰 크기를 따른다 | 실물 | 첫 추정 20G 인 클래스로 간 잡이, 다른 클래스에서 잰 적 있는 잡이라 3.2G 로 놓였다(열쇠에 클래스가 없다) |
+| 잰 크기는 플랫폼(OS/드라이버)별로 따로다 (11-26) | 유닛 + 실물 | 전에는 Mac 클래스(`macos/native`)에서 0.2G 로 배운 잡이 Linux 클래스(`linux/docker`) 러너를 0.1cpu/0.2G 로 놓았다. 바꾼 뒤 같은 장부로 다시 띄우자 옛 행에 클래스의 플랫폼이 채워졌고, 다음 Linux 러너는 Linux 표본 하나(0.1G)로만 놓였다. 유닛: 다른 OS·드라이버의 표본과 같은 워크플로우의 다른 잡도 빌려 오지 않는다, 플랫폼 없는 옛 행은 클래스가 채우기 전까지 표본이 아니다 |
 | 클래스 `limit` 에 걸린 잡: 사건, 그리고 다음 추정이 한도 위로 | 실물(Linux 컨테이너) | `limit: {memory: 1G}` 에 1500MiB 잡: 잡 failure, `hit class tight's memory limit (1.0G)` 사건, 추정 0.2G → 1.5G. 한도에 걸린 실행을 한도 이상으로 치기 전의 판에서는 표본이 96M(죽기 전 마지막 샘플)이라 추정이 내려갔다 — 고친 뒤 다시 본 것이 위의 값 |
 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 | 미확인 | 걸리게 하려면 VM 메모리의 80%(25G)를 쥐어야 해서 하지 않았다. 한도 값의 계산은 유닛, 한도가 걸렸을 때의 동작은 위 `limit` 과 같은 경로 |
 | 추정 계산, 러너가 쥔 것 = max(추정, 실측), 자리 계산, 메모리 압박 닫힘 | 유닛 | `internal/size`, `internal/decide` 의 표 테스트 |
@@ -75,7 +92,7 @@
 | 호스트가 없으면 0개를 받고 잡은 고정 러너로 간다 | 실물 | `OVERFLOW build TAKES 0`. 잡 하나가 2초 뒤 `fixed-1` 에서 시작. pumasi 의 `status` 에는 그 잡이 없었다 |
 | 자리가 있으면 pumasi 가 받는다 | 실물 | `TAKES 2` 에서 잡 하나 → `build-vm1-…` (고정 러너는 idle 이었다) |
 | 받을 수 있는 만큼만 받고 나머지는 흐른다 | 실물 | 3000MiB 를 쥐는 90초 잡 5개를 동시에(배운 크기 3.7G, 자리 8G → `TAKES 2`). 2개가 VM 에서, 1개가 2초 뒤 `fixed-1` 에서 시작. 남은 2개는 GitHub 에서 `queued`(pumasi 의 `status` 는 `no jobs waiting`). 100초 뒤 앞의 잡들이 끝나자 하나는 `fixed-1` 이, 하나는 pumasi 가 받았다(앞 잡이 끝나고 6초 뒤 시작) |
-| `pumasi up` 이 꺼져 있을 때(세션을 닫고 내려간 뒤) | 실물(한 번) | 잡 2개가 `fixed-1` 이 idle 인데도 `queued` 로 5분 3초 있다가 `fixed-1` 로 갔다. `overflow` 가 아닌 클래스에서도 5분 뒤 넘어가는지는 보지 않았다(전날 90초 관찰에서는 넘어가지 않았다) |
+| `pumasi up` 이 꺼져 있을 때(세션을 닫고 내려간 뒤) | 실물(한 번) | 잡 2개가 `fixed-1` 이 idle 인데도 `queued` 로 5분 3초 있다가 `fixed-1` 로 갔다. `overflow` 가 아닌(전부 받는) 클래스에서도 같다(11-26, 한 번): controller 를 내리고 9초 뒤 생긴 잡 2개가 5분 3초 뒤 `fixed-1` 로 갔다(전날 90초 관찰에서 넘어가지 않은 것은 5분이 안 됐기 때문) |
 | 한 라벨을 두 클래스가, `after` | 실물 | Linux 호스트 둘(VM 8G, WSL 호스트 6G)에 하나씩 묶은 두 클래스, 같은 `labels`, 뒤 클래스에 `after`. 3.7G 로 배운 잡 4개를 동시에: 앞 클래스가 2개를 받고(03:49:58.517) 뒤 클래스의 받는 수가 0 → 1 로 열려(.534) 셋째 잡이 그리로 배정(.823), 넷째는 GitHub 에서 기다리다 뒤 클래스의 잡이 끝난 뒤 받음 |
 | 한 라벨을 두 클래스가, `after` 없이 | 실물 | 둘 다 자리가 있을 때 하나씩 보낸 잡 6개가 모두 같은 클래스로 갔다(먼저 만든 scale set 이고 받는 수도 2 대 1 로 컸다 — 어느 쪽이 기준인지는 모른다). 3개를 동시에 보내면 2 + 1 로 나뉘어 9초 안에 모두 시작 |
 | Mac 클래스를 뒤 클래스로 | 실물(한 번) + 미확인 | Linux 클래스가 2개를 받은 31초 뒤 Mac 클래스가 셋째를 받았다. 그 뒤로는 그 Mac 이 `memory pressure (warning)` 로 닫혀 있어 받는 수가 0 이었고(잡은 GitHub 에서 기다리다 Linux 클래스가 받음), 31초가 압박 때문이었는지는 가리지 못했다 |
@@ -159,6 +176,7 @@
 | 장부가 깨짐 | 실물 | 옆으로 치우고 빈 장부로 시작 |
 | 틀린 GitHub 토큰 | 실물 | `up` 이 그 이름으로 끝남 |
 | **45분 잡** | 실물 | Linux(컨테이너)와 Mac 각각: 도는 동안 controller kill -9, 판 교체 재시작, 에이전트 60초 멈춤, controller 머신 load 120 — 잡 성공 |
+| **45분 잡, 서비스로 띄운 controller (11-26)** | 실물 | 잡 하나(45분)를 도는 동안 같은 순서로: controller kill -9(서비스가 다시 띄움) → 에이전트 kill -9 → 호스트에 바깥 부하 4분(cpu 6개 + 3G) → controller 와 에이전트 동시 kill -9. **Mac**(LaunchAgent controller, Mac 호스트): 46분 44초, 성공 — controller 는 8초·10초 뒤 돌아와 `adopted 1 runners`. **Linux**(LaunchAgent controller, Linux VM 호스트의 컨테이너 러너, 에이전트는 systemd user unit): 45분 6초, 성공 — controller 는 4초 뒤, 동시 kill 때는 20초 뒤 돌아와 `adopted 1 runners, 0 jobs finished meanwhile`. 에이전트는 둘 다 20초 안에 새 pid. 돌아온 controller 는 GitHub 에 남은 죽은 세션 때문에 46초 ~ 1분 17초 동안 그 클래스의 새 잡을 받지 못했다(도는 잡과는 무관) |
 | controller 를 Mac LaunchAgent 로 | 실물 | nice 0, kill -9 뒤 launchd 가 다시 띄워 이어받음. 부하 걸린 Mac 에서 수 시간은 미확인 |
 | `pumasi service install` — Mac (11-26) | 실물 | LaunchAgent 로 뜸. kill -9 → 2초 뒤 새 pid. 잡이 도는 중 kill -9: `controller is back: was down 9s, adopted 1 runners`, 그 잡 성공, 죽어 있는 동안 건 잡도 세션이 다시 열린 뒤 돌아 성공. `SIGTERM` 뒤에도 다시 뜸(5초). plist·프로세스 환경에 토큰 없음, 토큰 파일 600 |
 | `pumasi service install` — Linux (11-26) | 실물(VM) | systemd user unit 으로 뜸. kill -9 → 5초 뒤 새 pid(`started again 1 times`), 77초 뒤 세션이 다시 열림. 유닛·프로세스 환경에 토큰 없음, 토큰 파일 600. 호스트를 붙여 잡을 돌리는 것은 Mac 쪽에서만 봤다 |
