@@ -28,10 +28,30 @@ func TestPlanSlots(t *testing.T) {
 		over        bool
 	}{
 		{
-			name: "every class listens with what fits the room, each counted by itself",
+			name: "classes that share room start in turn: the first now, the other what still fits beside it",
 			in: planIn{Classes: []api.SlotClass{big, small}, BudgetCPUs: 6, BudgetMem: 12 * gb, MachineCPUs: -1, MachineMem: -1,
 				Slots: []slotIn{slot("big", 1, "off"), slot("big", 2, "off"), slot("small", 1, "off"), slot("small", 2, "off"), slot("small", 3, "off")}},
-			start: []string{"big/1", "small/1", "small/2", "small/3"},
+			start: []string{"big/1", "small/1"},
+			why:   map[string]string{"big/2": "no room for one more", "small/2": "a moment: big listens first"},
+		},
+		{
+			name: "the class whose last job is longest ago goes first",
+			in: planIn{Classes: []api.SlotClass{big, small}, Order: []string{"small", "big"}, BudgetCPUs: 6, BudgetMem: 12 * gb, MachineCPUs: -1, MachineMem: -1,
+				Slots: []slotIn{slot("big", 1, "off"), slot("small", 1, "off"), slot("small", 2, "off"), slot("small", 3, "off")}},
+			start: []string{"small/1", "small/2", "small/3"},
+			why:   map[string]string{"big/1": "a moment: small listens first"},
+		},
+		{
+			name: "a listener that has only just come up still holds the other class back",
+			in: planIn{Classes: []api.SlotClass{big, small}, BudgetCPUs: 6, BudgetMem: 12 * gb, MachineCPUs: -1, MachineMem: -1,
+				Slots: []slotIn{{Key: "big/1", Class: "big", N: 1, State: "listening", Stoppable: true, Fresh: true}, slot("small", 1, "listening"), slot("small", 2, "off"), slot("small", 3, "off")}},
+			why: map[string]string{"small/2": "a moment: big listens first"},
+		},
+		{
+			name: "once the first has listened a moment without a job, every class listens with what fits, each counted by itself",
+			in: planIn{Classes: []api.SlotClass{big, small}, BudgetCPUs: 6, BudgetMem: 12 * gb, MachineCPUs: -1, MachineMem: -1,
+				Slots: []slotIn{slot("big", 1, "listening"), slot("big", 2, "off"), slot("small", 1, "listening"), slot("small", 2, "off"), slot("small", 3, "off")}},
+			start: []string{"small/2", "small/3"},
 			why:   map[string]string{"big/2": "no room for one more"},
 		},
 		{

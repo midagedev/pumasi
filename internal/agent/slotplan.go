@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -18,6 +19,11 @@ import (
 //     each class counted by itself. Two classes so listen for the same room,
 //     and when one takes a job the idle listeners that no longer fit are
 //     stopped.
+//   - Classes that share room do not start listening at the same moment: the
+//     class that has waited longest for a job goes first, and the others
+//     follow once its new listeners have listened for a moment without
+//     taking one. Jobs that wait for both classes would otherwise be taken
+//     by all of them at once, past the budget.
 //   - A listener is only ever stopped while it is idle. One that has taken a
 //     job in the meantime stays (the caller finds that out when it stops it),
 //     and the host is over its budget until that job ends.
@@ -37,10 +43,16 @@ type slotIn struct {
 	Stoppable bool
 	// Release: the operator wants the slot given up. It is not started again.
 	Release bool
+	// Fresh: it is starting, or has listened only for a moment: a job that
+	// waits for its class may still be on its way to it.
+	Fresh bool
 }
 
 type planIn struct {
 	Classes []api.SlotClass
+	// Order names the classes by who starts listening first: the class whose
+	// last job is longest ago comes first. Classes it leaves out follow by name.
+	Order []string
 	// Closed: why nothing new may listen on this host ("" = open).
 	Closed string
 	// The budget (0 = none) and what the host's other runners hold of it.
@@ -107,10 +119,21 @@ func planSlots(in planIn) planOut {
 	}
 
 	names := make([]string, 0, len(byClass))
-	for name := range byClass {
-		names = append(names, name)
+	for _, name := range in.Order {
+		if _, ok := byClass[name]; ok && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
 	}
-	sort.Strings(names)
+	var rest []string
+	for name := range byClass {
+		if !slices.Contains(names, name) {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	names = append(names, rest...)
+	// How many listeners the classes before this one have just put up, and who last.
+	fresh, freshOf := map[string]int{}, ""
 	for _, name := range names {
 		slots := byClass[name]
 		sort.Slice(slots, func(i, j int) bool { return slots[i].N < slots[j].N })
@@ -129,15 +152,21 @@ func planSlots(in planIn) planOut {
 		if closed == "" {
 			// Room the other classes' reserves keep from this one.
 			resCPU, resMem, resFor := 0.0, 0.0, ""
+			holdCPU, holdMem := 0.0, 0.0 // the reserves, and what classes before this one have just put up
 			for _, r := range in.Classes {
 				if r.Name == name || r.Closed != "" {
 					continue
 				}
-				if need := min(r.Reserve-busy[r.Name], idleOrOff[r.Name]); need > 0 {
+				need := max(0, min(r.Reserve-busy[r.Name], idleOrOff[r.Name]))
+				if need > 0 {
 					resCPU += float64(need) * r.CPUs
 					resMem += float64(need) * float64(r.MemBytes)
 					resFor = r.Name
 				}
+				// A reserve and a new listener of the same class are the same room.
+				hold := max(need, fresh[r.Name])
+				holdCPU += float64(hold) * r.CPUs
+				holdMem += float64(hold) * float64(r.MemBytes)
 			}
 			fit := func(cpu, mem float64) int {
 				n := math.Min((cpu+1e-9)/c.CPUs, mem/float64(c.MemBytes))
@@ -149,6 +178,7 @@ func planSlots(in planIn) planOut {
 			limit := c.Slots - busy[name]
 			keep = max(0, min(limit, fit(roomCPU-resCPU, roomMem-resMem)))
 			start = min(keep, fit(math.Min(roomCPU, machineCPU)-resCPU, math.Min(roomMem, machineMem)-resMem))
+			turn := min(start, fit(math.Min(roomCPU, machineCPU)-holdCPU, math.Min(roomMem, machineMem)-holdMem))
 			free := fmt.Sprintf("%.1fcpu/%s free of the budget", math.Max(roomCPU, 0), gibF(math.Max(roomMem, 0)))
 			switch {
 			case fit(roomCPU, roomMem) == 0:
@@ -157,9 +187,12 @@ func planSlots(in planIn) planOut {
 				noRoom = "the room left is reserved for " + resFor
 			case start < keep:
 				noRoom = fmt.Sprintf("the machine is busy: %.1fcpu/%s free", math.Max(machineCPU, 0), gibF(math.Max(machineMem, 0)))
+			case turn < start:
+				noRoom = "a moment: " + freshOf + " listens first for the same room"
 			case keep < limit:
 				noRoom = "no room for one more: " + free
 			}
+			start = turn
 		}
 
 		var idle []slotIn // listening or starting, lowest number first
@@ -207,12 +240,20 @@ func planSlots(in planIn) planOut {
 			}
 		}
 		want := start - len(idle)
+		for _, s := range idle {
+			if s.Fresh {
+				fresh[name]++
+				freshOf = name
+			}
+		}
 		for _, s := range slots {
 			if s.State != "off" || s.Release || (known && s.N > c.Slots) || closed != "" {
 				continue
 			}
 			if want > 0 && s.Ready {
 				out.Start = append(out.Start, s.Key)
+				fresh[name]++
+				freshOf = name
 				want--
 				continue
 			}

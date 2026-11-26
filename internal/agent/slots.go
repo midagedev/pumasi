@@ -51,6 +51,9 @@ type slotMgr struct {
 	// Only the manager's loop reads and writes it.
 	lastClosed string
 	lastWhy    map[string]string
+	// When a runner of the class last took a job: the class that has waited
+	// longest starts listening first.
+	lastTook map[string]time.Time
 }
 
 // slotState is what the manager remembers of a slot between its looks.
@@ -66,6 +69,7 @@ type slotState struct {
 	diagFile  string
 	diagOff   int64
 	savedBack bool
+	listenAt  time.Time // when it was first seen listening
 	stopAt    time.Time // when its stop was first asked
 	lastStop  time.Time // and last
 	fail      string    // the stop is a failure of the run: why
@@ -76,6 +80,11 @@ const (
 	slotJobsKept   = 100
 	slotProvision  = 3 * time.Minute
 	slotStopPeriod = 20 * time.Second
+	// A job that waits for a class reaches a new listener within a few
+	// seconds of "Listening for Jobs" (1 to 3 measured). Until this long
+	// after, the other classes do not start listening for the same room.
+	slotFreshListen = 8 * time.Second
+	slotFreshStart  = time.Minute // a runner that takes this long to listen holds nobody back
 )
 
 func newSlotMgr(a *Agent, nat *Native, dir, keep string) *slotMgr {
@@ -200,6 +209,15 @@ func (m *slotMgr) tick(ctx context.Context) {
 		ev := parseSlotLog(string(b), now)
 		if !st.taking && (!ev.JobStarted.IsZero() || m.jobComing(st, dir)) {
 			st.taking = true
+			if meta, ok := findSlot(metas, key); ok {
+				if m.lastTook == nil {
+					m.lastTook = map[string]time.Time{}
+				}
+				m.lastTook[meta.Class] = now
+			}
+		}
+		if !ev.Listening.IsZero() && st.listenAt.IsZero() {
+			st.listenAt = now
 		}
 		if ev.Job != "" {
 			st.job = ev.Job
@@ -326,8 +344,10 @@ func (m *slotMgr) tick(ctx context.Context) {
 				busyMem += float64(classes[meta.Class].MemBytes)
 			case run.listening:
 				s.State = "listening"
+				s.Fresh = st == nil || st.listenAt.IsZero() || now.Sub(st.listenAt) < slotFreshListen
 			default:
 				s.State = "starting"
+				s.Fresh = run.received.IsZero() || now.Sub(run.received) < slotFreshStart
 			}
 			// A run whose stop is under way is left to it. One that is still
 			// starting is stopped once it listens: a runner cut off while it
@@ -346,6 +366,10 @@ func (m *slotMgr) tick(ctx context.Context) {
 			in.MachineMem = float64(host.memBytes) - float64(host.nonRunnerMem) - heldMem - busyMem
 		}
 	}
+	for _, c := range in.Classes {
+		in.Order = append(in.Order, c.Name)
+	}
+	sort.SliceStable(in.Order, func(i, j int) bool { return m.lastTook[in.Order[i]].Before(m.lastTook[in.Order[j]]) })
 	out := planSlots(in)
 	// Why a slot stays off is written down when it changes: with the
 	// controller away the log is the only place that says it.
