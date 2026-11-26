@@ -6,12 +6,15 @@ package agent
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/user"
 	"runtime"
 	"sort"
 	"sync"
@@ -45,6 +48,8 @@ type Agent struct {
 	dataMu sync.Mutex
 	recs   map[string]*rec
 	host   hostState
+
+	machine, uid string // Identity(), read once
 
 	// forgotten: the host is leaving; nothing is written any more.
 	forgotten atomic.Bool
@@ -83,6 +88,7 @@ func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
 		cfg.Interval = 5 * time.Second
 	}
 	a := &Agent{cfg: cfg, drv: drv, met: met, log: log, now: time.Now, recs: map[string]*rec{}}
+	a.machine, a.uid = Identity()
 	a.load()
 	return a
 }
@@ -295,7 +301,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 	a.dataMu.Lock()
 	defer a.dataMu.Unlock()
 	s := api.Snapshot{
-		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Closed: a.host.closed, NoNative: a.host.noNative, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
+		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Machine: a.machine, UID: a.uid, Closed: a.host.closed, NoNative: a.host.noNative, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
 		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
@@ -464,6 +470,21 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 // hostOS is the name classes use for this machine's OS (config: os).
+// Identity names the machine this process runs on and the user it runs as, so
+// that a controller can tell whether a host is its own machine and user. The
+// machine's name is a digest of the boot id: the same for every process of
+// one boot of one machine, and nothing else.
+func Identity() (machine, uid string) {
+	if b := BootID(); b != "" {
+		sum := sha256.Sum256([]byte("pumasi machine " + b))
+		machine = hex.EncodeToString(sum[:8])
+	}
+	if u, err := user.Current(); err == nil {
+		uid = u.Uid
+	}
+	return machine, uid
+}
+
 func hostOS() string {
 	if runtime.GOOS == "darwin" {
 		return "macos"

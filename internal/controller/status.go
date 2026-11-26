@@ -23,6 +23,8 @@ type Status struct {
 	Closed map[string]string `json:"closed,omitempty"`
 	// Links: how each host is attached and how that connection is doing.
 	Links map[string]Link `json:"links,omitempty"`
+	// Warnings: what is not a problem of the moment but of the setup (exposure.go).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Link is the connection to one host, whichever side opened it.
@@ -54,6 +56,7 @@ func (c *Controller) setStatus(defers []decide.Defer) {
 	for _, d := range defers {
 		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason, Priority: d.Priority})
 	}
+	st.Warnings = c.exposure()
 	c.mu.Lock()
 	c.status = st
 	c.mu.Unlock()

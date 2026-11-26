@@ -22,6 +22,11 @@ type Snapshot struct {
 	Version string `json:"version,omitempty"`
 	// linux | macos | windows. Empty (an older agent) means linux.
 	OS string `json:"os,omitempty"`
+	// Machine and UID say where the agent runs and as whom: the same pair on
+	// the controller's side means its jobs can be the controller's own user.
+	// Machine changes with every boot and says nothing else about the host.
+	Machine string `json:"machine,omitempty"`
+	UID     string `json:"uid,omitempty"`
 	// The host's own reason to take no new runners right now ("memory pressure"). Empty = none.
 	Closed string `json:"closed,omitempty"`
 	// Seconds since the last keyboard or mouse input at the machine. Absent

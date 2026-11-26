@@ -33,12 +33,13 @@ import (
 )
 
 type Controller struct {
-	noMarker map[string]time.Time // runners warned about in markerCheck, by GitHub's job start; Evaluate's goroutine only
-	cfg      *config.Config
-	gh       github
-	token    string
-	ledger   *ledger.Ledger
-	log      *slog.Logger
+	selfMachine, selfUID string               // agent.Identity() of this process, read once (exposure.go)
+	noMarker             map[string]time.Time // runners warned about in markerCheck, by GitHub's job start; Evaluate's goroutine only
+	cfg                  *config.Config
+	gh                   github
+	token                string
+	ledger               *ledger.Ledger
+	log                  *slog.Logger
 	// ListenerLog receives the scale set listener's own lines (one per long poll).
 	ListenerLog *slog.Logger
 	ev          *EventLog
@@ -117,6 +118,7 @@ type host struct {
 	askedAt     time.Time     // when that snapshot was asked for (this process's clock)
 	rtt         time.Duration // how long that snapshot took, there and back
 	version     string        // the agent's build, as that snapshot named it
+	exposed     string        // the warning last logged for this host (exposure.go); Evaluate's goroutine only
 	// What this host was last told about speaking up when the controller is
 	// gone (away.go), and in which session. Evaluate's goroutine only.
 	awayRank  int

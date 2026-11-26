@@ -319,6 +319,36 @@ PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi service install    # -config 
 - `dist/` 는 통째로 둔다(호스트가 거기서 자기 판을 받는다). 서비스에는 ssh agent 가 없으니 `hosts: - ssh:` 는 agent 없이 쓸 수 있는 키가 있어야 한다 — 아니면 `pumasi invite` 로 붙인다.
 - Windows 에는 이 명령이 없다. 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮추므로(zsh: nice 5) `up` 이 경고한다.
 
+## 보안 모델
+
+**자격은 controller 에만 있다. 호스트에는 러너 하나가 잡 하나를 받을 일회용 등록만 간다.**
+
+| 무엇 | 어디에 | 누가 읽나 |
+|---|---|---|
+| GitHub 토큰 | controller 프로세스(환경 변수), 서비스로 띄웠으면 `<상태 디렉터리>/github-token`(600) | controller 를 띄운 사용자 |
+| controller 의 TLS 키 `join.key`, 초대 토큰, 가입한 호스트의 비밀값 해시 | 상태 디렉터리(700, 파일 600) | 〃 |
+| 호스트의 가입 자격(`join.json`: controller 주소·지문, 호스트 id·비밀값) | 그 호스트의 `~/.cache/pumasi/`(700) | 에이전트의 사용자 |
+| 알림 웹훅 주소 | controller 설정, 그리고 [부재를 알릴 호스트 둘](#사건과-알림)의 `away.json`(600) | 〃 |
+| 러너의 일회용 등록(JIT 설정) | 그 러너의 환경. 잡 하나를 받으면 끝난다 | 그 러너와 그 잡 |
+
+잡이 볼 수 있는 것은 러너를 무엇으로 띄우느냐에 달렸다.
+
+- **컨테이너 러너**(Linux 기본): 자기 컨테이너 안. 호스트의 파일은 클래스가 `mounts` 로 준 것만 본다. `docker: inside` 는 그 컨테이너를 privileged 로 띄우므로 호스트의 경계로 치지 않는다.
+- **native 러너**(Mac·Windows, Linux 의 `driver: native`): 에이전트 사용자의 프로세스다. 그 사용자의 파일을 다 본다 — 호스트의 가입 자격, 같은 호스트의 다른 러너 디렉터리, 그 사용자의 ssh 키·키체인, 그리고 Linux 에서는 docker(= 그 머신의 모든 파일).
+- 어느 쪽이든 잡은 **GitHub 토큰에 닿지 못한다 — controller 와 다른 머신에서 도는 한.** 호스트의 가입 자격으로 할 수 있는 것은 그 호스트 행세(그 호스트에 놓일 러너를 받는 것)까지다. 다른 호스트에 무엇을 시키거나 controller 의 것을 읽는 길은 없다: 호스트는 controller 로 걸기만 하고, 그 포트는 가입·바이너리 받기·세션만 받는다.
+
+**controller 를 둘 곳**: 잡이 controller 의 사용자로 돌지 않는 머신. 지켜지지 않는 경우를 `up` 이 찾아 말한다:
+
+```
+warning: jobs of class mac on desk1 can read this controller's GitHub token and keys: desk1 is this machine, and its runners are processes of the user who runs this controller. …
+```
+
+- 걸리는 경우: controller 와 같은 머신의 호스트에 ① native 러너가 controller 의 사용자로 돈다 ② (Linux) native 러너가 다른 사용자로 돌지만 그 사용자가 docker 를 쓴다 ③ `docker: inside` 클래스가 놓인다 ④ 클래스의 `mounts` 가 상태 디렉터리를 덮는다. 같은 머신의 보통 컨테이너 러너, 다른 사용자의 Mac·Windows 러너는 걸리지 않는다.
+- **막지 않고 경고한다.** 자기 노트북 한 대에서 controller 와 호스트를 같이 돌리는 것이 pumasi 를 처음 써 보는 길이고, 워크플로우가 전부 자기 것이면 문제가 없다. 그 러너에 닿는 워크플로우를 믿을 수 있는지(fork 의 pull request, 외부 기여자)는 pumasi 가 알 수 없다.
+  경고는 `up` 로그, `pumasi status` 의 `WARNINGS`, 대시보드에 그 상태가 이어지는 동안 계속 보인다. 판단했으면 `jobsMayReadCredentials: true` 로 끈다.
+- 피하는 법: controller 를 잡이 안 도는 머신에 두거나, 그 머신의 호스트에는 `hosts:` 로 믿는 클래스만 보낸다. 토큰은 그 레포(조직)의 러너 관리 권한만 가진 것을 쓴다.
+- 판정은 「같은 부팅의 같은 머신인가」(부팅 id 의 해시)와 사용자 id 로 한다. 같은 물리 머신 위의 VM·WSL 은 다른 머신으로 본다 — 호스트 OS 의 파일을 공유 폴더로 물려 둔 VM 은 이 경고가 잡지 못한다.
+
 ## 풀지 못하는 것
 
 - **한 run 의 잡들을 같은 머신에 보내기.** scale set 안에서는 어느 러너가 어느 잡을 받을지 정할 수 없다. 호스트에 띄운 것을 뒤 잡이 이어 쓰는 워크플로우는 호스트마다 클래스를 하나씩 두고(`hosts:`) 앞 잡이 run 전체의 클래스를 고르게 한다.

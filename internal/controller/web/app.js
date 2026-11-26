@@ -46,6 +46,9 @@ function renderState(s) {
   $("problem-list").replaceChildren(...s.incidents.map((i) =>
     el("li", {}, i.detail, el("span", { className: "age", textContent: "open " + dur((Date.now() - new Date(i.openedAt)) / 1000) }))));
 
+  $("warnings").hidden = !(s.warnings || []).length;
+  $("warning-list").replaceChildren(...(s.warnings || []).map((w) => el("li", {}, w)));
+
   fill("hosts", s.hosts.map((h) => {
     const state = h.reachable === null ? "unknown" : h.reachable ? (h.closed || "ok") : "unreachable";
     return el("tr", {},

@@ -57,6 +57,11 @@ type Config struct {
 	// earlier, a low one as if this much later (default 30m).
 	PriorityHeadStart time.Duration `yaml:"priorityHeadStart"`
 
+	// JobsMayReadCredentials ends the warning about hosts on the controller's
+	// own machine whose jobs can read the controller's GitHub token and keys:
+	// every workflow that reaches those classes is as trusted as the person
+	// who runs the controller.
+	JobsMayReadCredentials bool `yaml:"jobsMayReadCredentials"`
 	// Path is the file the config was read from.
 	Path string `yaml:"-"`
 }

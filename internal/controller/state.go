@@ -15,6 +15,7 @@ import (
 type State struct {
 	Controller bool              `json:"controller"` // a `pumasi up` is running and answered
 	Incidents  []ledger.Incident `json:"incidents"`  // open problems
+	Warnings   []string          `json:"warnings"`   // the setup's own risks (jobs that can read the controller's credentials)
 	Hosts      []HostState       `json:"hosts"`
 	Runners    []RunnerState     `json:"runners"`
 	Waiting    []WaitingState    `json:"waiting"`
@@ -105,6 +106,7 @@ type WaitingState struct {
 func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, now time.Time) (State, error) {
 	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{}}
 	out.Controller = ok
+	out.Warnings = append([]string{}, live.Warnings...)
 	var err error
 
 	if out.Incidents, err = l.OpenIncidents(); err != nil {

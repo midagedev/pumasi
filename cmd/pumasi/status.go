@@ -64,6 +64,13 @@ func printStatus(w io.Writer, s controller.State) {
 		}
 		fmt.Fprintln(w)
 	}
+	if len(s.Warnings) > 0 {
+		fmt.Fprintln(w, "WARNINGS")
+		for _, t := range s.Warnings {
+			fmt.Fprintln(w, "  "+t)
+		}
+		fmt.Fprintln(w)
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	// HELD: what the runners there hold (each its estimate, or its use when that is more).
 	// FREE: what a new runner could take now, as measured. CAP: the most pumasi lends there.
