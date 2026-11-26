@@ -257,7 +257,7 @@ pumasi 는 도는 잡을 건드리지 않고(예외: `maxDuration`, `down --forc
 
 | 일어난 일 | pumasi 가 하는 것 |
 |---|---|
-| controller 가 죽거나 꺼짐 | 잡은 호스트에서 계속 돈다. 다시 뜨면 이어받고 `controller is back: was down 28s, adopted 7 runners` |
+| controller 가 죽거나 꺼짐 | 잡은 호스트에서 계속 돈다. 다시 뜨면 이어받고 `controller is back: was down 28s, adopted 7 runners`. 5분 넘게 안 돌아오면 **호스트가 대신 알린다**(아래) |
 | 호스트 연결 끊김·에이전트 죽음 | 그 호스트에 새 러너를 놓지 않는다. 도는 잡은 그대로. 2분 넘으면 사건(끊긴 이유와 함께), 돌아오면 해제 |
 | 호스트 재부팅, 잡 도중 러너가 죽음 | 사건 + 잃은 잡 목록. `rerun: 1` 이면 그 run 의 실패한 잡을 한 번 다시 돌린다 |
 | 러너가 못 뜸 | 지우고 다시 배치. 같은 호스트에서 세 번 연속이면 그 호스트 격리, 5분마다 점검 |
@@ -270,8 +270,23 @@ pumasi 는 도는 잡을 건드리지 않고(예외: `maxDuration`, `down --forc
 notify:
   webhook: https://hooks.example/…   # JSON POST {text, key, kind, subject, state, detail}
   command: my-notify --stdin          # 또는 같은 JSON 을 stdin 으로 받는 명령
+  # away: 5m                          # controller 에 이만큼 닿지 못한 호스트가 webhook 에 알린다 (0 = 호스트에 주지 않음)
 rerun: 1                              # 우리 쪽 잘못으로 실패한 run 을 한 번 다시 돌린다 (기본 0 = 알리기만)
 ```
+
+**controller 가 없어진 것은 호스트가 알린다.** 죽은 controller 는 말할 수 없으므로, `notify.webhook` 이 있으면 controller 가 붙어 있는 호스트 가운데 둘을 골라 웹훅 주소를 준다.
+그 호스트는 controller 에 5분(`notify.away`) 닿지 못하면 한 번, 둘째 호스트는 10분 뒤에 한 번 말하고, 다시 닿으면 말했던 호스트만 한 번 더 말한다:
+
+```
+[pumasi] server1 has not reached the pumasi controller ci-box at 10.0.0.5:7433 for 5m2s (connection refused): new jobs of build, deploy wait until it is back, running jobs go on
+[pumasi] server1 reaches the pumasi controller at 10.0.0.5:7433 again; it was out of reach for 12m40s
+```
+
+- 호스트가 몇이든 알림은 많아야 둘이다. 하나만 두면 그 호스트가 controller 와 같이 내려갔을 때 아무도 말하지 않는다.
+- `up` 을 일부러 멈춘 것도 5분이 지나면 알린다(그동안 새 잡은 기다린다). `down` 은 호스트를 떼므로 알리지 않는다.
+- 웹훅 주소는 그 두 호스트의 `~/.cache/pumasi/away.json`(600)에 있다. native 러너의 잡은 그 사용자라 읽을 수 있다. 주고 싶지 않으면 `notify: {away: 0}`.
+- `notify.command` 는 controller 머신의 명령이라 호스트에 가지 않는다. 명령만 적혀 있으면 `up` 이 controller 부재를 알릴 길이 없다고 한 줄 말한다.
+- 호스트 자신의 네트워크가 끊긴 경우에는 웹훅에도 닿지 못한다. 닿게 되면 그때 말하고, 그 전에 controller 가 돌아오면 아무 말도 하지 않는다.
 
 사건은 열릴 때, 30분마다, 해제될 때 한 줄씩 간다. 장애마다의 감지·복구는 [설계](docs/design.md#견고함), 실제로 일으켜 본 결과는 [확인된 것](docs/verified.md).
 

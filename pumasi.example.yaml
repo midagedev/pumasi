@@ -24,4 +24,5 @@ classes:
 #   - {match: {event: schedule}, level: low}                              # as having come 30m later
 # rerun: 1                                 # rerun a run's failed jobs once after a failure on pumasi's side
 # notify: {webhook: https://hooks.example/…}   # or command: my-notify --stdin; problems and their end, one line each
+#                                          # the webhook is also given to two hosts: they say so when the controller is gone for 5m (away: 0 = no)
 # image: ghcr.io/actions/actions-runner:2.338.2   # the runner version; keep a version tag, not :latest

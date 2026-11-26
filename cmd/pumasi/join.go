@@ -89,6 +89,7 @@ type hostPaths struct {
 	conf  string // join.json: controller, pin, this host's id and secret
 	state string // join.state: connected or not, written by the agent
 	pid   string // join.pid: the process that restarts the agent, where no service manager does
+	away  string // away.json: whom to tell when the controller is gone, and whether that was said
 	log   string
 }
 
@@ -123,7 +124,7 @@ func runningInstalled() bool {
 func paths() hostPaths {
 	d := filepath.Join(cacheDir(), "pumasi")
 	return hostPaths{dir: d, conf: filepath.Join(d, "join.json"), state: filepath.Join(d, "join.state"),
-		pid: filepath.Join(d, "join.pid"), log: filepath.Join(d, "agent.log")}
+		pid: filepath.Join(d, "join.pid"), away: filepath.Join(d, "away.json"), log: filepath.Join(d, "agent.log")}
 }
 
 type linkState struct {

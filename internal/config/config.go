@@ -68,6 +68,22 @@ type Notify struct {
 	// problem (default): problems and their end. recovered: also what pumasi
 	// fixed by itself. all: also plain information.
 	Level string `yaml:"level"`
+	// Away: two hosts are given the webhook and tell it when they have not
+	// reached the controller for this long — a controller that is gone cannot
+	// say so itself. Default 5m; 0 gives the webhook to no host.
+	Away *time.Duration `yaml:"away"`
+}
+
+// AwayAfter is how long hosts wait before they say that the controller is
+// gone (0 = they are not asked to).
+func (n Notify) AwayAfter() time.Duration {
+	switch {
+	case n.Webhook == "":
+		return 0
+	case n.Away == nil:
+		return 5 * time.Minute
+	}
+	return *n.Away
 }
 
 type Class struct {
@@ -335,6 +351,9 @@ func (c *Config) validate() error {
 	}
 	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
 		return fmt.Errorf("notify.level must be problem, recovered or all")
+	}
+	if a := c.Notify.Away; a != nil && (*a < 0 || *a > 0 && *a < time.Minute) {
+		return fmt.Errorf("notify.away must be 0 (no host is asked) or at least 1m")
 	}
 	if len(c.Classes) == 0 {
 		return fmt.Errorf("at least one class is required")

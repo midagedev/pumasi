@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/midagedev/pumasi/internal/agent"
+	"github.com/midagedev/pumasi/internal/api"
 	"github.com/midagedev/pumasi/internal/join"
 )
 
@@ -81,12 +82,24 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 	// Once the host leaves nothing is written into p.dir again: a file written
 	// while the directory is being removed would keep it.
 	var leaving atomic.Bool
+	away := newAwayWatch(p.away, hc.Name, hc.Controller, log)
 	forget := func() {
 		leaving.Store(true)
 		a.Forget()
+		away.Stop()
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", a.Handler())
+	// Whether this host is to tell people when the controller is gone, and where.
+	mux.HandleFunc("PUT /v1/away", func(w http.ResponseWriter, r *http.Request) {
+		var in api.Away
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		away.Set(in)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// The controller's `down`: remove everything pumasi put here, then end.
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, r *http.Request) {
 		n, err := removeRunners(r.Context(), p)
@@ -112,6 +125,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 			if leaving.Load() {
 				return
 			}
+			away.Link(connected, why)
 			b, _ := json.Marshal(linkState{Connected: connected, At: time.Now(), Why: why})
 			_ = os.WriteFile(p.state, b, 0o600)
 		},
@@ -120,6 +134,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, v
 		}}
 	hctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go away.Run(hctx)
 	go func() {
 		select {
 		case <-left:

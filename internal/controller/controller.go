@@ -117,7 +117,14 @@ type host struct {
 	askedAt     time.Time     // when that snapshot was asked for (this process's clock)
 	rtt         time.Duration // how long that snapshot took, there and back
 	version     string        // the agent's build, as that snapshot named it
-	os          string        // as the agent last said ("" = not heard yet)
+	// What this host was last told about speaking up when the controller is
+	// gone (away.go), and in which session. Evaluate's goroutine only.
+	awayRank  int
+	awaySent  string
+	awaySince time.Time
+	awayBusy  atomic.Bool
+	awayDone  atomic.Pointer[awayPushed]
+	os        string // as the agent last said ("" = not heard yet)
 }
 
 type class struct {
@@ -286,6 +293,9 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		return err
 	}
 	defer closeStatus()
+	if n := c.cfg.Notify; n.Command != "" && n.Webhook == "" {
+		c.log.Info("notify.command runs on this machine: nobody hears it when this controller is gone. With notify.webhook two hosts say so after 5m")
+	}
 	c.log.Info("listening for jobs (Ctrl-C to stop)")
 	var wg sync.WaitGroup
 	for _, cl := range c.classes {
@@ -494,6 +504,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	c.reloadPriority()
 	c.syncJoined(true)
 	c.refreshHosts(ctx, now)
+	c.syncAway(ctx)
 
 	live, err := c.ledger.LiveRunners()
 	if err != nil {

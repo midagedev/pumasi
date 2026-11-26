@@ -54,6 +54,9 @@ func (d *memDriver) LogTail(context.Context, string, int) string { return "" }
 func (d *memDriver) DataDir(context.Context) string              { return "" }
 func (d *memDriver) Check(context.Context, string) error         { return nil }
 
+// awayTold is what each test host was last told with PUT /v1/away.
+var awayTold sync.Map
+
 // joinedHost registers a host with the controller's join server and keeps its
 // agent connected, the way `pumasi join` and `pumasi agent -join` do.
 func joinedHost(t *testing.T, c *Controller, addr, name string) (stop func()) {
@@ -78,6 +81,12 @@ func joinedHost(t *testing.T, c *Controller, addr, name string) (stop func()) {
 	mux.Handle("/", a.Handler())
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"containers": 3})
+	})
+	mux.HandleFunc("PUT /v1/away", func(w http.ResponseWriter, r *http.Request) {
+		var in api.Away
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		awayTold.Store(name, in)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

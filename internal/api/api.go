@@ -207,3 +207,14 @@ func (c *Client) Delete(ctx context.Context, name string) (Runner, error) {
 	err := c.do(ctx, http.MethodDelete, "/v1/runners/"+url.PathEscape(name), nil, &out)
 	return out, err
 }
+
+// Away is what the controller gives a host so that somebody hears when the
+// controller itself is gone: it cannot say so, the hosts that miss it can.
+// Only the hosts that are to speak get the webhook.
+type Away struct {
+	Webhook    string   `json:"webhook,omitempty"` // "" = this host says nothing
+	AfterSec   int64    `json:"afterSec,omitempty"`
+	Rank       int      `json:"rank,omitempty"`       // 1 speaks after AfterSec, 2 after twice that; 0 = not this host
+	Controller string   `json:"controller,omitempty"` // the controller's name for itself (its hostname)
+	Classes    []string `json:"classes,omitempty"`    // whose jobs wait meanwhile
+}
