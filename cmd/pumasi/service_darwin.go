@@ -30,11 +30,31 @@ func launchctl(args ...string) error { return exec.Command("launchctl", args...)
 // does launchd have a place for the user's agents.
 func guiSession() bool { return launchctl("print", guiDomain()) == nil }
 
+// launchAgent is the agent's job: started again unless it ended with 0 (it
+// was told to leave).
 func launchAgent(exe, log, path string) string {
+	return launchPlist(launchLabel, []string{exe, "agent", "-join"}, false, 2, "Interactive", "", log, path)
+}
+
+// launchPlist is a LaunchAgent that launchd keeps running: always, or unless
+// it ended with 0.
+func launchPlist(label string, argv []string, always bool, throttle int, procType, dir, log, path string) string {
 	esc := func(s string) string {
 		var b strings.Builder
 		_ = xml.EscapeText(&b, []byte(s))
 		return b.String()
+	}
+	var args strings.Builder
+	for _, a := range argv {
+		args.WriteString("<string>" + esc(a) + "</string>")
+	}
+	keep := "<dict><key>SuccessfulExit</key><false/></dict>"
+	if always {
+		keep = "<true/>"
+	}
+	wd := ""
+	if dir != "" {
+		wd = "\n\t<key>WorkingDirectory</key><string>" + esc(dir) + "</string>"
 	}
 	// launchd starts jobs with a bare PATH; jobs need the tools this user installed.
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -43,17 +63,17 @@ func launchAgent(exe, log, path string) string {
 <dict>
 	<key>Label</key><string>%s</string>
 	<key>ProgramArguments</key>
-	<array><string>%s</string><string>agent</string><string>-join</string></array>
+	<array>%s</array>
 	<key>RunAtLoad</key><true/>
-	<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-	<key>ThrottleInterval</key><integer>2</integer>
-	<key>ProcessType</key><string>Interactive</string>
+	<key>KeepAlive</key>%s
+	<key>ThrottleInterval</key><integer>%d</integer>
+	<key>ProcessType</key><string>%s</string>%s
 	<key>StandardOutPath</key><string>%s</string>
 	<key>StandardErrorPath</key><string>%s</string>
 	<key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string></dict>
 </dict>
 </plist>
-`, launchLabel, esc(exe), esc(log), esc(log), esc(path))
+`, label, args.String(), keep, throttle, procType, wd, esc(log), esc(log), esc(path))
 }
 
 // installService (re)starts the agent so that it stays up: as a LaunchAgent

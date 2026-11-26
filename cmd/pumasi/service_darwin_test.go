@@ -30,3 +30,17 @@ func TestLaunchAgentIsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+func TestControllerLaunchAgentIsKeptAlways(t *testing.T) {
+	text := launchPlist(ctlLabel, []string{"/opt/p&q/pumasi", "up", "-config", "/Users/me/ci <1>/pumasi.yaml"}, true, 5, "Interactive", "/Users/me/ci <1>", "/tmp/up.log", "/usr/bin")
+	var v struct{}
+	if err := xml.Unmarshal([]byte(text), &v); err != nil {
+		t.Fatalf("%v\n%s", err, text)
+	}
+	for _, want := range []string{"<key>KeepAlive</key><true/>", "<string>/opt/p&amp;q/pumasi</string><string>up</string><string>-config</string><string>/Users/me/ci &lt;1&gt;/pumasi.yaml</string>",
+		"<key>WorkingDirectory</key><string>/Users/me/ci &lt;1&gt;</string>", "dev.pumasi.controller"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%s", want, text)
+		}
+	}
+}

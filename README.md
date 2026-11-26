@@ -282,8 +282,27 @@ rerun: 1                              # 우리 쪽 잘못으로 실패한 run �
 
 ## controller 를 계속 켜 두기
 
-`up` 은 죽었다 다시 떠도 장부(`~/.local/state/pumasi/`)와 호스트의 상태로 이어받으므로, 서비스 관리자에게 "죽으면 다시 띄워라"만 시키면 된다.
-Mac 은 LaunchAgent, Linux 는 systemd user unit — [설계의 운영 절](docs/design.md#운영)에 그대로 쓸 수 있는 예가 있다. 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮추므로(zsh: nice 5) `up` 이 경고한다.
+```sh
+PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi service install    # -config pumasi.yaml
+./dist/pumasi service status
+./dist/pumasi service remove
+```
+
+`service install` 은 `pumasi up` 을 그 OS 의 서비스 관리자에게 맡긴다: **죽으면 다시 띄우고, 재부팅 뒤에도 올라온다.** `up` 은 다시 떠도 장부와 호스트의 상태로 이어받으므로 잡은 그 사이에도 돈다.
+
+| | Linux | macOS |
+|---|---|---|
+| 무엇으로 | systemd user unit `pumasi-controller.service` (`Restart=always`) | LaunchAgent `dev.pumasi.controller` (`KeepAlive`) |
+| 죽은 뒤 | 5초 뒤 다시 | 5초 안에 다시 |
+| 재부팅 뒤 | linger 가 켜져 있으면 부팅 때. 꺼져 있으면 `install` 이 `loginctl enable-linger <사용자>` 를 하라고 말한다 | 그 사용자가 화면에 로그인할 때(자동 로그인이면 부팅 때) |
+| 로그 | `journalctl --user -u pumasi-controller` | `<상태 디렉터리>/up.log` |
+
+- **토큰**은 `install` 할 때 환경 변수에서 한 번 읽어 `<상태 디렉터리>/github-token`(모드 600)에 둔다. 유닛·plist·프로세스 인자·서비스의 환경에는 없다. 남이 읽을 수 있는 모드면 `up` 이 쓰지 않고 그렇게 말한다. `service remove` 가 지운다.
+  토큰을 바꾸려면 새 토큰으로 `service install` 을 다시 한다.
+- controller 가 **죽었다 다시 뜬 뒤 30 ~ 90초**는 새 잡을 못 받는다: 죽은 controller 의 메시지 세션을 GitHub 이 그만큼 붙들고 있다([잰 것](docs/verified.md#github-쪽에서-잰-것)). 그동안 온 잡은 기다렸다가 돈다. 멈추라고 해서 멈춘 경우(`SIGTERM`, 판 교체)는 세션을 닫고 나가므로 바로 받는다.
+- 서비스가 도는 동안 손으로 띄운 `pumasi up`·`pumasi down` 은 거절된다(한 상태 디렉터리에 controller 하나). `down` 은 `service remove` 다음에 한다.
+- `dist/` 는 통째로 둔다(호스트가 거기서 자기 판을 받는다). 서비스에는 ssh agent 가 없으니 `hosts: - ssh:` 는 agent 없이 쓸 수 있는 키가 있어야 한다 — 아니면 `pumasi invite` 로 붙인다.
+- Windows 에는 이 명령이 없다. 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮추므로(zsh: nice 5) `up` 이 경고한다.
 
 ## 풀지 못하는 것
 

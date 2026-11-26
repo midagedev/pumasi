@@ -273,41 +273,15 @@ ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전�
 
 ### controller 를 상시로 띄우기
 
-`up` 은 죽었다 다시 떠도 이어받으므로 서비스 관리자에게 "죽으면 다시 띄워라"만 시킨다. Mac 에서는 로그인한 사용자의 LaunchAgent 로:
+`pumasi service install` 이 `up` 을 서비스 관리자에게 맡긴다. 새 장치는 없다 — `up` 은 죽었다 다시 떠도 이어받으므로 "죽으면 다시 띄워라"만 시키면 된다.
 
-```xml
-<!-- ~/Library/LaunchAgents/dev.pumasi.controller.plist -->
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key><string>dev.pumasi.controller</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/bin/sh</string><string>-c</string>
-		<string>PUMASI_GITHUB_TOKEN=$(gh auth token) exec /path/to/dist/pumasi up -config /path/to/pumasi.yaml</string>
-	</array>
-	<key>RunAtLoad</key><true/>
-	<key>KeepAlive</key><true/>
-	<key>ThrottleInterval</key><integer>10</integer>
-	<key>ProcessType</key><string>Interactive</string>
-	<key>StandardOutPath</key><string>/path/to/pumasi-up.log</string>
-	<key>StandardErrorPath</key><string>/path/to/pumasi-up.log</string>
-	<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
-</dict>
-</plist>
-```
-
-```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.pumasi.controller.plist   # 올리기
-launchctl bootout gui/$(id -u)/dev.pumasi.controller                                  # 내리기 (러너와 잡은 그대로)
-```
-
-- 토큰은 plist 에 적지 않고 뜰 때마다 읽는다. `gh` 에 계정이 여럿이면 `gh auth token -u <계정>` 으로 고정한다.
-- `dist/` 는 통째로 둔다(호스트가 거기서 자기 판을 받는다).
-- `ProcessType` 은 `Interactive`. 안 적으면 launchd 가 바쁜 머신에서 CPU·IO 를 뒤로 미룰 수 있다.
-- 셸에서 `pumasi up &` 로 띄우면 셸이 우선순위를 낮춘다(zsh: nice 5). `up` 은 그럴 때 경고 한 줄을 낸다.
-- Linux 에서는 systemd user unit(`Restart=always`)이 같은 일을 한다.
+- **사용자의 서비스로**(systemd user unit, LaunchAgent). root 가 필요 없고, controller 가 쓰는 것(상태 디렉터리, ssh 키)이 모두 그 사용자의 것이다.
+  대가는 OS 마다 다르다: Linux 는 linger 가 꺼져 있으면 로그아웃 때 멈추고 부팅 때 안 뜬다(`install` 과 `status` 가 말한다). Mac 의 LaunchAgent 는 그 사용자가 화면에 로그인해 있을 때만 돈다.
+- **토큰은 파일 하나**(`<상태 디렉터리>/github-token`, 600). 유닛과 plist 는 누구나 읽을 수 있는 자리에 있으므로 거기에는 적지 않는다. `up` 은 환경 변수가 없으면 이 파일을 읽고, 읽은 뒤에는 자기 환경에서 변수를 지운다(ssh·알림 명령이 물려받지 않게).
+  파일은 처음부터 600 으로 만든다. 남이 읽을 수 있는 모드인 파일은 쓰지 않는다 — 손으로 만든 파일이 그렇게 놓이는 일이 가장 흔한 사고다.
+- **`Restart=always` / `KeepAlive`**: `up` 은 신호를 받으면 0 으로 끝나므로 "실패했을 때만"으로는 누가 실수로 멈춘 controller 가 돌아오지 않는다. 멈추는 길은 `service remove` 하나다.
+- Mac 의 `ProcessType` 은 `Interactive`. 안 적으면 launchd 가 바쁜 머신에서 CPU·IO 를 뒤로 미룰 수 있다.
+- 죽은 controller 의 메시지 세션은 GitHub 쪽에서 30 ~ 90초 뒤에 풀린다. 세션 id 를 아는 것은 죽은 프로세스뿐이고 라이브러리에 남의 세션을 닫는 길이 없어서, 다시 뜬 controller 는 15초마다 다시 물으며 기다린다.
 
 ## 하지 않는 것
 

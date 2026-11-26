@@ -136,6 +136,13 @@
 | 틀린 GitHub 토큰 | 실물 | `up` 이 그 이름으로 끝남 |
 | **45분 잡** | 실물 | Linux(컨테이너)와 Mac 각각: 도는 동안 controller kill -9, 판 교체 재시작, 에이전트 60초 멈춤, controller 머신 load 120 — 잡 성공 |
 | controller 를 Mac LaunchAgent 로 | 실물 | nice 0, kill -9 뒤 launchd 가 다시 띄워 이어받음. 부하 걸린 Mac 에서 수 시간은 미확인 |
+| `pumasi service install` — Mac (11-26) | 실물 | LaunchAgent 로 뜸. kill -9 → 2초 뒤 새 pid. 잡이 도는 중 kill -9: `controller is back: was down 9s, adopted 1 runners`, 그 잡 성공, 죽어 있는 동안 건 잡도 세션이 다시 열린 뒤 돌아 성공. `SIGTERM` 뒤에도 다시 뜸(5초). plist·프로세스 환경에 토큰 없음, 토큰 파일 600 |
+| `pumasi service install` — Linux (11-26) | 실물(VM) | systemd user unit 으로 뜸. kill -9 → 5초 뒤 새 pid(`started again 1 times`), 77초 뒤 세션이 다시 열림. 유닛·프로세스 환경에 토큰 없음, 토큰 파일 600. 호스트를 붙여 잡을 돌리는 것은 Mac 쪽에서만 봤다 |
+| `service remove` | 실물(Mac, Linux VM) | controller 가 끝난 뒤 돌아온다. 유닛/plist·토큰 파일이 없어지고 다시 뜨지 않는다. 그 뒤 `down` 으로 나머지를 지움 |
+| 서비스가 도는 동안의 `up`·`down` | 실물 | 거절하고 `service remove` 를 가리킨다 |
+| 토큰 파일: 환경 변수 우선, 남이 읽을 수 있으면 거절 | 유닛 | |
+| 서비스로 띄운 controller 의 **재부팅** 뒤 | 미확인 | 노트북과 다른 일에 쓰이는 VM 뿐이라 재부팅하지 않았다. linger 가 꺼진 Linux, 화면에 로그인하지 않은 Mac 도 안내 문구만 있고 보지 않았다 |
+| 서비스에서 `hosts: - ssh:` 로 대신 붙이기 | 미확인 | 서비스에는 ssh agent 가 없다. 초대 줄로 붙인 호스트로만 봤다 |
 | 남의 부하로 스래싱하는 호스트(load 200, swap 가득) | 실물 | 에이전트가 10초 넘게 못 돌아 연결이 끊겼다 붙음. 사건이 이유와 함께, 잡 성공 |
 | 잡이 오래 기다림(`waitAlert`), GitHub API 실패, 주인 없는 러너 | 유닛 | |
 
@@ -153,6 +160,7 @@
 | 잡 도중 러너가 사라짐 | 약 9분 40초 뒤 잡이 `failure`. 그동안 등록은 지울 수 없다. 자동 재시도 없음 |
 | 폐기된 러너 판 | 접속 직후 종료 코드 0 으로 끝난다 |
 | `JobStarted` 메시지 | 러너가 잡을 잡은 뒤 30 ~ 50초 늦다 |
+| 죽은 controller 의 메시지 세션 (11-26) | 세션을 닫지 못하고 죽은(kill -9) 뒤 같은 scale set 에 새 세션을 열면 `409 Conflict`. 죽인 때부터 34초, 79초, 84초 뒤에 열렸다(세 번, 15초마다 물음). 그동안 온 잡은 배정되지 않고 기다렸다가 세션이 열린 뒤 왔다 |
 | `JobAvailable` 과 `AcquireJobs` (11-26) | github.com 에서는 오지 않는다. 지금까지의 메시지 250여 개와 손으로 연 세션 모두에서 잡은 `JobAssigned` 로 바로 왔고(`runnerRequestId` 0, `totalAvailableJobs` 늘 0) acquire 할 것이 없었다. **일부만 acquire 해서 고르는 길은 없다** |
 | 배정된 잡이 러너에게 나가는 순서 (11-26) | 배정된 순서. 잡 4개가 1 · 2 · 4 · 3 순으로 배정된 뒤 러너를 하나씩 띄우자 1 · 2 · 4 · 3 순으로 받았다. pumasi 가 「이 잡을 위해」 띄운 러너도 그 클래스의 가장 오래된 잡을 받는다(한 scale set 안에서 순서를 고를 수 없다) |
 | `GetMessage` 의 `maxCapacity` (11-26) | 그 scale set 에 배정되는 잡 수의 상한이고 도는 잡도 센다. 1 로 두고 잡 3개: 하나만 배정, 그 잡이 끝난 뒤 다음 poll 에서 다음 것이 배정. 100초짜리 잡이 도는 66초 동안 다음 잡은 배정되지 않았다 |

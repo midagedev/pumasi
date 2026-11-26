@@ -322,6 +322,9 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 			if err != nil {
 				return fmt.Errorf("session: %w", err)
 			}
+			if !failingSince.IsZero() {
+				c.log.Info(fmt.Sprintf("class %s: message session open again after %s", cl.cfg.Name, c.now().Sub(failingSince).Round(time.Second)))
+			}
 			failingSince, conflict = time.Time{}, false
 			c.book.resolve("github/" + cl.cfg.Name)
 			defer session.Close(context.WithoutCancel(ctx))
@@ -364,6 +367,11 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 		case <-time.After(backoff):
 		}
 		backoff = min(2*backoff, 2*time.Minute)
+		if conflict {
+			// The session of a controller that died: this one is its restart and
+			// serves nothing until GitHub lets go of it.
+			backoff = min(backoff, 15*time.Second)
+		}
 	}
 }
 

@@ -30,6 +30,8 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (refuses while jobs run, unless --force)
   pumasi invite  print the line that joins a host to this controller
                  (one host within the hour; --uses N and --ttl 24h say otherwise)
+  pumasi service install|remove|status
+                 keep up running: started again when it dies and after a reboot
   pumasi priority  the config's priority rules and where they put the jobs waiting now
                  (edit the rules in the config; a running up reads them again by itself)
 
@@ -38,7 +40,8 @@ On a host that joined:
   pumasi leave   remove this host from the controller and pumasi from this host
 
 Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log).
-up and down read the GitHub token from PUMASI_GITHUB_TOKEN.
+up and down read the GitHub token from PUMASI_GITHUB_TOKEN, or from the file
+"pumasi service install" keeps (<state dir>/github-token, mode 600).
 `
 
 func main() {
@@ -63,6 +66,8 @@ func main() {
 		err = runInvite(args)
 	case "priority":
 		err = runPriority(args)
+	case "service":
+		err = runService(args)
 	case "join":
 		err = runJoin(args)
 	case "doctor":
@@ -93,10 +98,11 @@ func runController(args []string, down bool) error {
 	if err != nil {
 		return err
 	}
-	token := os.Getenv("PUMASI_GITHUB_TOKEN")
-	if token == "" {
-		return errors.New("PUMASI_GITHUB_TOKEN is empty; e.g. PUMASI_GITHUB_TOKEN=$(gh auth token) pumasi up")
+	token, _, err := githubToken(cfg)
+	if err != nil {
+		return err
 	}
+	os.Unsetenv("PUMASI_GITHUB_TOKEN") // what this process starts (ssh, notify commands) does not inherit it
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -106,7 +112,7 @@ func runController(args []string, down bool) error {
 	}
 	unlock, err := controller.Lock(cfg.StateDir())
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (`pumasi service status` tells whether it is the service; `pumasi service remove` stops that)", err)
 	}
 	defer unlock()
 	l, moved, err := ledger.OpenOrRebuild(cfg.Ledger, time.Now())
@@ -134,7 +140,7 @@ func runController(args []string, down bool) error {
 	if n := niceness(); n > 0 && !down {
 		// A shell lowers its background jobs (zsh: nice 5); the listener and the
 		// hosts' keepalives then wait behind everything else on a busy machine.
-		log.Warn(fmt.Sprintf("this controller runs at nice %d (started with & from a shell?): on a busy machine it falls behind; run it in the foreground or as a service (docs/design.md)", n))
+		log.Warn(fmt.Sprintf("this controller runs at nice %d (started with & from a shell?): on a busy machine it falls behind; run it in the foreground or with `pumasi service install`", n))
 	}
 	if !*verbose {
 		// The listener logs every long poll at info level.
