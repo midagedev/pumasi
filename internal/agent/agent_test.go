@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -228,5 +229,30 @@ func TestRestartKeepsRecordsAndRebootMarksLost(t *testing.T) {
 	}
 	if r, err := a.Delete(ctx, "busy"); err != nil || r.Lost != lostRebooted {
 		t.Fatalf("delete lost runner: %+v %v", r, err)
+	}
+}
+
+// A host that leaves removes its directory; a sample still in flight must not
+// put the record file back.
+func TestForgottenAgentWritesNothing(t *testing.T) {
+	drv := &fakeDriver{cs: map[string]Container{}, listening: map[string]time.Time{}}
+	dir := filepath.Join(t.TempDir(), "pumasi")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a := testAgent(drv)
+	a.cfg.StateFile = filepath.Join(dir, "runners.json")
+	ctx := context.Background()
+	a.Sample(ctx)
+	if _, err := os.Stat(a.cfg.StateFile); err != nil {
+		t.Fatalf("a sample keeps the records: %v", err)
+	}
+	a.Forget()
+	if err := os.Remove(a.cfg.StateFile); err != nil {
+		t.Fatal(err)
+	}
+	a.Sample(ctx)
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Fatalf("written after Forget: %v", left)
 	}
 }

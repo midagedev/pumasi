@@ -56,7 +56,7 @@ func (a *Agent) load() {
 
 // save writes the records atomically. Callers hold opMu.
 func (a *Agent) save() {
-	if a.cfg.StateFile == "" {
+	if a.cfg.StateFile == "" || a.forgotten.Load() {
 		return
 	}
 	a.dataMu.Lock()

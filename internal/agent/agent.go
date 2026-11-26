@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -44,6 +45,9 @@ type Agent struct {
 	dataMu sync.Mutex
 	recs   map[string]*rec
 	host   hostState
+
+	// forgotten: the host is leaving; nothing is written any more.
+	forgotten atomic.Bool
 
 	prevHostUsec uint64
 	prevAt       time.Time
@@ -82,6 +86,10 @@ func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
 	a.load()
 	return a
 }
+
+// Forget ends the keeping of records: the host is leaving and its directory
+// is being removed, so nothing may be written into it again.
+func (a *Agent) Forget() { a.forgotten.Store(true) }
 
 // Run samples every Interval until ctx ends.
 func (a *Agent) Run(ctx context.Context) {

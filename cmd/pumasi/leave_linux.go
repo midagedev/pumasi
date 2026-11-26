@@ -1,15 +1,12 @@
 package main
 
-import (
-	"os/exec"
-	"strings"
-)
+import "strings"
 
 // sweepScopes ends the systemd scopes of process runners that have no record
 // any more (their directory is gone, the scope still holds processes) and
 // returns how many there were. The runners with a record went with the driver.
 func sweepScopes() int {
-	out, err := exec.Command("systemctl", "--user", "list-units", "pumasi-*.scope", "--all", "--no-legend", "--plain").Output()
+	out, err := userSystemctl("list-units", "pumasi-*.scope", "--all", "--no-legend", "--plain").Output()
 	if err != nil {
 		return 0
 	}

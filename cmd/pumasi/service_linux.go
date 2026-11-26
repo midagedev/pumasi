@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -20,7 +21,23 @@ func unitPath() string {
 }
 
 func systemctl(args ...string) error {
-	return exec.Command("systemctl", append([]string{"--user"}, args...)...).Run()
+	return userSystemctl(args...).Run()
+}
+
+// userSystemctl is `systemctl --user`. A shell that is not a login session
+// (ssh into WSL, a command run through another program) has no
+// XDG_RUNTIME_DIR, and without it systemctl does not find the user's systemd
+// although it runs: a join there would start a second agent beside the unit,
+// a leave would not stop the unit.
+func userSystemctl(args ...string) *exec.Cmd {
+	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	if os.Getenv("XDG_RUNTIME_DIR") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		dir := "/run/user/" + strconv.Itoa(os.Getuid())
+		if _, err := os.Stat(filepath.Join(dir, "systemd", "private")); err == nil {
+			cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir)
+		}
+	}
+	return cmd
 }
 
 // lingering reports whether this user's systemd units run without a login

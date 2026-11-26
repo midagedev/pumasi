@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,11 +38,17 @@ func runAgent(args []string) error {
 	if *supervise {
 		return superviseAgent(paths())
 	}
-	hc, err := join.LoadHostConfig(paths().conf)
-	if err != nil {
-		return fmt.Errorf("this host has not joined a controller (`pumasi invite` there prints the line to run here): %w", err)
-	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	hc, err := join.LoadHostConfig(paths().conf)
+	if errors.Is(err, os.ErrNotExist) {
+		// Not a failure: whatever keeps the agent running would start it again
+		// for ever on a host that has left.
+		log.Warn("this host has not joined a controller (`pumasi invite` there prints the line to run here); nothing to do", "missing", paths().conf)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("this host's membership is unreadable (`pumasi leave`, then the invite line again): %w", err)
+	}
 	exe, _ := os.Executable()
 	version := join.FileVersion(exe)
 	cfg := agent.Config{Host: hc.Name, Kind: hc.Kind, BudgetCPUs: hc.CPUs, BudgetMem: hc.Mem, Interval: *interval, StateFile: *state,
@@ -52,8 +59,11 @@ func runAgent(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go a.Run(ctx)
-	return serveJoined(ctx, hc, a.Handler(), exe, version, log)
+	return serveJoined(ctx, hc, a, exe, version, log)
 }
+
+// leftAfter is how often an agent looks whether its host has left under it.
+const leftAfter = 10 * time.Second
 
 func shortVersion(v string) string {
 	if len(v) > 12 {
@@ -65,11 +75,18 @@ func shortVersion(v string) string {
 // serveJoined keeps this host connected to its controller and serves the
 // agent API over that connection. It returns nil only after a leave: any other
 // end makes the service start the agent again.
-func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler, exe, version string, log *slog.Logger) error {
+func serveJoined(ctx context.Context, hc join.HostConfig, a *agent.Agent, exe, version string, log *slog.Logger) error {
 	p := paths()
 	left := make(chan struct{})
+	// Once the host leaves nothing is written into p.dir again: a file written
+	// while the directory is being removed would keep it.
+	var leaving atomic.Bool
+	forget := func() {
+		leaving.Store(true)
+		a.Forget()
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/", agentAPI)
+	mux.Handle("/", a.Handler())
 	// The controller's `down`: remove everything pumasi put here, then end.
 	mux.HandleFunc("POST /v1/leave", func(w http.ResponseWriter, r *http.Request) {
 		n, err := removeRunners(r.Context(), p)
@@ -77,6 +94,7 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 		if err != nil {
 			out["problem"] = err.Error()
 		} else {
+			forget()
 			stopService(p, false)
 			removeFiles(p)
 		}
@@ -91,6 +109,9 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 	go watch.Run(ctx)
 	h := &join.Host{Config: hc, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Handler: mux, Log: log, Watch: watch,
 		State: func(connected bool, why string) {
+			if leaving.Load() {
+				return
+			}
 			b, _ := json.Marshal(linkState{Connected: connected, At: time.Now(), Why: why})
 			_ = os.WriteFile(p.state, b, 0o600)
 		},
@@ -107,9 +128,38 @@ func serveJoined(ctx context.Context, hc join.HostConfig, agentAPI http.Handler,
 		case <-hctx.Done():
 		}
 	}()
+	// The host can leave without this agent being told: `pumasi leave` run
+	// where it could not stop the agent, or another agent of the same host
+	// that took the controller's leave. Its membership is gone then; so is it.
+	orphan := make(chan struct{})
+	go func() {
+		t := time.NewTicker(leftAfter)
+		defer t.Stop()
+		for {
+			select {
+			case <-hctx.Done():
+				return
+			case <-t.C:
+			}
+			if _, err := os.Stat(p.conf); errors.Is(err, os.ErrNotExist) && !leaving.Load() {
+				forget()
+				log.Warn("this host has left (its join.json is gone); the agent ends", "missing", p.conf)
+				close(orphan)
+				cancel()
+				return
+			}
+		}
+	}()
 	h.Run(hctx)
 	select {
 	case <-left:
+		// The last thing this process does: whatever was written while the
+		// directory was going (a sample in flight) goes with it.
+		if runtime.GOOS != "windows" {
+			_ = os.RemoveAll(p.dir)
+		}
+		return nil
+	case <-orphan:
 		return nil
 	default:
 		return errors.New("agent stopped")

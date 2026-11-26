@@ -78,6 +78,10 @@
 | 에이전트를 죽임 | 실물 | Linux 2초, Mac 1초 안, Windows 5초 안에 다시 뜨고 러너를 이어받음 |
 | `leave`, `down` 뒤 남는 것 없음 | 실물 | Linux(컨테이너, native scope), Mac, Windows. 안 붙어 있는 ssh 호스트를 `down` 이 ssh 로 치우는 것 포함 |
 | 러너가 떠 있으면 `leave`·`down` 거부 | 실물 | |
+| 한 호스트에 에이전트가 둘이 된 뒤의 `down` (11-26) | 실물(Linux VM) | 유닛으로 붙인 뒤 사용자 systemd 에 닿지 못하는 ssh 세션에서 다시 붙여 에이전트 둘(유닛 + 재시작 루프)을 만들고 `down`: 디렉터리·바이너리·유닛이 없어지고, 남은 에이전트는 `join.json` 이 없어진 것을 보고 10초 안에 스스로 끝났다 |
+| `XDG_RUNTIME_DIR` 없는 ssh 세션에서 붙기 (11-26) | 실물(Linux VM) | 전에는 `systemctl --user` 가 실패해 재시작 루프로 붙었다. 이제 `/run/user/<uid>` 의 사용자 systemd 를 찾아 유닛으로 붙고 `down` 뒤 남는 것 없음 |
+| 떠나는 에이전트가 디렉터리를 지운 뒤 아무것도 쓰지 않는다 | 유닛 | `Forget` 뒤의 sample 이 기록 파일을 다시 만들지 않는다 |
+| WSL 호스트에서 `down` 뒤 `join.state`·`runners.json` 이 다시 생기던 것 | 미확인 | 그 증상 자체는 Linux VM 에서(유닛·루프 방식 모두) 재현되지 않았다. 위 세 가지(둘째 에이전트, 세션 변수, 떠나는 중의 쓰기)를 막았고 WSL 에서는 다시 보지 않았다 |
 
 ## 러너
 
