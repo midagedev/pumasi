@@ -281,7 +281,7 @@ func Decide(s Snapshot) Plan {
 			case !ok:
 				why = append(why, reason)
 				continue
-			case freeCPU+1e-9 < needCPU || freeMem < needMem:
+			case freeCPU+1e-9 < needCPU || (freeMem < needMem && (watched[hn] == 0 || holdMem == needMem)):
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				short = append(short, hn)
 				continue
