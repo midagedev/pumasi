@@ -361,20 +361,28 @@ func Decide(s Snapshot) Plan {
 			next.CPUs, next.MemBytes = c.NextCPUs, c.NextMem
 		}
 		n := 0
-		if c.NextMem > 0 || s.BlindHold <= 1 {
+		if s.BlindHold <= 1 {
 			n = room(s, next, hosts, alloc)
 		} else {
-			// The class has measured no job yet: its next one is a guess too, and
-			// is placed the way such jobs are (one on the guess, the rest on the hold).
-			hold := float64(next.MemBytes) * s.BlindHold
+			// The next job may be one nobody has measured, and such a job is placed
+			// on the guess only where none is watched; where one is, it needs the
+			// hold free. An overflow class says too little rather than too much:
+			// a job it does not take goes to the other runners of its labels, while
+			// one it takes and cannot place waits here.
+			hold := float64(c.MemBytes) * s.BlindHold
 			for name, h := range hosts {
 				if ok, _ := takes(s, next, h); !ok {
 					continue
 				}
 				cpu, mem := free(h, alloc[name])
-				byMem := int(mem / hold)
-				if watched[name] == 0 && mem >= float64(next.MemBytes) {
+				var byMem int
+				switch {
+				case c.NextMem > 0 && watched[name] == 0:
+					byMem = int(mem / float64(next.MemBytes))
+				case watched[name] == 0 && mem >= float64(c.MemBytes):
 					byMem = 1 + max(0, int((mem-hold)/hold))
+				default:
+					byMem = int(mem / hold)
 				}
 				n += max(0, min(int((cpu+1e-9)/next.CPUs), byMem))
 			}

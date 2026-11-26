@@ -121,6 +121,25 @@ func TestRoomOfAnOverflowClass(t *testing.T) {
 	if n := guess([]Host{small}, watching); n != 0 {
 		t.Errorf("nothing measured, small host that watches one: room %d, want 0", n)
 	}
+	// A class that has measured some jobs small still meets jobs nobody has
+	// measured; where its host watches one, such a job waits for the hold, so
+	// the room there is counted on the hold, not on the measured size.
+	measured := c
+	measured.NextCPUs, measured.NextMem = 0.5, gb/2
+	sized := func(hosts []Host, rs []Runner) int {
+		s := snap(hosts, nil, rs)
+		s.Classes, s.BlindHold = []Class{measured}, 3
+		return Decide(s).Room["build"]
+	}
+	if n := sized([]Host{small}, nil); n != 8 {
+		t.Errorf("measured 0.5cpu/0.5G, small host that watches none: room %d, want 8 (cpu)", n)
+	}
+	if n := sized([]Host{small}, watching); n != 0 {
+		t.Errorf("measured small, host that watches one with 3G left: room %d, want 0", n)
+	}
+	if n := sized([]Host{host}, []Runner{{Name: "r1", Class: "build", Host: "h1", State: "busy", JobKnown: true, Container: "running", Working: true, CPUs: 2, MemBytes: 4 * gb, Watched: true}}); n != 2 {
+		t.Errorf("measured small, big host that watches one: room %d, want 2 (12G held each of the 25G left)", n)
+	}
 	capped := c
 	capped.MaxRunners = 3
 	if p := mk(capped, []Host{host}, demand("build", 2)); p.Room["build"] != 1 {
