@@ -137,6 +137,14 @@ type Class struct {
 	// so what the job runs with docker counts against the runner's limits.
 	// The runner container is privileged for it.
 	Docker string `yaml:"docker"`
+	// Overflow: the class takes only as many jobs as it has room for right
+	// now. GitHub gives the rest to other runners of the same labels (fixed
+	// runners, another class), where there are any; pumasi never sees those
+	// jobs. Default: the class takes every job of its labels and lets them wait.
+	Overflow bool `yaml:"overflow"`
+	// After names another overflow class of the same labels that is filled
+	// first: this class offers room only while that one has none.
+	After string `yaml:"after"`
 	// Labels replace the class's own label: the scale set takes jobs whose
 	// runs-on is among them ([self-hosted, Linux, X64, ci-pool] takes over
 	// from fixed runners with those labels, workflows unchanged).
@@ -445,6 +453,19 @@ func (c *Config) validate() error {
 		for _, m := range cl.Mounts {
 			if p := MountPath(m); !strings.HasPrefix(p, "/") || strings.ContainsAny(p, ":, \t\n") {
 				return fmt.Errorf("class %s: mount %q must be an absolute path, optionally ending in :ro", cl.Name, m)
+			}
+		}
+		if cl.After != "" {
+			i := slices.IndexFunc(c.Classes, func(o Class) bool { return o.Name == cl.After })
+			switch {
+			case !cl.Overflow:
+				return fmt.Errorf("class %s: after is for classes with overflow: true", cl.Name)
+			case cl.After == cl.Name || i < 0:
+				return fmt.Errorf("class %s: after names no other class (%q)", cl.Name, cl.After)
+			case !c.Classes[i].Overflow:
+				return fmt.Errorf("class %s: after: %s must have overflow: true too — a class that takes every job leaves none to come after it", cl.Name, cl.After)
+			case c.Classes[i].After != "":
+				return fmt.Errorf("class %s: after: %s itself comes after %s; one step only", cl.Name, cl.After, c.Classes[i].After)
 			}
 		}
 		for _, h := range cl.Hosts {

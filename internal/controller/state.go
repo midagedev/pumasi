@@ -15,6 +15,7 @@ import (
 type State struct {
 	Controller bool              `json:"controller"` // a `pumasi up` is running and answered
 	Incidents  []ledger.Incident `json:"incidents"`  // open problems
+	Overflow   []Overflow        `json:"overflow"`   // classes that take only what fits: their jobs elsewhere are not in Waiting
 	Warnings   []string          `json:"warnings"`   // the setup's own risks (jobs that can read the controller's credentials)
 	Hosts      []HostState       `json:"hosts"`
 	Runners    []RunnerState     `json:"runners"`
@@ -110,6 +111,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{}}
 	out.Controller = ok
 	out.Warnings = append([]string{}, live.Warnings...)
+	out.Overflow = append([]Overflow{}, live.Overflow...)
 	var err error
 
 	if out.Incidents, err = l.OpenIncidents(); err != nil {

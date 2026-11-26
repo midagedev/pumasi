@@ -153,6 +153,22 @@ func printStatus(w io.Writer, s controller.State) {
 		tw.Flush()
 	}
 
+	if len(s.Overflow) > 0 {
+		// These classes take only what fits. Jobs beyond that go to other
+		// runners of the same labels, or wait at GitHub where pumasi does not
+		// see them: WAITING counts only what the class took.
+		fmt.Fprintln(w)
+		fmt.Fprintln(tw, "OVERFLOW\tTAKES\tHOLDS\tNOTE")
+		for _, o := range s.Overflow {
+			note := "takes only what fits now; jobs beyond that are not seen here (other runners of its labels get them, or they wait at GitHub)"
+			if o.After != "" {
+				note = "offers room only while " + o.After + " has none; " + note
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%s\n", o.Class, o.Take, o.Held, note)
+		}
+		tw.Flush()
+	}
+
 	if len(s.Sizes) > 0 {
 		// What the next run of each job is placed with, learned from its last runs.
 		fmt.Fprintln(w)

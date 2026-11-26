@@ -30,6 +30,12 @@ type Class struct {
 	Paths []string
 	// MaxDuration stops a runner whose job has run this long (0 = never).
 	MaxDuration time.Duration
+	// Overflow: the plan says how many more jobs of the class could be placed
+	// right now (Plan.Room), each taken to be NextCPUs/NextMem large (0 = the
+	// first estimate).
+	Overflow bool
+	NextCPUs float64
+	NextMem  int64
 }
 
 type Host struct {
@@ -157,6 +163,9 @@ type Plan struct {
 	Start []Start
 	Stop  []Stop
 	Defer []Defer
+	// Room: for each overflow class, how many more jobs it could start now,
+	// after this plan's starts and with the class's waiting jobs served first.
+	Room map[string]int
 }
 
 // Decide is deterministic: the same snapshot always gives the same plan.
@@ -334,6 +343,47 @@ func Decide(s Snapshot) Plan {
 		}
 		live[c.Name]++
 	}
+
+	// 4. What is left over for classes that take only what fits.
+	waiting := map[string]int{}
+	for _, d := range p.Defer {
+		waiting[d.Class] += d.Count
+	}
+	for _, c := range s.Classes {
+		if !c.Overflow {
+			continue
+		}
+		if p.Room == nil {
+			p.Room = map[string]int{}
+		}
+		next := c
+		if c.NextCPUs > 0 && c.NextMem > 0 {
+			next.CPUs, next.MemBytes = c.NextCPUs, c.NextMem
+		}
+		n := 0
+		if c.NextMem > 0 || s.BlindHold <= 1 {
+			n = room(s, next, hosts, alloc)
+		} else {
+			// The class has measured no job yet: its next one is a guess too, and
+			// is placed the way such jobs are (one on the guess, the rest on the hold).
+			hold := float64(next.MemBytes) * s.BlindHold
+			for name, h := range hosts {
+				if ok, _ := takes(s, next, h); !ok {
+					continue
+				}
+				cpu, mem := free(h, alloc[name])
+				byMem := int(mem / hold)
+				if watched[name] == 0 && mem >= float64(next.MemBytes) {
+					byMem = 1 + max(0, int((mem-hold)/hold))
+				}
+				n += max(0, min(int((cpu+1e-9)/next.CPUs), byMem))
+			}
+		}
+		if c.MaxRunners > 0 {
+			n = min(n, c.MaxRunners-live[c.Name])
+		}
+		p.Room[c.Name] = max(0, n-waiting[c.Name])
+	}
 	return p
 }
 
@@ -370,7 +420,7 @@ func room(s Snapshot, c Class, hosts map[string]Host, alloc map[string][2]float6
 	for name, h := range hosts {
 		if ok, _ := takes(s, c, h); ok {
 			cpu, mem := free(h, alloc[name])
-			n += int(math.Min((cpu+1e-9)/c.CPUs, mem/float64(c.MemBytes)))
+			n += max(0, int(math.Min((cpu+1e-9)/c.CPUs, mem/float64(c.MemBytes))))
 		}
 	}
 	return n

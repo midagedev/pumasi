@@ -235,3 +235,26 @@ func TestPriorityRules(t *testing.T) {
 		}
 	}
 }
+
+func TestClassOverflow(t *testing.T) {
+	load := func(classes string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: "+classes+"\n"), 0o600)
+		return Load(p)
+	}
+	c, err := load("[{name: linux, labels: [self-hosted, build], overflow: true}, {name: mac, os: macos, labels: [self-hosted, build], overflow: true, after: linux}, {name: all}]")
+	if err != nil || !c.Classes[0].Overflow || c.Classes[1].After != "linux" || c.Classes[2].Overflow {
+		t.Fatalf("%+v err %v", c, err)
+	}
+	for classes, want := range map[string]string{
+		"[{name: a, overflow: true}, {name: b, after: a}]":                                                      "overflow: true",
+		"[{name: a}, {name: b, overflow: true, after: a}]":                                                      "must have overflow: true too",
+		"[{name: b, overflow: true, after: nobody}]":                                                            "names no other class",
+		"[{name: b, overflow: true, after: b}]":                                                                 "names no other class",
+		"[{name: a, overflow: true}, {name: b, overflow: true, after: a}, {name: c, overflow: true, after: b}]": "one step only",
+	} {
+		if _, err := load(classes); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err %v, want %q", classes, err, want)
+		}
+	}
+}

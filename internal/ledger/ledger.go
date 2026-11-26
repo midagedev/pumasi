@@ -773,10 +773,19 @@ func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, err
 // MeasuredJobs are the jobs with a measured run among the newest finished
 // runners, the most recently run first.
 func (l *Ledger) MeasuredJobs(limit int) ([]JobKey, error) {
+	return l.measuredJobs(``, limit)
+}
+
+// ClassJobs are the jobs a class ran and measured, the most recent first.
+func (l *Ledger) ClassJobs(class string, limit int) ([]JobKey, error) {
+	return l.measuredJobs(`AND class=?`, class, limit)
+}
+
+func (l *Ledger) measuredJobs(andClass string, args ...any) ([]JobKey, error) {
 	rows, err := l.db.Query(`SELECT repo, `+workflowFile+`, job FROM runners
 	  WHERE job IS NOT NULL AND repo IS NOT NULL AND started_at IS NOT NULL AND mem_work_peak > 0
-	    AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
-	  GROUP BY 1,2,3 ORDER BY MAX(started_at) DESC LIMIT ?`, limit)
+	    AND (removed_at IS NOT NULL OR state IN ('failed','lost')) `+andClass+`
+	  GROUP BY 1,2,3 ORDER BY MAX(started_at) DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

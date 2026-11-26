@@ -23,6 +23,8 @@ type Status struct {
 	Closed map[string]string `json:"closed,omitempty"`
 	// Links: how each host is attached and how that connection is doing.
 	Links map[string]Link `json:"links,omitempty"`
+	// Overflow: the classes that take only what fits, and how many jobs each takes now.
+	Overflow []Overflow `json:"overflow,omitempty"`
 	// Warnings: what is not a problem of the moment but of the setup (exposure.go).
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -57,6 +59,11 @@ func (c *Controller) setStatus(defers []decide.Defer) {
 		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason, Priority: d.Priority})
 	}
 	st.Warnings = c.exposure()
+	for _, cl := range c.classes {
+		if cl.cfg.Overflow {
+			st.Overflow = append(st.Overflow, Overflow{Class: cl.cfg.Name, Take: int(cl.take.Load()), Held: int(cl.held.Load()), After: cl.cfg.After})
+		}
+	}
 	c.mu.Lock()
 	c.status = st
 	c.mu.Unlock()

@@ -65,3 +65,63 @@ func TestBlindJobsAreNotPlacedSideBySide(t *testing.T) {
 		t.Errorf("after the first has shown its size: started = %d, want 1", len(p.Start))
 	}
 }
+
+// An overflow class is told how many more jobs fit after the plan, its own
+// waiting jobs first, each as large as the class's jobs are known to be.
+func TestRoomOfAnOverflowClass(t *testing.T) {
+	c := Class{Name: "build", CPUs: 2, MemBytes: 4 * gb, Overflow: true}
+	host := Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 32 * gb, KeepMem: 3 * gb} // 29G to lend
+	mk := func(c Class, hosts []Host, d []Demand) Plan {
+		s := snap(hosts, d, nil)
+		s.Classes = []Class{c, {Name: "other", CPUs: 1, MemBytes: gb}}
+		return Decide(s)
+	}
+	if p := mk(c, []Host{host}, nil); p.Room["build"] != 7 {
+		t.Errorf("empty host: room %d, want 7 (4G of 29G)", p.Room["build"])
+	}
+	if _, ok := mk(c, []Host{host}, nil).Room["other"]; ok {
+		t.Error("room is worked out only for overflow classes")
+	}
+	// Two jobs are started by this plan: five more fit.
+	if p := mk(c, []Host{host}, demand("build", 2)); len(p.Start) != 2 || p.Room["build"] != 5 {
+		t.Errorf("after 2 starts: %d started, room %d", len(p.Start), p.Room["build"])
+	}
+	// Its jobs are known to be 10G: two fit, not seven.
+	big := c
+	big.NextCPUs, big.NextMem = 2, 10*gb
+	if p := mk(big, []Host{host}, nil); p.Room["build"] != 2 {
+		t.Errorf("10G jobs: room %d, want 2", p.Room["build"])
+	}
+	// No host up, or jobs already waiting for room: nothing more is taken.
+	down := host
+	down.Up = false
+	if p := mk(c, []Host{down}, nil); p.Room["build"] != 0 {
+		t.Errorf("host down: room %d", p.Room["build"])
+	}
+	if p := mk(c, []Host{host}, demand("build", 9)); len(p.Start) != 7 || p.Room["build"] != 0 {
+		t.Errorf("more waiting than fits: %d started, room %d", len(p.Start), p.Room["build"])
+	}
+	// A class that has measured nothing takes what it would place of jobs that
+	// are a guess: one on the guess, the next with three times that free.
+	guess := func(hosts []Host, rs []Runner) int {
+		s := snap(hosts, nil, rs)
+		s.Classes, s.BlindHold = []Class{c}, 3
+		return Decide(s).Room["build"]
+	}
+	if n := guess([]Host{host}, nil); n != 2 {
+		t.Errorf("nothing measured, 29G: room %d, want 2 (12G held each)", n)
+	}
+	small := Host{Name: "h2", Kind: "server", Up: true, CPUs: 4, MemBytes: 8 * gb, KeepMem: 1 * gb}
+	if n := guess([]Host{small}, nil); n != 1 {
+		t.Errorf("nothing measured, small host: room %d, want 1", n)
+	}
+	watching := []Runner{{Name: "r1", Class: "build", Host: "h2", State: "busy", JobKnown: true, Container: "running", Working: true, CPUs: 2, MemBytes: 4 * gb, Watched: true}}
+	if n := guess([]Host{small}, watching); n != 0 {
+		t.Errorf("nothing measured, small host that watches one: room %d, want 0", n)
+	}
+	capped := c
+	capped.MaxRunners = 3
+	if p := mk(capped, []Host{host}, demand("build", 2)); p.Room["build"] != 1 {
+		t.Errorf("maxRunners 3 with 2 started: room %d, want 1", p.Room["build"])
+	}
+}

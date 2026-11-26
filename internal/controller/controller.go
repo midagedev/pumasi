@@ -137,6 +137,12 @@ type class struct {
 	cfg   config.Class
 	setID int
 	stats *scaleset.RunnerScaleSetStatistic
+	// take: for a class with overflow, how many jobs GitHub may have assigned
+	// to it at once (those it holds plus those it has room for), and the
+	// signal that the number changed while a poll is out. See overflow.go.
+	take    atomic.Int32
+	held    atomic.Int32
+	retaken chan struct{}
 }
 
 type deferRec struct {
@@ -164,7 +170,7 @@ func New(cfg *config.Config, auth ghauth.Auth, l *ledger.Ledger, ev *EventLog, l
 		c.hosts = append(c.hosts, newHost(hc))
 	}
 	for _, cc := range cfg.Classes {
-		c.classes = append(c.classes, &class{cfg: cc})
+		c.classes = append(c.classes, &class{cfg: cc, retaken: make(chan struct{}, 1)})
 	}
 	c.book = newIncidentBook(c)
 	c.join = join.NewServer(cfg.StateDir(), "", log)
@@ -349,7 +355,13 @@ func (c *Controller) listen(ctx context.Context, cl *class) {
 			failingSince, conflict = time.Time{}, false
 			c.book.resolve("github/" + cl.cfg.Name)
 			defer session.Close(context.WithoutCancel(ctx))
-			l, err := listener.New(session, listener.Config{ScaleSetID: cl.setID, MaxRunners: math.MaxInt32, // the hosts' budgets are the limit
+			// The hosts' room is the limit, not a number given to GitHub — unless the
+			// class takes only what fits (overflow), where each poll says how many.
+			var polls listener.Client = session
+			if cl.cfg.Overflow {
+				polls = &measuredPoll{Client: session, cl: cl}
+			}
+			l, err := listener.New(polls, listener.Config{ScaleSetID: cl.setID, MaxRunners: math.MaxInt32,
 				Logger: c.ListenerLog.With("class", cl.cfg.Name)})
 			if err != nil {
 				return err
@@ -567,6 +579,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	for _, s := range plan.Start {
 		c.start(ctx, s, now)
 	}
+	c.setTakes(snap, plan)
 	c.recordDefers(plan.Defer, now)
 	c.waitIncidents(plan.Defer, now)
 	c.setStatus(plan.Defer)
@@ -826,9 +839,14 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		perClass[d.Class]++
 	}
 	for _, cl := range c.classes {
-		s.Classes = append(s.Classes, decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
+		dc := decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
-			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve})
+			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve}
+		if cl.cfg.Overflow {
+			next := c.nextSize(cl.cfg)
+			dc.Overflow, dc.NextCPUs, dc.NextMem = true, next.CPUs, next.MemBytes
+		}
+		s.Classes = append(s.Classes, dc)
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
 			for i := perClass[cl.cfg.Name]; i < cl.stats.TotalAssignedJobs-cl.stats.TotalRunningJobs; i++ {

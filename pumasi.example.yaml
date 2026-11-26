@@ -11,6 +11,7 @@ classes:
 # - {name: build, driver: native, hosts: [server1]}                       # a process of the host's user, on that host only
 # - {name: deploy, reserve: 1}                                            # room other classes may not take
 # - {name: shared, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
+# - {name: some, labels: [self-hosted, ci-pool], overflow: true}          # takes only what fits now; the rest goes to the fixed runners
 # - {name: macos, os: macos}                                              # os: macos | windows, on hosts of that OS
 # - {name: heavy, cpus: 8, memory: 24G}                                   # the first estimate for a job never measured (default 2, 4G); not a limit
 # - {name: fenced, limit: {memory: 8G}}                                   # a hard limit, for when you want one
