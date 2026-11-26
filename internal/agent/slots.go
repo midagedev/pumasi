@@ -48,6 +48,9 @@ type slotMgr struct {
 	jobs     []api.SlotJob // ended runs that had a job, oldest first
 	psiShut  bool
 	lastOver string
+	// Only the manager's loop reads and writes it.
+	lastClosed string
+	lastWhy    map[string]string
 }
 
 // slotState is what the manager remembers of a slot between its looks.
@@ -263,7 +266,7 @@ func (m *slotMgr) tick(ctx context.Context) {
 			delete(runs, key)
 		case st.taking || !st.stopAt.IsZero():
 		case look.ev.Conflict && !run.listening:
-			st.fail = "GitHub already has a session for this runner: another process listens with the same registration (its old service?)"
+			st.fail = "GitHub already has a session for this runner: another process listens with the same registration (its old service?), or a session that was cut off has not expired yet"
 			st.stopAt = now
 			m.stop(ctx, key, run, st)
 		case !run.listening && !run.received.IsZero() && now.Sub(run.received) > provision:
@@ -294,6 +297,15 @@ func (m *slotMgr) tick(ctx context.Context) {
 		in.BudgetCPUs = minPos(in.BudgetCPUs, plan.BudgetCPUs)
 		in.BudgetMem = minPos(in.BudgetMem, float64(plan.BudgetMem))
 		in.Closed = m.closed(plan, host)
+		// The host says so itself: with the controller away nothing else does.
+		if in.Closed != m.lastClosed {
+			if in.Closed != "" {
+				m.a.log.Warn("slots closed: nothing new listens", "why", in.Closed)
+			} else {
+				m.a.log.Info("slots open again", "was", m.lastClosed)
+			}
+			m.lastClosed = in.Closed
+		}
 	}
 	if p := m.nat.problem(); p != "" && in.Closed == "" {
 		in.Closed = p
@@ -317,8 +329,11 @@ func (m *slotMgr) tick(ctx context.Context) {
 			default:
 				s.State = "starting"
 			}
-			// A run whose stop is under way is left to it.
-			s.Stoppable = meta.V2 && st != nil && st.stopAt.IsZero()
+			// A run whose stop is under way is left to it. One that is still
+			// starting is stopped once it listens: a runner cut off while it
+			// opens its session leaves that session behind at GitHub, and the
+			// registration cannot listen again until it expires (minutes).
+			s.Stoppable = meta.V2 && run.listening && st != nil && st.stopAt.IsZero()
 			stoppable[key] = s.Stoppable
 		} else {
 			s.Ready = st == nil || !now.Before(st.retryAt)
@@ -332,6 +347,14 @@ func (m *slotMgr) tick(ctx context.Context) {
 		}
 	}
 	out := planSlots(in)
+	// Why a slot stays off is written down when it changes: with the
+	// controller away the log is the only place that says it.
+	for key, why := range out.Why {
+		if why != "" && m.lastWhy[key] != why {
+			m.a.log.Info("slot stays off", "slot", key, "why", why)
+		}
+	}
+	m.lastWhy = out.Why
 
 	// 6. Act: stop what no longer fits, then start.
 	for _, key := range out.Stop {

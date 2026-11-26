@@ -175,12 +175,13 @@ func (c *Controller) syncSlots(ctx context.Context, now time.Time) {
 				continue
 			}
 			was := c.slotSeen[s.Runner.Name]
-			if was != s.State {
+			// A runner that is taking a job has no name for it yet: said once it has.
+			if was != s.State && !(s.State == "busy" && s.Job == "") {
 				switch s.State {
 				case "listening":
 					c.log.Info(fmt.Sprintf("listen %s on %s  (%s)", s.Name, name, s.Runner.Name))
 				case "busy":
-					c.log.Info(fmt.Sprintf("job %s on %s  (%s on %s)", cmp.Or(s.Job, "?"), s.Name, s.Runner.Name, name))
+					c.log.Info(fmt.Sprintf("job %s on %s  (%s on %s)", s.Job, s.Name, s.Runner.Name, name))
 				}
 				c.slotSeen[s.Runner.Name] = s.State
 			}
