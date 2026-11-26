@@ -1,8 +1,10 @@
 package decide
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Jobs nobody has measured are not put side by side on a guess: a host takes
@@ -123,5 +125,57 @@ func TestRoomOfAnOverflowClass(t *testing.T) {
 	capped.MaxRunners = 3
 	if p := mk(capped, []Host{host}, demand("build", 2)); p.Room["build"] != 1 {
 		t.Errorf("maxRunners 3 with 2 started: room %d, want 1", p.Room["build"])
+	}
+}
+
+// The invariant over everything placement has learned to do since: a runner
+// that works a job is never stopped by it. Not for going over its estimate or
+// over what its host lends, not while it is watched, not for a job of a
+// higher level that waits for its room, not for another class's reserve, not
+// because its class takes only what fits, not on a closed or pressed host.
+func TestNothingPlacementDoesStopsARunningJob(t *testing.T) {
+	n := 0
+	for _, over := range []float64{1, 3, 50} {
+		for _, watched := range []bool{false, true} {
+			for _, hold := range []float64{0, 3} {
+				for _, overflow := range []bool{false, true} {
+					for _, closed := range []string{"", "disk 2% free"} {
+						for _, pressure := range []float64{0, 99} {
+							for _, waitingLevel := range []int{-1, 0, 1} {
+								h := Host{Name: "h1", Kind: "server", Up: true, CPUs: 4, MemBytes: 8 * gb, KeepMem: gb,
+									BudgetCPUs: 2, BudgetMem: 2 * gb, NonRunnerMem: 6 * gb, Closed: closed, PSICPU: pressure, PSIMem: pressure}
+								mine := Class{Name: "build", CPUs: 1, MemBytes: gb, Overflow: overflow, NextCPUs: 1, NextMem: 4 * gb}
+								vip := Class{Name: "deploy", CPUs: 1, MemBytes: gb, Reserve: 2}
+								var rs []Runner
+								for i, state := range []string{"busy", "busy", "idle", "starting"} {
+									r := Runner{Name: fmt.Sprintf("r%d", i), Class: "build", Host: "h1", State: state, Container: "running",
+										JobKnown: i == 0, Working: state == "busy", CreatedAt: t0, ListeningAt: t0, Watched: watched,
+										CPUs: over, MemBytes: int64(float64(gb) * over)}
+									if state == "busy" {
+										r.JobStartedAt = t0
+									}
+									rs = append(rs, r)
+								}
+								var ds []Demand
+								for i, class := range []string{"deploy", "build", "build"} {
+									ds = append(ds, Demand{ID: fmt.Sprintf("d%d", i), Class: class, FirstSeen: t0, Level: waitingLevel, Blind: i == 2, Ranked: "rule"})
+								}
+								s := snap([]Host{h}, ds, rs)
+								s.Classes, s.BlindHold, s.PSIMemThreshold, s.HeadStart = []Class{mine, vip}, hold, 10, 30*time.Minute
+								p := Decide(s)
+								n++
+								if len(p.Stop) != 0 {
+									t.Fatalf("over %gx watched %v hold %g overflow %v closed %q pressure %g level %d: stopped %+v",
+										over, watched, hold, overflow, closed, pressure, waitingLevel, p.Stop)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if n != 3*2*2*2*2*2*3 {
+		t.Fatalf("%d combinations", n)
 	}
 }

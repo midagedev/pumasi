@@ -11,6 +11,8 @@
 # CHAOS_CONFIG   a working pumasi.yaml without notify:, rerun:, hostLostAfter:,
 #                diskMinFree:, evaluateEvery: or provisionTimeout: (the script
 #                adds them), with classes written as {name: linux-s, ...}.
+#                linux-s needs limit: {memory: 1G} (the oom row goes over it)
+#                and a first estimate two of which fit the host at once.
 # CHAOS_REPO     the repository of CHAOS_CONFIG's url; it must have
 #                .github/workflows/chaos.yml on its default branch.
 # CHAOS_HOST     the host (name in the config) that gets the linux-s jobs first:
@@ -166,7 +168,7 @@ row_bad_token() {
 row_oom() {
   config "rerun: 1"; up || return 1
   local run; run=$(dispatch 30 1500) || return 1
-  check "incident names the limit" noticed 240 "hit the linux-s 1.0G memory limit"
+  check "incident names the limit" noticed 240 "hit class linux-s's memory limit (1.0G)"
   check "job failed" test "$(conclusion "$run" 600)" = failure
   sleep 15
   check "not queued for rerun" test "$(sql "SELECT count(*) FROM reruns WHERE run_id=$run")" = 0
