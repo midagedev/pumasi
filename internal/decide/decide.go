@@ -87,6 +87,9 @@ type Runner struct {
 	JobStartedAt time.Time
 	// Lost: the agent's reason why the container cannot have finished ("host rebooted").
 	Lost string
+	// Watched: its job was placed blind and has not yet run long enough to
+	// show its size. Its charge already holds the extra room.
+	Watched bool
 }
 
 // Demand is one job waiting for a runner of its class.
@@ -105,6 +108,8 @@ type Demand struct {
 	// -1 low. Ranked says which rule gave it ("" = none).
 	Level  int
 	Ranked string
+	// Blind: nothing is measured of the job or of its workflow; its size is a guess.
+	Blind bool
 }
 
 type Snapshot struct {
@@ -116,7 +121,11 @@ type Snapshot struct {
 	PSICPUThreshold float64
 	PSIMemThreshold float64
 	// HeadStart: a job of level L is placed as if it had come L*HeadStart earlier.
-	HeadStart        time.Duration
+	HeadStart time.Duration
+	// BlindHold: a blind job holds this many times its memory while it is
+	// watched, and where a watched runner already is the next blind job needs
+	// that much free (0 or 1 = blind jobs are placed like any other).
+	BlindHold        float64
 	ProvisionTimeout time.Duration
 	IdleTimeout      time.Duration
 	HostLostAfter    time.Duration
@@ -169,6 +178,7 @@ func Decide(s Snapshot) Plan {
 	alloc := map[string][2]float64{} // host -> cpus, mem
 	live := map[string]int{}         // class -> runners holding capacity
 	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
+	watched := map[string]int{}      // host -> runners of jobs nobody has measured, still watched
 	for _, r := range runners {
 		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r); ok {
 			p.Stop = append(p.Stop, st)
@@ -186,6 +196,9 @@ func Decide(s Snapshot) Plan {
 		live[r.Class]++
 		if !r.JobKnown {
 			covering[r.Class]++
+		}
+		if r.Watched {
+			watched[r.Host]++
 		}
 	}
 
@@ -231,6 +244,13 @@ func Decide(s Snapshot) Plan {
 		if d.CPUs > 0 && d.MemBytes > 0 {
 			needCPU, needMem = d.CPUs, float64(d.MemBytes)
 		}
+		// A job nobody has measured holds more than its guess while it is watched.
+		// A host that watches none takes one on the guess alone, so that such a
+		// job always gets measured somewhere; the next one there needs the hold.
+		holdMem := needMem
+		if d.Blind && s.BlindHold > 1 {
+			holdMem = needMem * s.BlindHold
+		}
 		best, bestSlots := "", -1.0
 		var why, short []string
 		lacking := "" // a path no host that could otherwise take the class has
@@ -254,6 +274,11 @@ func Decide(s Snapshot) Plan {
 				continue
 			case freeCPU+1e-9 < needCPU || freeMem < needMem:
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
+				short = append(short, hn)
+				continue
+			case watched[hn] > 0 && freeMem < holdMem:
+				why = append(why, fmt.Sprintf("%s %.1fcpu/%s: it watches %d unmeasured job there and takes the next with %s free or when that one has shown its size",
+					hn, freeCPU, gib(freeMem), watched[hn], gib(holdMem)))
 				short = append(short, hn)
 				continue
 			}
@@ -295,12 +320,18 @@ func Decide(s Snapshot) Plan {
 		if d.Sized != "" {
 			reason += " " + d.Sized
 		}
+		if holdMem > needMem {
+			reason += fmt.Sprintf("; holds %s while it is watched", gib(holdMem))
+		}
 		if d.Ranked != "" {
 			reason += "; " + d.Ranked
 		}
 		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: needCPU, MemBytes: int64(needMem)})
 		a := alloc[best]
-		alloc[best] = [2]float64{a[0] + needCPU, a[1] + needMem}
+		alloc[best] = [2]float64{a[0] + needCPU, a[1] + holdMem}
+		if holdMem > needMem {
+			watched[best]++
+		}
 		live[c.Name]++
 	}
 	return p

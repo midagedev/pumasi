@@ -123,7 +123,10 @@ func printStatus(w io.Writer, s controller.State) {
 				slot = strconv.Itoa(r.Slot)
 			}
 			est, cur := sizeText(r.EstCPUs, r.EstMem), "-"
-			if r.EstRuns == 0 {
+			switch {
+			case r.Watched:
+				est += " (first, watched)"
+			case r.EstRuns == 0:
 				est += " (first)"
 			}
 			if r.MemBytes > 0 {

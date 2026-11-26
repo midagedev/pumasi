@@ -38,8 +38,8 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 	r := newRig(t)
 	cl := r.cfg.Classes[0] // 1 cpu, 1G
 	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml@refs/heads/main", "build")
-	if e := r.estimate(cl, k); e.Runs != 0 || e.CPUs != 1 || e.MemBytes != gbs {
-		t.Fatalf("a job never seen: %+v, want the class's first estimate", e)
+	if e := r.estimate(cl, k); e.Runs != 0 || e.CPUs != 1 || e.MemBytes != gbs || !e.Blind {
+		t.Fatalf("a job never seen: %+v, want the class's first estimate, marked blind", e)
 	}
 	prev := int64(0)
 	for i, work := range []int64{2 * gbs, 3 * gbs, 5 * gbs} {
@@ -62,9 +62,20 @@ func TestEstimateFollowsTheLedger(t *testing.T) {
 	if e := r.estimate(cl, k); e.MemBytes != 9*gbs {
 		t.Errorf("after a run cut short at 6G: %s", e.Source())
 	}
-	// Another job of the same workflow has learned nothing from it.
-	if e := r.estimate(cl, ledger.KeyOf("o/r", k.Workflow, "lint")); e.Runs != 0 {
+	// Another job of the same workflow has no run of its own: it is sized like
+	// the largest that is known of the workflow, and is not blind.
+	if e := r.estimate(cl, ledger.KeyOf("o/r", k.Workflow, "lint")); e.Runs != 0 || !e.Borrowed || e.Blind || e.MemBytes != 9*gbs {
 		t.Errorf("lint: %+v", e)
+	}
+	// A job of another workflow knows nothing.
+	other := ledger.KeyOf("o/r", "o/r/.github/workflows/new.yml@refs/heads/main", "build")
+	if e := r.estimate(cl, other); !e.Blind || e.MemBytes != gbs {
+		t.Errorf("another workflow: %+v", e)
+	}
+	// Until a job of it has run long enough to show what it holds now.
+	r.seenNow = map[ledger.JobKey]size.Sample{{Repo: other.Repo, Workflow: other.Workflow}: {CPUs: 1.5, MemBytes: 5 * gbs}}
+	if e := r.estimate(cl, other); e.Blind || !e.Borrowed || e.MemBytes != 6*gbs || e.CPUs != 1.8 {
+		t.Errorf("another workflow with a job running: %+v (%s)", e, e.Source())
 	}
 }
 

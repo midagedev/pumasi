@@ -85,6 +85,9 @@ type RunnerState struct {
 	EstCPUs float64 `json:"estCpus"`
 	EstMem  int64   `json:"estMem"`
 	EstRuns int     `json:"estRuns"`
+	// Watched: placed on a guess (nothing measured of the job or its workflow);
+	// it holds size.BlindHold times EstMem until its job has run size.Settle.
+	Watched bool `json:"watched,omitempty"`
 	// The runner's number among its class's runners on the host ({slot}); 0 = not known.
 	Slot int `json:"slot"`
 }
@@ -164,11 +167,12 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		if a, ok := sampled[r.Name]; ok {
 			rs.CPUSec, rs.CPUNow, rs.MemBytes, rs.MemLimit, rs.Slot = a.CPUSec, a.CPUNow, cmp.Or(a.MemWork, a.MemCurrent), a.LimitMem, a.Slot
 		}
+		rs.Watched = size.Estimate{Blind: r.EstBlind}.Watched(r.StartedAt, now)
 		out.Runners = append(out.Runners, rs)
 		if i, ok := hosts[r.Host]; ok {
 			h := &out.Hosts[i]
 			h.Runners++
-			cpus, mem := size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes)
+			cpus, mem := size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched)
 			h.UsedCPUs += cpus
 			h.UsedMem += mem
 		}

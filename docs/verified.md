@@ -31,6 +31,8 @@
 | 동작 | 수준 | 본 것 |
 |---|---|---|
 | 처음 보는 잡은 클래스의 첫 추정으로 놓인다 | 실물 | `takes 2.0cpu/4.0G of the free 6.4cpu/22.7G for hold (1) (the class's first estimate, …)` |
+| 워크플로우째로 처음인 잡 여럿이 한꺼번에 오면 나란히 놓지 않는다 | 실물 + 유닛 | VM(빌려줄 수 있는 메모리 22.9G), 빈 장부, 5000MiB 를 쥐는 잡 3개를 동시에. 하나만 놓임: `takes 0.5cpu/4.0G … (the class's first estimate; nothing is measured of this job or its workflow yet); holds 12.0G while it is watched`, 나머지 둘은 `vm1 6.0cpu/10.9G: it watches 1 unmeasured job there and takes the next with 12.0G free or when that one has shown its size` 로 대기. 첫 잡이 3분을 돈 뒤(시작 12:09 → 12:12:30) 둘이 `takes 0.5cpu/6.0G … (no measured run of this job yet; sized like the largest known of its workflow's other jobs, 0.0cpu/5.0G)` 로 놓임. 3배·3분이라는 값이 실제 JVM 빌드에 맞는지는 보지 않았다(규칙의 동작만) |
+| 같은 워크플로우의 끝난 표본에서 빌리기, 3배가 안 들어가는 작은 호스트도 하나는 받기, 재 본 잡은 지켜보는 잡 옆에 평소대로 놓이기 | 유닛 | `internal/decide/blind_test.go`, `internal/controller/size_test.go`, `internal/size` |
 | 메모리가 커지는 잡을 추정이 따라간다 | 실물(Linux 컨테이너, Mac native) | 300 → 600 → 1200 → 2400MiB 를 쥐는 잡 4번: 추정 4.0G(첫) → 0.6G → 0.9G → 1.8G → 3.2G. Mac: 700 → 1400MiB 에서 1.1G → 1.9G |
 | 추정보다 큰 잡이 죽지 않고 끝난다 | 실물(Linux 컨테이너, Mac native) / 드라이버 테스트(native Linux, 실제 systemd) | 추정 576M 에 746M, 960M 에 1476M, 1792M 에 2767M 을 쓴 실행이 모두 success, OOM 0. Mac: 추정 1088M 에 1584M. native Linux 는 VM 에서 드라이버 테스트로: 추정 32M 인 scope 가 300M 을 쥐고 종료 코드 그대로 끝남, `memory.max` = `max` |
 | 페이지 캐시는 크기에 안 들어간다 | 실물(Linux 컨테이너) | 300MiB 를 쥐고 1.5G 파일을 쓰고 읽은 잡: cgroup peak 1950M, 장부의 작업 메모리 449M, 다음 추정 0.6G |

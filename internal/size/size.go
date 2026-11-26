@@ -6,6 +6,7 @@ package size
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 // Sample is one finished run of a job.
@@ -29,6 +30,12 @@ type Estimate struct {
 	// The largest of those runs, before the margin.
 	TopCPUs float64
 	TopMem  int64
+	// Borrowed: the job has no run of its own; the size is the largest known
+	// of its workflow's other jobs (Top*), never under the class's first estimate.
+	Borrowed bool
+	// Blind: nothing is measured of the job nor of its workflow. The size is
+	// the class's first estimate, which is a guess: see BlindHold.
+	Blind bool
 }
 
 const (
@@ -43,7 +50,28 @@ const (
 
 	MinCPUs = 0.1
 	MinMem  = 256 << 20
+
+	// BlindHold: a runner whose job is blind holds this many times the first
+	// estimate of memory while it is watched, so that jobs nobody has measured
+	// are not put side by side as if the guess were true.
+	BlindHold = 3
+	// Settle: how long a blind job is watched. After that its own use is what
+	// it holds, and what its workflow's other jobs are sized by.
+	Settle = 3 * time.Minute
 )
+
+// Borrow is the estimate of a job without a run of its own whose workflow has
+// measured jobs: as large as the largest of them, and no smaller than first.
+func Borrow(first, known Estimate) Estimate {
+	return Estimate{CPUs: math.Max(first.CPUs, known.CPUs), MemBytes: max(first.MemBytes, known.MemBytes),
+		TopCPUs: known.TopCPUs, TopMem: known.TopMem, Borrowed: true}
+}
+
+// Watched reports whether a runner started with a blind estimate is still
+// held at BlindHold: until its job has run for Settle (started zero = no job yet).
+func (e Estimate) Watched(started, now time.Time) bool {
+	return e.Blind && (started.IsZero() || now.Sub(started) < Settle)
+}
 
 // Learn is the estimate from a job's newest runs (any order; at most Window
 // are passed). With no runs it is first.
@@ -71,12 +99,26 @@ func Learn(runs []Sample, first Estimate) Estimate {
 // Charge is what a runner holds of its host's room: what it is expected to
 // use, or what it uses now when that is more. Going over the estimate is not
 // an error and stops nothing; it only takes the room away from the next runner.
-func Charge(est Estimate, cpuNow float64, memNow int64) (cpus float64, mem int64) {
-	return math.Max(est.CPUs, cpuNow), max(est.MemBytes, memNow)
+//
+// watched: the estimate is blind and the job has not run long enough to
+// show its size; it holds BlindHold times the guess of memory. Not of cpu:
+// a busy cpu slows jobs, it breaks nothing.
+func Charge(est Estimate, cpuNow float64, memNow int64, watched bool) (cpus float64, mem int64) {
+	hold := est.MemBytes
+	if watched {
+		hold *= BlindHold
+	}
+	return math.Max(est.CPUs, cpuNow), max(hold, memNow)
 }
 
 // Source says where the estimate comes from, for the reason of a start.
 func (e Estimate) Source() string {
+	switch {
+	case e.Borrowed:
+		return fmt.Sprintf("no measured run of this job yet; sized like the largest known of its workflow's other jobs, %.1fcpu/%s", e.TopCPUs, gib(e.TopMem))
+	case e.Runs == 0 && e.Blind:
+		return "the class's first estimate; nothing is measured of this job or its workflow yet"
+	}
 	switch e.Runs {
 	case 0:
 		return "the class's first estimate, no measured run of this job yet"

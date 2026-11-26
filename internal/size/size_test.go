@@ -1,6 +1,9 @@
 package size
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 const gb = 1 << 30
 
@@ -54,10 +57,43 @@ func TestEstimateFollowsAJobThatGrows(t *testing.T) {
 
 func TestChargeIsTheLargerOfEstimateAndUse(t *testing.T) {
 	est := Estimate{CPUs: 2, MemBytes: 4 * gb}
-	if c, m := Charge(est, 0.3, 1*gb); c != 2 || m != 4*gb {
+	if c, m := Charge(est, 0.3, 1*gb, false); c != 2 || m != 4*gb {
 		t.Errorf("under the estimate: %v %v", c, m)
 	}
-	if c, m := Charge(est, 5.5, 9*gb); c != 5.5 || m != 9*gb {
+	if c, m := Charge(est, 5.5, 9*gb, false); c != 5.5 || m != 9*gb {
 		t.Errorf("over the estimate: %v %v", c, m)
+	}
+}
+
+func TestBlindJobHoldsMoreUntilItHasRun(t *testing.T) {
+	est := Estimate{CPUs: 2, MemBytes: 4 * gb, Blind: true}
+	now := time.Unix(1_000_000, 0)
+	if !est.Watched(time.Time{}, now) || !est.Watched(now.Add(-Settle+time.Second), now) {
+		t.Fatal("a blind job is watched until it has run for Settle")
+	}
+	if est.Watched(now.Add(-Settle), now) {
+		t.Fatal("after Settle it is not watched")
+	}
+	if (Estimate{MemBytes: 4 * gb}).Watched(time.Time{}, now) {
+		t.Fatal("only a blind estimate is watched")
+	}
+	// Memory is held at BlindHold, cpu is not; real use above the hold still counts.
+	if c, m := Charge(est, 0.3, 1*gb, true); c != 2 || m != BlindHold*4*gb {
+		t.Errorf("watched: %v %v", c, m)
+	}
+	if _, m := Charge(est, 0.3, 20*gb, true); m != 20*gb {
+		t.Errorf("watched and over the hold: %v", m)
+	}
+}
+
+func TestBorrowIsNeverUnderTheFirstEstimate(t *testing.T) {
+	first := Estimate{CPUs: 2, MemBytes: 4 * gb}
+	big := Borrow(first, Learn([]Sample{{CPUs: 1, MemBytes: 9 * gb}, {CPUs: 3, MemBytes: 1 * gb}}, Estimate{}))
+	if big.MemBytes < 10*gb || big.CPUs < 3.6 || !big.Borrowed || big.Blind || big.Runs != 0 {
+		t.Errorf("borrowed from a larger workflow: %+v", big)
+	}
+	small := Borrow(first, Learn([]Sample{{CPUs: 0.1, MemBytes: gb / 4}}, Estimate{}))
+	if small.MemBytes != 4*gb || small.CPUs != 2 {
+		t.Errorf("borrowed from a smaller workflow: %+v", small)
 	}
 }

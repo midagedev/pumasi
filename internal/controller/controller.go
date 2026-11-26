@@ -63,7 +63,10 @@ type Controller struct {
 	// cfgRead: the config file's modification time when its priority rules were last read.
 	cfgRead time.Time
 	// sized: what each waiting job was taken to need in the last decision (under mu).
-	sized       map[string]size.Estimate
+	sized map[string]size.Estimate
+	// seenNow: per workflow, the use right now of its jobs that have run long
+	// enough to show their size. A job of the workflow that never ran is sized by it.
+	seenNow     map[ledger.JobKey]size.Sample
 	starts      sync.WaitGroup
 	lastDefer   map[string]deferRec
 	runCheck    map[int64]time.Time
@@ -621,6 +624,8 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 		byName[r.Name] = r
 	}
 	seen := map[string]bool{}
+	seenNow := map[ledger.JobKey]size.Sample{}
+	now := c.now()
 	var out []decide.Runner
 	for _, h := range c.hosts {
 		if h.snap == nil {
@@ -676,12 +681,20 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 				c.markerCheck(h, lr, ar)
 			}
 			// What it holds of the host: its estimate, or its use now when that is more.
-			est := size.Estimate{CPUs: cmp.Or(lr.EstCPUs, ar.CPUs), MemBytes: cmp.Or(lr.EstMem, ar.MemBytes)}
-			cpus, mem := size.Charge(est, ar.CPUNow, cmp.Or(ar.MemWork, ar.MemCurrent))
-			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name, CPUs: cpus, MemBytes: mem,
+			est := size.Estimate{CPUs: cmp.Or(lr.EstCPUs, ar.CPUs), MemBytes: cmp.Or(lr.EstMem, ar.MemBytes), Blind: lr.EstBlind}
+			dr := decide.Runner{Name: ar.Name, Class: ar.Class, Host: h.cfg.Name,
 				State: lr.State, JobKnown: lr.JobID != "", CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, Container: ar.State, Working: working, Lost: ar.Lost, JobStartedAt: lr.StartedAt}
 			if ar.JobStartedAt != nil && ok {
 				dr.JobStartedAt = *ar.JobStartedAt
+			}
+			memNow := cmp.Or(ar.MemWork, ar.MemCurrent)
+			dr.Watched = est.Watched(dr.JobStartedAt, now)
+			dr.CPUs, dr.MemBytes = size.Charge(est, ar.CPUNow, memNow, dr.Watched)
+			// A job that has run long enough tells what its workflow's unmeasured jobs may need.
+			if working && lr.Job != "" && !dr.JobStartedAt.IsZero() && now.Sub(dr.JobStartedAt) >= size.Settle {
+				k := ledger.KeyOf(lr.Repo, lr.Workflow, "")
+				was := seenNow[k]
+				seenNow[k] = size.Sample{CPUs: max(was.CPUs, ar.CPUNow), MemBytes: max(was.MemBytes, memNow)}
 			}
 			if ar.ExitCode != nil {
 				dr.ExitCode = *ar.ExitCode
@@ -691,6 +704,7 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.seenNow = seenNow
 	for _, lr := range live {
 		if seen[lr.Name] {
 			delete(c.inflight, lr.Name)
@@ -698,6 +712,10 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 		}
 		dr := decide.Runner{Name: lr.Name, Class: lr.Class, Host: lr.Host, State: lr.State, JobKnown: lr.JobID != "",
 			CreatedAt: lr.CreatedAt, ListeningAt: lr.ListeningAt, CPUs: lr.EstCPUs, MemBytes: lr.EstMem}
+		if est := (size.Estimate{CPUs: lr.EstCPUs, MemBytes: lr.EstMem, Blind: lr.EstBlind}); est.Watched(lr.StartedAt, now) {
+			dr.Watched = true
+			dr.CPUs, dr.MemBytes = size.Charge(est, 0, 0, true)
+		}
 		if answered, ok := c.inflight[lr.Name]; ok {
 			// Missing from a snapshot that was asked for before the agent answered
 			// the start says nothing: the runner was not there to be listed yet.
@@ -760,7 +778,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 
 func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) decide.Snapshot {
 	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold, PSIMemThreshold: c.cfg.PSIMemThreshold,
-		HeadStart:        c.cfg.PriorityHeadStart,
+		HeadStart: c.cfg.PriorityHeadStart, BlindHold: size.BlindHold,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
 		if h.snap != nil {
@@ -797,9 +815,9 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen, Name: d.Job}
 		dd.Level, dd.Ranked = c.cfg.LevelOf(config.WaitingJob{Class: d.Class, Repo: d.Repo, WorkflowRef: d.Workflow, Name: d.Job, Event: d.Event})
 		if cl := c.classByName(d.Class); cl != nil {
-			est := c.estimate(cl.cfg, ledger.KeyOf(d.Repo, d.Workflow, d.Job))
+			est := c.estimateLocked(cl.cfg, ledger.KeyOf(d.Repo, d.Workflow, d.Job))
 			c.sized[d.JobID] = est
-			dd.CPUs, dd.MemBytes, dd.Sized = est.CPUs, est.MemBytes, "("+est.Source()+")"
+			dd.CPUs, dd.MemBytes, dd.Blind, dd.Sized = est.CPUs, est.MemBytes, est.Blind, "("+est.Source()+")"
 			if d.Job != "" {
 				dd.Sized = "for " + d.Job + " " + dd.Sized
 			}
@@ -814,7 +832,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).
 		if cl.stats != nil {
 			for i := perClass[cl.cfg.Name]; i < cl.stats.TotalAssignedJobs-cl.stats.TotalRunningJobs; i++ {
-				s.Demand = append(s.Demand, decide.Demand{ID: fmt.Sprintf("stats-%d", i), Class: cl.cfg.Name, FirstSeen: now})
+				s.Demand = append(s.Demand, decide.Demand{ID: fmt.Sprintf("stats-%d", i), Class: cl.cfg.Name, FirstSeen: now, Blind: true})
 			}
 		}
 	}
@@ -852,17 +870,43 @@ func (c *Controller) reloadPriority() {
 
 // estimate is what a job is expected to use: learned from its last measured
 // runs, or the class's first estimate while there are none.
+//
+// A job without a run of its own is sized by the largest that is known of its
+// workflow's other jobs: their finished runs, and what those running now have
+// come to hold. Where nothing of the workflow is known either the estimate is
+// blind — the class's first estimate, marked as the guess it is.
 func (c *Controller) estimate(cl config.Class, k ledger.JobKey) size.Estimate {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.estimateLocked(cl, k)
+}
+
+func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estimate {
 	first := size.Estimate{CPUs: cl.CPUs, MemBytes: int64(cl.Memory)}
+	blind := first
+	blind.Blind = true
 	if k.Job == "" {
-		return first
+		return blind
 	}
 	runs, err := c.ledger.JobRuns(k, size.Window)
 	if err != nil {
 		c.log.Error("ledger job runs", "err", err)
-		return first
+		return blind
 	}
-	return size.Learn(runs, first)
+	if len(runs) > 0 {
+		return size.Learn(runs, first)
+	}
+	others, err := c.ledger.WorkflowRuns(k.Repo, k.Workflow, 3*size.Window)
+	if err != nil {
+		c.log.Error("ledger workflow runs", "err", err)
+	}
+	if now, ok := c.seenNow[ledger.JobKey{Repo: k.Repo, Workflow: k.Workflow}]; ok {
+		others = append(others, now)
+	}
+	if len(others) == 0 {
+		return blind
+	}
+	return size.Borrow(first, size.Learn(others, size.Estimate{}))
 }
 
 // keepMem is what stays free on a machine whatever else is true: a tenth of

@@ -111,7 +111,7 @@ func Open(path string) (*Ledger, error) {
 	for _, col := range []string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER",
 		// mem_work_peak: the most memory held that was not page cache (mem_peak counts the cache too).
 		// est_*: what placement counted on for this runner; est_runs = finished runs it was learned from.
-		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER",
+		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER", "runners ADD COLUMN est_blind INTEGER",
 		// limit_mem: the memory limit the OS held the runner to (NULL or 0 = none).
 		"runners ADD COLUMN limit_mem INTEGER",
 		// event: what triggered the job's run (push, schedule, …), for the priority rules.
@@ -249,19 +249,20 @@ type Runner struct {
 	EstCPUs                  float64 // what placement counts on for it (0 = a row from before estimates)
 	EstMem                   int64
 	EstRuns                  int
+	EstBlind                 bool      // placed on the class's first estimate with nothing measured of the job or its workflow
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
 }
 
 func (l *Ledger) InsertRunner(name, class, host string, at time.Time, est size.Estimate) error {
-	return l.exec(`INSERT INTO runners(name, class, host, state, created_at, est_cpus, est_mem, est_runs) VALUES(?,?,?,'starting',?,?,?,?)`,
-		name, class, host, ts(at), est.CPUs, est.MemBytes, est.Runs)
+	return l.exec(`INSERT INTO runners(name, class, host, state, created_at, est_cpus, est_mem, est_runs, est_blind) VALUES(?,?,?,'starting',?,?,?,?,?)`,
+		name, class, host, ts(at), est.CPUs, est.MemBytes, est.Runs, est.Blind)
 }
 
 // SetEstimate replaces what placement counts on for a runner: GitHub has
 // named its job, and it is not always the job the runner was started for.
 func (l *Ledger) SetEstimate(name string, est size.Estimate) error {
-	return l.exec(`UPDATE runners SET est_cpus=?, est_mem=?, est_runs=? WHERE name=?`, est.CPUs, est.MemBytes, est.Runs, name)
+	return l.exec(`UPDATE runners SET est_cpus=?, est_mem=?, est_runs=?, est_blind=? WHERE name=?`, est.CPUs, est.MemBytes, est.Runs, est.Blind, name)
 }
 
 func (l *Ledger) SetRegistration(name string, runnerID int64, postedAt time.Time) error {
@@ -394,7 +395,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
   COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0),
-  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0)`
+  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0), COALESCE(est_blind,0)`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -408,7 +409,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
 			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak,
-			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns); err != nil {
+			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns, &r.EstBlind); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -732,12 +733,22 @@ const workflowFile = `CASE WHEN instr(COALESCE(workflow,''),'@')>0 THEN substr(w
 // too much and are left out. A run that lost a process at its memory limit
 // needed more than the limit, whatever the samples caught of it before.
 func (l *Ledger) JobRuns(k JobKey, limit int) ([]size.Sample, error) {
+	return l.runs(`AND job=?`, limit, k.Repo, k.Workflow, k.Job)
+}
+
+// WorkflowRuns are the newest measured runs of any job of a workflow: what a
+// job of it that has never run is sized by.
+func (l *Ledger) WorkflowRuns(repo, workflow string, limit int) ([]size.Sample, error) {
+	return l.runs(``, limit, repo, workflow)
+}
+
+func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, error) {
 	rows, err := l.db.Query(`SELECT COALESCE(cpu_sec,0),
 	    MAX(mem_work_peak, CASE WHEN COALESCE(oom_kills,0) > 0 THEN COALESCE(limit_mem,0) ELSE 0 END), COALESCE(oom_kills,0),
 	    COALESCE((julianday(COALESCE(finished_at, removed_at))-julianday(started_at))*86400, 0)
-	  FROM runners WHERE repo=? AND job=? AND `+workflowFile+`=? AND started_at IS NOT NULL
+	  FROM runners WHERE repo=? AND `+workflowFile+`=? `+andJob+` AND started_at IS NOT NULL
 	    AND mem_work_peak > 0 AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
-	  ORDER BY started_at DESC LIMIT ?`, k.Repo, k.Job, k.Workflow, limit)
+	  ORDER BY started_at DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
