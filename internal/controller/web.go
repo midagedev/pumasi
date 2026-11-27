@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -11,36 +12,110 @@ import (
 	"github.com/midagedev/pumasi/internal/ledger"
 )
 
-// The dashboard: three static files, no build step, nothing fetched from elsewhere.
+// The dashboard: static files, no build step, nothing fetched from elsewhere.
 //
 //go:embed web
 var webFiles embed.FS
 
-// webHandler serves the dashboard and its read-only JSON on the status listener.
-func (c *Controller) webHandler() http.Handler {
+// dashSource is where the dashboard's data comes from: the running
+// controller, or the demo's simulated one. One is made per request, so the
+// demo can answer for the moment the request asks about.
+type dashSource interface {
+	live() Status
+	state() (State, error)
+	jobs() ([]ledger.FinishedJob, error)
+	job(runner string) ([]ledger.Decision, string, error)
+	series() (Series, error)
+	url() string
+	demo() bool
+	now() time.Time
+	// priority: the priority controls beyond the config (nil = none here).
+	priority() *PriorityView
+	// apis: the /api routes this server answers beyond /api/live, so the page
+	// asks only for what is there.
+	apis() []string
+}
+
+// webMux serves the dashboard and its read-only JSON.
+func webMux(src func(*http.Request) dashSource) *http.ServeMux {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServerFS(static))
-	mux.HandleFunc("GET /api/live", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, c.liveStatus()) })
-	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, _ *http.Request) {
-		st, err := CollectState(c.cfg, c.ledger, c.liveStatus(), true, c.now())
+	mux.HandleFunc("GET /api/live", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, src(r).live()) })
+	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
+		s := src(r)
+		st, err := s.state()
 		reply(w, struct {
 			State
-			URL string `json:"url"`
-		}{st, c.cfg.URL}, err)
+			URL  string   `json:"url"`
+			Demo bool     `json:"demo,omitempty"`
+			API  []string `json:"api"`
+		}{st, s.url(), s.demo(), s.apis()}, err)
 	})
-	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, _ *http.Request) {
-		jobs, err := c.ledger.RecentJobs(50)
+	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
+		jobs, err := src(r).jobs()
 		reply(w, jobs, err)
 	})
 	mux.HandleFunc("GET /api/job", func(w http.ResponseWriter, r *http.Request) {
-		ds, tail, err := c.ledger.RunnerHistory(r.URL.Query().Get("runner"))
+		ds, tail, err := src(r).job(r.URL.Query().Get("runner"))
 		reply(w, map[string]any{"decisions": ds, "logTail": tail}, err)
 	})
-	mux.HandleFunc("GET /api/series", func(w http.ResponseWriter, _ *http.Request) {
-		s, err := c.series(c.now())
+	mux.HandleFunc("GET /api/series", func(w http.ResponseWriter, r *http.Request) {
+		s, err := src(r).series()
 		reply(w, s, err)
 	})
+	// What the dashboard shows, as a report a person or an agent reads without
+	// the picture: the problems, the line and why, and what to type next.
+	mux.HandleFunc("GET /api/explain", func(w http.ResponseWriter, r *http.Request) {
+		s := src(r)
+		st, err := s.state()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		now, pv := s.now(), s.priority()
+		fs := Explain(st, pv, now)
+		if r.URL.Query().Get("format") == "json" {
+			writeJSON(w, struct {
+				At         time.Time `json:"at"`
+				Controller bool      `json:"controller"`
+				Demo       bool      `json:"demo"`
+				Findings   []Finding `json:"findings"`
+			}{now, st.Controller, s.demo(), append([]Finding{}, fs...)})
+			return
+		}
+		var b bytes.Buffer
+		WriteExplain(&b, st, fs, pv, s.url(), s.demo(), now)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(b.Bytes())
+	})
+	return mux
+}
+
+// ctlSource is the running controller.
+type ctlSource struct{ c *Controller }
+
+func (s ctlSource) live() Status { return s.c.liveStatus() }
+func (s ctlSource) state() (State, error) {
+	return CollectState(s.c.cfg, s.c.ledger, s.c.liveStatus(), true, s.c.now())
+}
+func (s ctlSource) jobs() ([]ledger.FinishedJob, error) { return s.c.ledger.RecentJobs(50) }
+func (s ctlSource) job(runner string) ([]ledger.Decision, string, error) {
+	return s.c.ledger.RunnerHistory(runner)
+}
+func (s ctlSource) series() (Series, error) { return s.c.series(s.c.now()) }
+func (s ctlSource) url() string             { return s.c.cfg.URL }
+func (s ctlSource) demo() bool              { return false }
+func (s ctlSource) now() time.Time          { return s.c.now() }
+func (s ctlSource) priority() *PriorityView { return nil }
+func (s ctlSource) apis() []string {
+	return []string{"state", "jobs", "job", "series", "explain", "metrics"}
+}
+
+// webHandler serves the dashboard, its JSON and /metrics on the status listener.
+func (c *Controller) webHandler() http.Handler {
+	mux := webMux(func(*http.Request) dashSource { return ctlSource{c} })
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")
 		if err := c.writeMetrics(w); err != nil {

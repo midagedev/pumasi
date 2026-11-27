@@ -3,6 +3,7 @@ package controller
 import (
 	"cmp"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/api"
@@ -29,6 +30,43 @@ type State struct {
 	RecentIncidents []ledger.Incident `json:"recentIncidents"`
 	// Sizes: what pumasi has learned of the jobs it ran, the most recent first.
 	Sizes []JobSize `json:"sizes"`
+	// Classes: the config's classes, in its order.
+	Classes []ClassState `json:"classes"`
+	// Limits: the lines the controller holds hosts and waiting jobs to.
+	Limits StateLimits `json:"limits"`
+}
+
+// ClassState is a class as the config gives it, defaults filled in.
+type ClassState struct {
+	Name     string   `json:"name"`
+	Labels   []string `json:"labels"` // what its jobs' runs-on must be among
+	OS       string   `json:"os"`
+	Driver   string   `json:"driver"`
+	Docker   string   `json:"docker,omitempty"`
+	Hosts    []string `json:"hosts,omitempty"`
+	Mounts   []string `json:"mounts,omitempty"`
+	Overflow bool     `json:"overflow,omitempty"`
+	After    string   `json:"after,omitempty"`
+	Reserve  int      `json:"reserve,omitempty"`
+	// The first estimate: what a job of the class never measured is placed with.
+	CPUs      float64 `json:"cpus"`
+	Memory    int64   `json:"memory"`
+	LimitCPUs float64 `json:"limitCpus,omitempty"`
+	LimitMem  int64   `json:"limitMem,omitempty"`
+	// MaxDurationSeconds: a job running longer is stopped (0 = never).
+	MaxDurationSeconds int64 `json:"maxDurationSeconds,omitempty"`
+}
+
+// StateLimits: a host over a pressure line or under diskMinFree takes no new
+// runners; a job waiting waitAlertSeconds is a problem; a high job counts as
+// having come priorityHeadStartSeconds earlier, a low one that much later.
+type StateLimits struct {
+	PSICPU                   float64 `json:"psiCpu"`
+	PSIMemory                float64 `json:"psiMemory"`
+	PSIIO                    float64 `json:"psiIo"`
+	DiskMinFree              float64 `json:"diskMinFree"`
+	WaitAlertSeconds         int64   `json:"waitAlertSeconds"`
+	PriorityHeadStartSeconds int64   `json:"priorityHeadStartSeconds"`
 }
 
 // JobSize is a job's size as placement uses it for its next run.
@@ -63,8 +101,16 @@ type HostState struct {
 	FreeMem  int64   `json:"freeMem"`
 	// CPU pressure (PSI some avg10, percent); nil when the agent did not answer.
 	CPUPressure *float64 `json:"cpuPressure"`
-	Runners     int      `json:"runners"`
-	Reachable   *bool    `json:"reachable"` // nil = unknown, no controller running
+	// Memory and disk pressure the same way; nil where the OS does not tell.
+	MemPressure *float64 `json:"memPressure"`
+	IOPressure  *float64 `json:"ioPressure"`
+	// What everything but the runners uses on the machine, and the memory kept
+	// free whatever the budget says. Zero without a running controller.
+	OtherCPUs float64 `json:"otherCpus"`
+	OtherMem  int64   `json:"otherMem"`
+	KeepMem   int64   `json:"keepMem"`
+	Runners   int     `json:"runners"`
+	Reachable *bool   `json:"reachable"` // nil = unknown, no controller running
 	// Closed: why the host, though reachable, gets no new runners ("quarantined", "disk 4% free").
 	Closed string `json:"closed"`
 	// Free share of the disk that holds the runners, in percent; nil when unknown.
@@ -97,6 +143,10 @@ type RunnerState struct {
 	// Watched: placed on a guess (nothing measured of the job or its workflow);
 	// it holds size.BlindHold times EstMem until its job has run size.Settle.
 	Watched bool `json:"watched,omitempty"`
+	// What placement counts the runner as holding of its host: its estimate
+	// (times the hold while watched), or what it uses now when that is more.
+	HeldCPUs float64 `json:"heldCpus"`
+	HeldMem  int64   `json:"heldMem"`
 	// The runner's number among its class's runners on the host ({slot}); 0 = not known.
 	Slot int `json:"slot"`
 }
@@ -114,6 +164,17 @@ type JobWait struct {
 	Reason string `json:"reason,omitempty"`
 	// LeftAt: when GitHub took it back (zero = it still waits).
 	LeftAt time.Time `json:"leftAt,omitzero"`
+	// Waiting jobs only: the priority level ("high", "low"; "" = normal; a
+	// source that lets people expedite a job may say "expedite"), the rule
+	// that gave it or the job it moves up with, and the job's place in the
+	// whole line (1 = next), as `pumasi priority` works it out.
+	Level    string `json:"level,omitempty"`
+	Ranked   string `json:"ranked,omitempty"`
+	Position int    `json:"position,omitempty"`
+	// Expedited by hand, and GitHub's id of the job: zero from this
+	// controller, which has neither yet.
+	Expedited   bool  `json:"expedited,omitempty"`
+	GithubJobID int64 `json:"githubJobId,omitempty"`
 }
 
 type WaitingState struct {
@@ -132,7 +193,9 @@ type WaitingState struct {
 // Without a controller it is the ledger alone.
 func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, now time.Time) (State, error) {
 	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{},
-		WaitingJobs: []JobWait{}, TakenBack: []JobWait{}, RecentIncidents: []ledger.Incident{}}
+		WaitingJobs: []JobWait{}, TakenBack: []JobWait{}, RecentIncidents: []ledger.Incident{}, Classes: classStates(cfg)}
+	out.Limits = StateLimits{PSICPU: cfg.PSICPUThreshold, PSIMemory: cfg.PSIMemThreshold, PSIIO: cfg.PSIIOThreshold, DiskMinFree: cfg.DiskMinFree,
+		WaitAlertSeconds: int64(cfg.WaitAlert.Seconds()), PriorityHeadStartSeconds: int64(cfg.PriorityHeadStart.Seconds())}
 	out.Controller = ok
 	out.Warnings = append([]string{}, live.Warnings...)
 	out.Overflow = append([]Overflow{}, live.Overflow...)
@@ -165,9 +228,14 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			}
 			if up {
 				hs.OS = cmp.Or(snap.OS, "linux")
-				if p, ok := snap.PSI["cpu"]; ok {
-					hs.CPUPressure = &p
+				psi := func(k string) *float64 {
+					if p, ok := snap.PSI[k]; ok {
+						return &p
+					}
+					return nil
 				}
+				hs.CPUPressure, hs.MemPressure, hs.IOPressure = psi("cpu"), psi("memory"), psi("io")
+				hs.OtherCPUs, hs.OtherMem, hs.KeepMem = snap.NonRunnerCPU, snap.NonRunnerMem, keepMem(snap.MemBytes)
 				hs.Closed = live.Closed[h.Name]
 				if snap.DiskTotal > 0 {
 					d := 100 * float64(snap.DiskFree) / float64(snap.DiskTotal)
@@ -194,13 +262,13 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			rs.CPUSec, rs.CPUNow, rs.MemBytes, rs.MemLimit, rs.Slot = a.CPUSec, a.CPUNow, cmp.Or(a.MemWork, a.MemCurrent), a.LimitMem, a.Slot
 		}
 		rs.Watched = size.Estimate{Blind: r.EstBlind}.Watched(r.StartedAt, now)
+		rs.HeldCPUs, rs.HeldMem = size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched)
 		out.Runners = append(out.Runners, rs)
 		if i, ok := hosts[r.Host]; ok {
 			h := &out.Hosts[i]
 			h.Runners++
-			cpus, mem := size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched)
-			h.UsedCPUs += cpus
-			h.UsedMem += mem
+			h.UsedCPUs += rs.HeldCPUs
+			h.UsedMem += rs.HeldMem
 		}
 	}
 	for i := range out.Hosts {
@@ -247,9 +315,12 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	for _, w := range live.Waiting {
 		reason[w.Class] = w.Reason
 	}
+	line := waitLine(cfg, open)
 	for _, d := range open {
 		j := wait(d)
 		j.WaitedSeconds, j.Reason = int64(now.Sub(d.FirstSeen).Seconds()), reason[d.Class]
+		lj := line[d.JobID]
+		j.Level, j.Ranked, j.Position = levelName(lj.Level), lj.Ranked, lj.place
 		out.WaitingJobs = append(out.WaitingJobs, j)
 	}
 	back, err := l.TakenBack(now.Add(-time.Hour))
@@ -284,4 +355,48 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		out.Waiting[i].Jobs++
 	}
 	return out, nil
+}
+
+func classStates(cfg *config.Config) []ClassState {
+	out := []ClassState{}
+	for _, cl := range cfg.Classes {
+		os, driver, _ := strings.Cut(cl.Platform(), "/")
+		out = append(out, ClassState{Name: cl.Name, Labels: cl.RunsOn(), OS: os, Driver: driver, Docker: cl.Docker,
+			Hosts: cl.Hosts, Mounts: cl.Mounts, Overflow: cl.Overflow, After: cl.After, Reserve: cl.Reserve,
+			CPUs: cmp.Or(cl.CPUs, config.DefaultCPUs), Memory: cmp.Or(int64(cl.Memory), config.DefaultMemory),
+			LimitCPUs: cl.Limit.CPUs, LimitMem: int64(cl.Limit.Memory), MaxDurationSeconds: int64(cl.MaxDuration.Seconds())})
+	}
+	return out
+}
+
+type lineJob struct {
+	decide.Demand
+	place int
+}
+
+// waitLine is each open job's place in the whole line by the config's
+// priority rules, as `pumasi priority` shows it. Jobs a runner is already
+// coming up for are still in it: only a running controller knows which.
+func waitLine(cfg *config.Config, open []ledger.Demand) map[string]lineJob {
+	var ds []decide.Demand
+	for _, d := range open {
+		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen, Name: d.Job}
+		dd.Level, dd.Ranked = cfg.LevelOf(config.WaitingJob{Class: d.Class, Repo: d.Repo, WorkflowRef: d.Workflow, Name: d.Job, Event: d.Event})
+		ds = append(ds, dd)
+	}
+	out := map[string]lineJob{}
+	for i, d := range decide.Line(ds, nil, cfg.PriorityHeadStart) {
+		out[d.ID] = lineJob{d, i + 1}
+	}
+	return out
+}
+
+func levelName(l int) string {
+	switch {
+	case l > 0:
+		return "high"
+	case l < 0:
+		return "low"
+	}
+	return ""
 }
