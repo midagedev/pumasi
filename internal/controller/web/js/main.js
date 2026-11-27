@@ -184,7 +184,7 @@ function fit(instant) {
   let z = Math.min((view.w - padL - padR) / (x1 - x0), (view.h - padT - padB) / (y1 - y0));
   // a tall phone: the plant is a diagonal band, so fitting its width leaves most of
   // the screen empty. Come closer (the ends are a drag away) so the halls read.
-  if (view.h > view.w * 1.3) z *= 1.6;
+  if (view.h > view.w * 1.3) z *= 2.1;
   z = clamp(z, 0.18, 1.6);
   const target = { x: (x0 + x1) / 2 - (padL - padR) / 2 / z, y: (y0 + y1) / 2 - (padT - padB) / 2 / z, z };
   if (instant || !ui.motion) Object.assign(view.cam, target);

@@ -29,7 +29,7 @@ export const THEMES = {
     floor: [196, 198, 194], floorAmp: 10, seam: "rgba(0,0,0,0.14)",
     wall: [176, 182, 190], steel: [150, 158, 168], dark: [92, 98, 106],
     belt: [58, 62, 68], rail: [170, 176, 184],
-    paint: [214, 160, 20], hazard: [220, 168, 30],
+    paint: [168, 118, 6], hazard: [220, 168, 30],
     free: [150, 196, 168], keep: [210, 190, 120], others: [160, 160, 166], unlent: [92, 96, 102], unknown: [170, 174, 178],
     crate: [204, 162, 104], hot: [220, 60, 40], warm: [232, 140, 40],
     ok: [30, 160, 90], warn: [210, 140, 10], bad: [220, 50, 50], off: [130, 136, 144],
@@ -976,9 +976,13 @@ export class Scene {
       if (narrow && !ww && !l.ov && !isSel("class", l.name)) continue;
       let sub = ww ? `${ww.jobs} waiting · #${ww.order || "-"} in line` : "nothing waiting";
       if (l.ov) sub = `overflow · takes ${l.ov.take} · holds ${l.ov.held}` + (ww ? ` · ${ww.jobs} waiting` : "");
-      const [sx, sy] = v.P(l.x0 + 0.5, l.y1 - 0.4, 0.9);
+      // on the dock roof, past the belt's end: a long queue is not covered by its name
+      const [sx, sy] = v.P(l.x0 + 0.5, l.y1 + 0.9, 1.0);
       tags.push({ x: sx, y: sy, title: l.name, sub, dot: l.cls.color, kind: "class", id: l.name, sel: isSel("class", l.name), prio: isSel("class", l.name) ? 0 : 3 });
-      if (ww && ww.reason && z > 0.3) {
+      // the front crate says why it waits; from afar only the line that is next
+      // (or one waiting too long, or the selected one) says it
+      const speaks = z > 0.75 || (ww && (ww.order === 1 || ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600))) || isSel("class", l.name);
+      if (ww && ww.reason && z > 0.3 && speaks) {
         const front = [...w.crates.values()].find((c) => c.mode === "queue" && c.line === l && c.idx === 0);
         const at = front && front.top ? v.P(...front.top) : v.P(l.x0 + 0.5, l.y0 + 0.7, 1);
         tags.push({ x: at[0], y: at[1] - 6, bubble: shortReason(ww.reason), hot: ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600), kind: "class", id: l.name, prio: 2 });
