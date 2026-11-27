@@ -107,23 +107,6 @@ function splitTop(s) {
   return out;
 }
 
-// shortReason: what fits in a speech bubble.
-export function shortReason(reason) {
-  const p = parseReason(reason);
-  if (!p && /^high-only mode/.test(reason || "")) return "held at the gate: high-only mode";
-  if (!p) return clip(reason || "", 52);
-  const open = p.hosts.filter((h) => !h.closed);
-  open.sort((a, b) => b.mem - a.mem);
-  const best = open[0];
-  let s = `needs ${p.needCpu}cpu/${p.needMem}G`;
-  if (best) {
-    const short = best.short.mem > 0 ? `${best.mem}G free` : best.short.cpu > 0 ? `${best.cpu}cpu free` : "room soon";
-    s += ` · ${best.name} has ${short}`;
-  } else if (p.hosts.length) s += " · " + p.hosts[0].name + " " + p.hosts[0].note;
-  return s;
-}
-
-export const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 export const osBadge = (os) => ({ macos: "MAC", windows: "WIN", linux: "LNX" })[os] || "LNX";
 
@@ -170,7 +153,7 @@ export function hostLoad(h) {
 // (setLive), so the sentence and the card never disagree.
 let live = new Map();
 export const setLive = (hosts) => { live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, h])); };
-export function plainReason(reason, short = false) {
+export function plainReason(reason) {
   const r = reason || "";
   if (!r) return "a runner is starting for it";
   if (/^(high-only mode|mode high-only)/.test(r)) return "held: high-only mode is on, only high and expedited jobs start";
@@ -182,12 +165,13 @@ export function plainReason(reason, short = false) {
     if (now) { h.cpu = +(now.freeCpus || 0).toFixed(1); h.mem = +((now.freeMem || 0) / GiB).toFixed(1); }
   }
   const shut = p.hosts.filter((h) => h.closed).map((h) => `${h.name} ${plainNote(h.note)}`);
-  const tail = shut.length && !short ? `; ${shut.join(", ")}` : "";
+  // a host that is closed or reserved is often the whole story: always said
+  const tail = shut.length ? `; ${shut.join("; ")}` : "";
   if (!open.length) return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; no host takes jobs now${tail}`;
   const memOK = open.filter((h) => h.mem >= p.needMem);
   if (!memOK.length) {
     const best = open.slice().sort((a, b) => b.mem - a.mem)[0];
-    return `needs ${gbn(p.needMem)} memory, the most free is ${gbn(best.mem)} (${best.name})${tail}`;
+    return `needs ${gbn(p.needMem)} memory, the most free${shut.length ? " elsewhere" : ""} is ${gbn(best.mem)} (${best.name})${tail}`;
   }
   const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
   if (best.cpu < p.needCpu) return `needs ${cpus(p.needCpu)}, ${best.name} has the memory but only ${cpus(best.cpu)} free${tail}`;

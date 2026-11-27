@@ -979,7 +979,7 @@ export class Scene {
       const h = hall.h || {};
       if (hall.siloAt && h.diskFreePct !== null && h.diskFreePct !== undefined && h.diskFreePct < (((w.state || {}).limits || {}).diskMinFree || 10) + 5) {
         const [dx, dy] = v.P(...hall.siloAt);
-        tags.push({ x: dx, y: dy - 4, title: `${hall.name}: disk ${h.diskFreePct.toFixed(0)}% free${h.diskPath ? " on " + h.diskPath : ""}`, dot: th.bad, small: true, kind: "host", id: hall.name, prio: 2 });
+        tags.push({ x: dx, y: dy - 4, title: `${hall.name}: disk ${h.diskFreePct.toFixed(0)}% free${h.diskPath ? " on " + h.diskPath : ""}`, dot: th.bad, small: true, kind: "host", id: hall.name, prio: 3 });
       }
     }
     for (const l of w.lines) {
@@ -996,7 +996,7 @@ export class Scene {
       if (ww && ww.reason && z > 0.3 && speaks) {
         const front = [...w.crates.values()].find((c) => c.mode === "queue" && c.line === l && c.idx === 0);
         const at = front && front.top ? v.P(...front.top) : v.P(l.x0 + 0.5, l.y0 + 0.7, 1);
-        tags.push({ x: at[0], y: at[1] - 6, bubble: plainReason(ww.reason, true), hot: ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600), kind: "class", id: l.name, prio: 2 });
+        tags.push({ x: at[0], y: at[1] - 6, bubble: plainReason(ww.reason), hot: ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600), kind: "class", id: l.name, prio: 2 });
       }
       if (l.extra > 0 && l.pileAt) {
         const [px, py] = v.P(...l.pileAt);
@@ -1070,7 +1070,20 @@ export class Scene {
     if (tg.card) return this.cardBox(tg);
     if (tg.bubble) {
       ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
-      const w = Math.min(470, ctx.measureText(tg.bubble).width + 18), h = 24;
+      // a long reason goes on two lines, broken at its clause nearest the middle
+      if (!tg.blines) {
+        const s = tg.bubble;
+        tg.blines = [s];
+        if (ctx.measureText(s).width > 400) {
+          let best = -1;
+          for (const sep of ["; ", ", ", " "]) {
+            for (let i = s.indexOf(sep); i > 0; i = s.indexOf(sep, i + 1)) if (best < 0 || Math.abs(i - s.length / 2) < Math.abs(best - s.length / 2)) best = i + sep.length - 1;
+            if (best > s.length * 0.25 && best < s.length * 0.75) break;
+          }
+          if (best > 0) tg.blines = [s.slice(0, best).trim(), s.slice(best).trim()];
+        }
+      }
+      const w = Math.min(560, Math.max(...tg.blines.map((l) => ctx.measureText(l).width)) + 18), h = 8 + 16 * tg.blines.length;
       return { x0: tg.x - w / 2, y0: tg.y - h - 8, x1: tg.x + w / 2, y1: tg.y, w, h };
     }
     const big = tg.big, small = tg.small, mid = tg.mid;
@@ -1234,7 +1247,7 @@ export class Scene {
       ctx.fillStyle = tg.hot ? "#fff" : "#1a1d22";
       ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
       ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-      ctx.fillText(tg.bubble, x + 9, y + h / 2 + 0.5);
+      tg.blines.forEach((l, i) => ctx.fillText(l, x + 9, y + 12.5 + 16 * i));
       ctx.restore();
       this.hits.push({ kind: tg.kind, id: tg.id, x0: x, y0: y, x1: x + w, y1: y + h, z: 9 });
       return;

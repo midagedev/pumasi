@@ -135,16 +135,15 @@ export function renderChrome(onSelect) {
   // jobs a runner is already starting for: one line, so what really waits stands out
   const going = jobs.filter((j) => j._go), held = jobs.filter((j) => !j._go);
   const show = held.slice(0, 7);
-  $("index-waiting").replaceChildren(...(going.length ? [el("li", { class: "go starting" }, el("span", {}, el("b", { text: "Starting now: " }), going.map((j) => j.job || "a job").join(", ")))] : []), ...show.map((j) => {
+  $("index-waiting").replaceChildren(...(going.length ? [el("li", { class: "go starting" }, el("span", {}, el("b", { text: "Starting now: " }), going.map((j) => j.job || "a job").join(", ")))] : []), ...show.map((j, i) => {
     const lw = levelWord(j);
-    const go = false;
-    return el("li", { class: go ? "go" : j.waitedSeconds > alert ? "hot" : "" },
+    return el("li", { class: j.waitedSeconds > alert ? "hot" : "" },
       el("button", { type: "button", class: "wj", "data-job-id": j.githubJobId || null, "data-run-id": j.runId || null, "data-class": j.class,
         "aria-current": sel.kind === "job" && sel.id === jobKey(j) ? "true" : "false", onclick: () => onSelect({ kind: "job", id: jobKey(j) }) },
-      el("span", { class: "pos", text: j.position || "-" }),
+      el("span", { class: "pos", text: i + 1, title: j.position ? ordinal(j.position) + " in the whole line, counting jobs already starting" : null }),
       el("span", { class: "jn" }, lw ? el("span", { class: "lvl " + (lw === "expedited" ? "expedite" : lw), text: lw }) : null, " ", j.job || "(name not known yet)"),
-      el("span", { class: "age", text: go ? "starting" : ago(j.waitedSeconds) }),
-      el("span", { class: "why", text: plainReason(j.reason, true) })),
+      el("span", { class: "age", text: ago(j.waitedSeconds) }),
+      el("span", { class: "why", text: plainReason(j.reason) })),
       j.expedited ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
   }), ...(held.length > show.length ? [el("li", { class: "more" }, el("button", { type: "button", onclick: () => onSelect({ kind: "priority" }) }, `+${held.length - show.length} more: open Priority`))] : []),
