@@ -29,7 +29,7 @@ type Stats struct {
 	// the number a job needs. Equal to MemCurrent where memory.stat is not there.
 	MemWork  uint64
 	IOBytes  uint64
-	OOMKills uint64 // memory.events oom_kill: processes killed at the memory limit
+	OOMKills uint64 // memory.events: processes killed at this cgroup's memory limit
 	// Some-stall totals in microseconds, keyed by cpu|memory|io.
 	Pressure map[string]uint64
 }
@@ -45,16 +45,29 @@ func ParseCPUStat(s string) (uint64, error) {
 	return 0, fmt.Errorf("cpu.stat: no usage_usec")
 }
 
-// ParseMemoryEvents returns oom_kill from memory.events (0 when absent).
+// ParseMemoryEvents returns the processes killed because this cgroup reached
+// its memory limit (0 when absent). oom_kill alone also counts a process the
+// kernel killed here when the whole host ran out, which says nothing of the
+// job's own need; oom counts the times this cgroup's own limit was reached,
+// and a kill is the job's only when there was one.
 func ParseMemoryEvents(s string) uint64 {
+	var oom, kills uint64
 	for _, line := range strings.Split(s, "\n") {
 		f := strings.Fields(line)
-		if len(f) == 2 && f[0] == "oom_kill" {
-			n, _ := strconv.ParseUint(f[1], 10, 64)
-			return n
+		if len(f) != 2 {
+			continue
+		}
+		switch f[0] {
+		case "oom":
+			oom, _ = strconv.ParseUint(f[1], 10, 64)
+		case "oom_kill":
+			kills, _ = strconv.ParseUint(f[1], 10, 64)
 		}
 	}
-	return 0
+	if oom == 0 {
+		return 0
+	}
+	return kills
 }
 
 // ParseUint parses single-value files such as memory.peak and memory.current.

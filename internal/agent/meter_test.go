@@ -26,7 +26,7 @@ func TestInnerDockerRunnerIsMeasuredAtTheContainer(t *testing.T) {
 	write(filepath.Join(scope, "cpu.stat"), "usage_usec 9000000\n")
 	write(filepath.Join(scope, "memory.current"), "1\n")
 	write(filepath.Join(scope, "memory.peak"), "1073741824\n")
-	write(filepath.Join(scope, "memory.events"), "oom_kill 1\n")
+	write(filepath.Join(scope, "memory.events"), "oom 1\noom_kill 1\n")
 	write(filepath.Join(scope, innerLeaf, "cpu.stat"), "usage_usec 1000000\n")
 	write(filepath.Join(scope, innerLeaf, "memory.current"), "1\n")
 	write(filepath.Join(scope, innerLeaf, "memory.peak"), "100\n")
