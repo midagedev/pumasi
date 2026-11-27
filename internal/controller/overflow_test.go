@@ -176,3 +176,39 @@ func TestNextSizeCountsJobsTheClassWasGivenButNeverRan(t *testing.T) {
 		t.Errorf("an unmeasured job of a measured workflow: next is %d, want at least 30G", n)
 	}
 }
+
+// The state names each waiting job, the jobs GitHub took back in the last
+// hour, and the problems that were resolved in the last day.
+func TestStateNamesWaitingAndTakenBackJobs(t *testing.T) {
+	l, err := ledger.Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	now := time.Date(2026, 11, 26, 1, 0, 0, 0, time.UTC)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := func(id, name string, run int64) ledger.Job {
+		return ledger.Job{ID: id, Class: "over", Repo: "o/r", Workflow: "o/r/.github/workflows/ci.yml@refs/heads/main", Name: name, RunID: run}
+	}
+	must(l.UpsertDemand(job("d1", "gate", 7), now.Add(-10*time.Minute)))
+	must(l.UpsertDemand(job("d2", "lint", 8), now.Add(-8*time.Minute)))
+	must(l.CloseDemand("d2", "unassigned-1", now.Add(-3*time.Minute)))
+	must(l.UpsertDemand(job("d3", "old", 9), now.Add(-3*time.Hour)))
+	must(l.CloseDemand("d3", "unassigned-2", now.Add(-2*time.Hour)))
+
+	live := Status{Waiting: []Waiting{{Class: "over", Jobs: 1, Reason: "no host with 4.0cpu/40.0G free"}}}
+	st, err := CollectState(&config.Config{}, l, live, true, now)
+	must(err)
+	if len(st.WaitingJobs) != 1 || st.WaitingJobs[0].Job != "gate" || st.WaitingJobs[0].WaitedSeconds != 600 ||
+		st.WaitingJobs[0].Reason != "no host with 4.0cpu/40.0G free" || st.WaitingJobs[0].Workflow != "ci.yml" || st.WaitingJobs[0].RunID != 7 {
+		t.Errorf("waiting jobs %+v", st.WaitingJobs)
+	}
+	if len(st.TakenBack) != 1 || st.TakenBack[0].Job != "lint" || st.TakenBack[0].WaitedSeconds != 300 || st.TakenBack[0].LeftAt.IsZero() {
+		t.Errorf("taken back %+v, want lint alone (the other left two hours ago)", st.TakenBack)
+	}
+}

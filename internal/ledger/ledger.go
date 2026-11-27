@@ -383,10 +383,15 @@ type Demand struct {
 	Event               string
 	RunID               int64
 	FirstSeen, LastSeen time.Time
+	ClosedAt            time.Time // zero while it is open
 }
 
 func (l *Ledger) OpenDemand() ([]Demand, error) {
-	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(event,''), COALESCE(run_id,0), first_seen, last_seen FROM demand WHERE closed_at IS NULL ORDER BY first_seen`)
+	return l.demand(`closed_at IS NULL ORDER BY first_seen`)
+}
+
+func (l *Ledger) demand(where string, args ...any) ([]Demand, error) {
+	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(event,''), COALESCE(run_id,0), first_seen, last_seen, closed_at FROM demand WHERE `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -394,11 +399,11 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 	var out []Demand
 	for rows.Next() {
 		var d Demand
-		var first, last sql.NullString
-		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.Event, &d.RunID, &first, &last); err != nil {
+		var first, last, closed sql.NullString
+		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.Event, &d.RunID, &first, &last, &closed); err != nil {
 			return nil, err
 		}
-		d.FirstSeen, d.LastSeen = parseTS(first), parseTS(last)
+		d.FirstSeen, d.LastSeen, d.ClosedAt = parseTS(first), parseTS(last), parseTS(closed)
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -531,6 +536,18 @@ func (l *Ledger) ResolveIncident(key string, at time.Time) (Incident, bool, erro
 }
 
 func (l *Ledger) OpenIncidents() ([]Incident, error) { return l.incidents(`resolved_at IS NULL`) }
+
+// ClosedIncidents are the incidents resolved since a moment, the oldest first.
+func (l *Ledger) ClosedIncidents(since time.Time) ([]Incident, error) {
+	return l.incidents(`resolved_at IS NOT NULL AND resolved_at >= ?`, ts(since))
+}
+
+// TakenBack are the jobs GitHub took back from their class before a runner
+// had them, since a moment: jobs the class gave back for want of room, and
+// jobs that were cancelled while they waited. Oldest first.
+func (l *Ledger) TakenBack(since time.Time) ([]Demand, error) {
+	return l.demand(`closed_at >= ? AND served_by LIKE 'unassigned-%' ORDER BY closed_at`, ts(since))
+}
 
 func (l *Ledger) incidents(where string, args ...any) ([]Incident, error) {
 	rows, err := l.db.Query(`SELECT key, kind, COALESCE(subject,''), opened_at, resolved_at, COALESCE(detail,''), COALESCE(action,'') FROM incidents WHERE `+where+` ORDER BY opened_at`, args...)

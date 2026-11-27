@@ -20,6 +20,13 @@ type State struct {
 	Hosts      []HostState       `json:"hosts"`
 	Runners    []RunnerState     `json:"runners"`
 	Waiting    []WaitingState    `json:"waiting"`
+	// WaitingJobs: each job that waits here, the oldest first, with its class's reason.
+	WaitingJobs []JobWait `json:"waitingJobs"`
+	// TakenBack: jobs GitHub took back before a runner had them, in the last
+	// hour: given back for want of room (they run elsewhere) or cancelled.
+	TakenBack []JobWait `json:"takenBack"`
+	// RecentIncidents: problems resolved in the last day, the oldest first.
+	RecentIncidents []ledger.Incident `json:"recentIncidents"`
 	// Sizes: what pumasi has learned of the jobs it ran, the most recent first.
 	Sizes []JobSize `json:"sizes"`
 }
@@ -94,6 +101,21 @@ type RunnerState struct {
 	Slot int `json:"slot"`
 }
 
+// JobWait is one job that waits for a runner, or that waited and left.
+type JobWait struct {
+	Class    string `json:"class"`
+	Repo     string `json:"repo"`
+	Workflow string `json:"workflow"` // the workflow file's name
+	Job      string `json:"job"`
+	RunID    int64  `json:"runId"`
+	// How long it has waited, or had when it left.
+	WaitedSeconds int64 `json:"waitedSeconds"`
+	// Reason: why its class's jobs wait ("" when it left, or nobody can say).
+	Reason string `json:"reason,omitempty"`
+	// LeftAt: when GitHub took it back (zero = it still waits).
+	LeftAt time.Time `json:"leftAt,omitzero"`
+}
+
 type WaitingState struct {
 	Class  string `json:"class"`
 	Jobs   int    `json:"jobs"`
@@ -109,7 +131,8 @@ type WaitingState struct {
 // CollectState joins the ledger with what a running controller knows (live, ok).
 // Without a controller it is the ledger alone.
 func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, now time.Time) (State, error) {
-	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{}}
+	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{},
+		WaitingJobs: []JobWait{}, TakenBack: []JobWait{}, RecentIncidents: []ledger.Incident{}}
 	out.Controller = ok
 	out.Warnings = append([]string{}, live.Warnings...)
 	out.Overflow = append([]Overflow{}, live.Overflow...)
@@ -217,6 +240,32 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		}
 		return 0
 	}
+	wait := func(d ledger.Demand) JobWait {
+		return JobWait{Class: d.Class, Repo: d.Repo, Workflow: path.Base(ledger.KeyOf(d.Repo, d.Workflow, "").Workflow), Job: d.Job, RunID: d.RunID}
+	}
+	reason := map[string]string{}
+	for _, w := range live.Waiting {
+		reason[w.Class] = w.Reason
+	}
+	for _, d := range open {
+		j := wait(d)
+		j.WaitedSeconds, j.Reason = int64(now.Sub(d.FirstSeen).Seconds()), reason[d.Class]
+		out.WaitingJobs = append(out.WaitingJobs, j)
+	}
+	back, err := l.TakenBack(now.Add(-time.Hour))
+	if err != nil {
+		return out, err
+	}
+	for _, d := range back {
+		j := wait(d)
+		j.WaitedSeconds, j.LeftAt = int64(d.ClosedAt.Sub(d.FirstSeen).Seconds()), d.ClosedAt
+		out.TakenBack = append(out.TakenBack, j)
+	}
+	closed, err := l.ClosedIncidents(now.Add(-24 * time.Hour))
+	if err != nil {
+		return out, err
+	}
+	out.RecentIncidents = append(out.RecentIncidents, closed...)
 	if ok {
 		for i, w := range live.Waiting {
 			out.Waiting = append(out.Waiting, WaitingState{Class: w.Class, Jobs: w.Jobs, Reason: w.Reason, Order: i + 1, Priority: w.Priority, OldestSeconds: oldest(w.Class)})
