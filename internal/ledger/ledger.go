@@ -103,7 +103,7 @@ func Open(path string) (*Ledger, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + opsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
@@ -386,6 +386,7 @@ type Demand struct {
 	RunID               int64
 	FirstSeen, LastSeen time.Time
 	ClosedAt            time.Time // zero while it is open
+	ServedBy            string    // what closed it: a runner, or "unassigned-…", "run-…", "ttl", "down"
 }
 
 func (l *Ledger) OpenDemand() ([]Demand, error) {
@@ -393,7 +394,7 @@ func (l *Ledger) OpenDemand() ([]Demand, error) {
 }
 
 func (l *Ledger) demand(where string, args ...any) ([]Demand, error) {
-	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(event,''), COALESCE(run_id,0), first_seen, last_seen, closed_at FROM demand WHERE `+where, args...)
+	rows, err := l.db.Query(`SELECT job_id, class, COALESCE(repo,''), COALESCE(workflow,''), COALESCE(job,''), COALESCE(event,''), COALESCE(run_id,0), first_seen, last_seen, closed_at, COALESCE(served_by,'') FROM demand WHERE `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +403,7 @@ func (l *Ledger) demand(where string, args ...any) ([]Demand, error) {
 	for rows.Next() {
 		var d Demand
 		var first, last, closed sql.NullString
-		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.Event, &d.RunID, &first, &last, &closed); err != nil {
+		if err := rows.Scan(&d.JobID, &d.Class, &d.Repo, &d.Workflow, &d.Job, &d.Event, &d.RunID, &first, &last, &closed, &d.ServedBy); err != nil {
 			return nil, err
 		}
 		d.FirstSeen, d.LastSeen, d.ClosedAt = parseTS(first), parseTS(last), parseTS(closed)
