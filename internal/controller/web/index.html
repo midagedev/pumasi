@@ -1,80 +1,93 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>pumasi</title>
+<meta name="description" content="pumasi: the runners, hosts and waiting jobs of one controller, drawn as a plant. Text for agents: /api/explain">
 <link rel="stylesheet" href="app.css">
+<script>
+  // the theme before the first paint: a choice made here before, else the system's
+  try { const t = localStorage.getItem("pumasi.theme"); if (t) document.documentElement.dataset.theme = t; else if (matchMedia("(prefers-color-scheme: light)").matches) document.documentElement.dataset.theme = "light"; } catch (e) {}
+</script>
 </head>
 <body>
-<header>
-  <h1>pumasi</h1>
-  <span id="url"></span>
-  <span id="updated"></span>
+<header id="bar">
+  <a class="brand" href="./" aria-label="pumasi home">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-5 9 5-9 5z" fill="currentColor" opacity=".9"/><path d="M3 9v6l9 5V14z" fill="currentColor" opacity=".55"/><path d="M21 9v6l-9 5V14z" fill="currentColor" opacity=".3"/></svg>
+    <span>pumasi</span>
+  </a>
+  <span id="where" class="where"></span>
+  <span id="demo" class="demo" hidden>demo</span>
+  <div id="counts" class="counts" role="status" aria-live="polite"></div>
+  <span id="updated" class="updated">connecting…</span>
+  <div class="tools" role="toolbar" aria-label="View">
+    <div class="seg" role="group" aria-label="Map or list">
+      <button id="view-map" type="button" aria-pressed="true" data-view="map">Map</button>
+      <button id="view-list" type="button" aria-pressed="false" data-view="list">List</button>
+    </div>
+    <button id="prio" type="button" aria-pressed="false" title="The line: who gets room next and why; expedite a job; rules">Priority</button>
+    <button id="mode" type="button" title="Operating mode">Mode</button>
+    <button id="explain" type="button" title="What is wrong and what to type (also at api/explain)">Explain</button>
+    <button id="motion" type="button" aria-pressed="true" title="Motion on or off">Motion</button>
+    <button id="theme" type="button" title="Dark or light">Theme</button>
+  </div>
 </header>
 
-<main>
-  <section id="problems" hidden>
-    <h2>Problems</h2>
-    <ul id="problem-list"></ul>
-  </section>
+<div id="stage">
+  <canvas id="scene" role="img" aria-label="The plant: hosts as halls, classes as lines, jobs as crates"></canvas>
+  <div id="offline" hidden>controller not answering: showing the last read</div>
+  <div id="mode-banner" role="status" hidden></div>
 
-  <section id="warnings" hidden>
-    <h2>Warnings</h2>
-    <ul id="warning-list"></ul>
-  </section>
+  <nav id="index" class="panelish" aria-label="Hosts and lines">
+    <button id="index-toggle" type="button" aria-expanded="true" aria-controls="index-body">Index</button>
+    <div id="index-body">
+      <h2>Hosts</h2>
+      <ul id="index-hosts"></ul>
+      <h2>Lines</h2>
+      <ul id="index-lines"></ul>
+    </div>
+  </nav>
 
-  <section>
-    <h2>Hosts</h2>
-    <div class="scroll"><table id="hosts">
-      <thead><tr><th>Host</th><th class="opt">Kind</th><th class="opt">OS</th><th>CPUs held</th><th>Memory held</th><th class="num">Free now</th><th class="opt">Lends</th><th class="num opt">CPU pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th>State</th><th class="num opt">Seen</th><th class="num opt">RTT</th><th class="opt">Agent</th><th class="opt">Last drop</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
+  <aside id="alarms" class="panelish" aria-label="Problems" hidden>
+    <h2><span class="lamp"></span><span id="alarm-title">Problems</span></h2>
+    <ul id="alarm-list"></ul>
+  </aside>
 
-  <section>
-    <h2>Runners</h2>
-    <p class="empty" id="runners-empty" hidden>no runners</p>
-    <div class="scroll"><table id="runners">
-      <thead><tr><th>Runner</th><th class="opt">Class</th><th>Host</th><th class="num opt">Slot</th><th>State</th><th>Job</th><th class="num opt">Age</th><th class="num opt">CPU</th><th class="num">Cores now/est</th><th>Memory now/est</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
+  <aside id="panel" class="panelish" aria-label="Details" hidden>
+    <button id="panel-close" type="button" aria-label="Close details">×</button>
+    <div id="panel-body" aria-live="polite"></div>
+  </aside>
 
-  <section>
-    <h2>Waiting</h2>
-    <p class="empty" id="waiting-empty" hidden>no jobs waiting</p>
-    <div class="scroll"><table id="waiting">
-      <thead><tr><th>Class</th><th class="num">Jobs</th><th class="num">Oldest</th><th>Line</th><th>Why</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
+  <div id="hud-bottom">
+    <div id="minimap" class="panelish" title="Click to move the view"><canvas width="220" height="124" aria-label="Overview of the plant"></canvas></div>
+    <div id="timeline" class="panelish" aria-label="Last 24 hours: jobs waiting and problems">
+      <div class="tl-head"><span>last 24h</span><span id="tl-legend"></span></div>
+      <svg id="tl-svg" viewBox="0 0 480 64" preserveAspectRatio="none"></svg>
+    </div>
+    <div id="zoom" role="group" aria-label="Zoom">
+      <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
+      <button type="button" data-zoom="out" aria-label="Zoom out">−</button>
+      <button type="button" data-zoom="fit" aria-label="Show everything">⤢</button>
+    </div>
+  </div>
+  <div id="tip" role="tooltip" hidden></div>
+</div>
 
-  <section>
-    <h2>Job sizes</h2>
-    <p class="empty" id="sizes-empty" hidden>no measured job yet: a job never seen starts from its class's first estimate</p>
-    <div class="scroll"><table id="sizes">
-      <thead><tr><th>Job</th><th class="opt">Workflow</th><th class="num">Next run placed with</th><th class="num">Last run used</th><th class="num opt">Largest of last runs</th><th class="num">Runs</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
-
-  <section>
-    <h2>Recent jobs</h2>
-    <p class="empty" id="jobs-empty" hidden>no finished jobs yet</p>
-    <div class="scroll"><table id="jobs">
-      <thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num opt">Waited</th><th class="num">Ran</th><th class="num opt">CPU</th><th class="num">Memory peak / estimate</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <button id="jobs-more" type="button" hidden></button>
-  </section>
-
-  <section>
-    <h2>Last 24 hours</h2>
-    <div id="charts"></div>
-  </section>
+<main id="list" hidden>
+  <section id="l-attention"><h2>Needs attention</h2><div id="l-findings"></div></section>
+  <section><h2>Line <small>who gets room next</small></h2><div class="scroll"><table id="l-line"><thead><tr><th>Line</th><th>Class</th><th class="num">Jobs</th><th class="num">Oldest</th><th>Why it waits</th></tr></thead><tbody></tbody></table></div><p class="empty" id="l-line-empty" hidden>no jobs waiting</p></section>
+  <section><h2>Waiting jobs</h2><div class="scroll"><table id="l-jobs"><thead><tr><th class="num">#</th><th>Job</th><th>Class</th><th>Level</th><th class="num">Waited</th><th class="opt">Workflow</th><th class="opt">Run</th></tr></thead><tbody></tbody></table></div></section>
+  <section><h2>Hosts</h2><div class="scroll"><table id="l-hosts"><thead><tr><th>Host</th><th>State</th><th class="opt">Kind</th><th class="opt">OS</th><th>Memory held / free / others</th><th>CPU held / free</th><th class="num opt">Pressure</th><th class="num opt">Disk free</th><th class="num">Runners</th><th class="num opt">Seen</th><th class="opt">Last drop</th></tr></thead><tbody></tbody></table></div></section>
+  <section><h2>Runners</h2><div class="scroll"><table id="l-runners"><thead><tr><th>Runner</th><th>Class</th><th>Host</th><th>State</th><th>Job</th><th class="num">CPU now / held</th><th>Memory now / held</th><th class="num opt">Age</th></tr></thead><tbody></tbody></table></div><p class="empty" id="l-runners-empty" hidden>no runners</p></section>
+  <section><h2>Overflow</h2><div class="scroll"><table id="l-overflow"><thead><tr><th>Class</th><th class="num">Takes</th><th class="num">Holds</th><th>After</th><th class="num">Given back (1h)</th></tr></thead><tbody></tbody></table></div><p class="empty" id="l-overflow-empty" hidden>no overflow classes</p></section>
+  <section><h2>Recent jobs</h2><div class="scroll"><table id="l-recent"><thead><tr><th>Finished</th><th>Job</th><th>Result</th><th class="opt">Class</th><th>Host</th><th class="num opt">Waited</th><th class="num">Ran</th><th class="num">Memory peak / estimate</th></tr></thead><tbody></tbody></table></div><button id="recent-more" type="button" class="link" hidden></button></section>
+  <section><h2>Job sizes</h2><div class="scroll"><table id="l-sizes"><thead><tr><th>Job</th><th class="opt">Workflow</th><th class="num">Next run placed with</th><th class="num">Last run used</th><th class="num opt">Largest of last runs</th><th class="num">Runs</th></tr></thead><tbody></tbody></table></div></section>
+  <section><h2>Problems <small>open, and resolved in the last day</small></h2><ul id="l-incidents" class="incidents"></ul></section>
+  <section><h2>Last 24 hours</h2><div id="charts"></div></section>
+  <section><h2>As text <small>GET api/explain</small></h2><pre id="l-explain" class="explain"></pre></section>
 </main>
 
-<script src="app.js"></script>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>
