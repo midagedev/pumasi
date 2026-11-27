@@ -1,5 +1,9 @@
 # pumasi
 
+[![대시보드: 호스트는 공장 건물(바닥이 메모리), 클래스는 라인, 기다리는 잡은 상자](docs/img/dashboard-dark.webp)](docs/guide.md#대시보드)
+
+<sub>`pumasi open --demo` 의 한 장면. 건물 바닥은 그 호스트의 메모리이고, 기계(러너)는 자기가 잡은 만큼의 바닥에 선다. 라인 위의 상자는 기다리는 잡이며, 맨 앞 상자가 왜 못 들어가는지 말한다.</sub>
+
 **Kubernetes 없이, 이미 가진 머신들에, GitHub 의 공식 경로(runner scale set)로 일회용 Actions 러너를 띄운다.**
 잡의 크기는 pumasi 가 재서 놓는다 — 사람이 CPU·메모리 숫자를 적거나 고치지 않는다.
 
@@ -147,7 +151,7 @@ smoke     e2e.yml   0.4cpu/3.7G  0.2cpu/3.0G  0.3cpu/3.1G  10
 | 조금씩 옮기기 | `overflow: true` 인 클래스는 받을 수 있는 만큼만 받고, 넘치는 잡은 같은 라벨의 고정 러너·다른 클래스로 흐른다 | [overflow](docs/guide.md#받을-수-있는-만큼만-받기-overflow) |
 | 사람 우선 | 데스크톱은 서버가 찬 뒤에 쓰고, 누가 쓰는 동안(입력 15분 안)에는 새 러너를 받지 않는다 | [호스트 종류](docs/guide.md#호스트-종류와-사람-우선) |
 | 사건과 알림 | 러너가 죽음·호스트 끊김·메모리 한도·오래 기다림을 웹훅이나 명령으로. controller 가 없어진 것은 호스트가 알린다. `rerun: 1` 이면 우리 쪽 잘못으로 실패한 run 을 다시 돌린다 | [사건과 알림](docs/guide.md#사건과-알림) |
-| 대시보드 | `pumasi open` — 문제·호스트·러너·대기 사유·최근 잡·추이. `/metrics` 는 Prometheus | [대시보드](docs/guide.md#대시보드) |
+| 대시보드 | `pumasi open` — 공장 지도로 보는 호스트·라인·대기 사유·최근 잡·추이와 같은 내용의 표. `/api/explain` 은 문제와 다음 명령을 글로. `pumasi open --demo` 는 controller 없이 본다. `/metrics` 는 Prometheus | [대시보드](docs/guide.md#대시보드) |
 | 계속 켜 두기 | `pumasi service install` — 죽으면 다시 띄우고 재부팅 뒤에도 올라온다(Linux·macOS) | [서비스](docs/guide.md#controller-를-계속-켜-두기) |
 | GitHub 자격 | 토큰 또는 GitHub App. 레포 단위면 Administration: Read and write 면 된다 | [GitHub 자격](docs/guide.md#github-자격) |
 

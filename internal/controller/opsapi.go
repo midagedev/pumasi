@@ -99,10 +99,18 @@ func (c *Controller) cfgSnapshot() *config.Config {
 // write serves a request that changes something: it checks who asks and
 // answers JSON, a refusal as {"ok": false, "error": "..."}.
 func (c *Controller) write(h func(r *http.Request, by string) (any, error)) http.HandlerFunc {
+	return serveWrite(func(r *http.Request) (int, string) { return mayWrite(c.cfg, r) }, h)
+}
+
+// serveWrite is write with may as the check of who asks (nil = anyone: the
+// demo, whose writes change only its simulation).
+func serveWrite(may func(*http.Request) (int, string), h func(r *http.Request, by string) (any, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if code, why := mayWrite(c.cfg, r); code != 0 {
-			writeError(w, code, why)
-			return
+		if may != nil {
+			if code, why := may(r); code != 0 {
+				writeError(w, code, why)
+				return
+			}
 		}
 		// A page elsewhere can make a browser send a form here, but not JSON:
 		// that needs a preflight this server never answers.

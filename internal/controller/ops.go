@@ -83,20 +83,14 @@ func (c *Controller) saveMode(m Mode, now time.Time) error {
 
 // setMode switches the mode. for is how long a mode other than normal lasts.
 func (c *Controller) setMode(name string, forDur time.Duration, by string, now time.Time) (Mode, error) {
+	lasts, err := modeFor(name, forDur)
+	if err != nil {
+		return Mode{}, err
+	}
 	m := Mode{Name: name, By: by, At: &now}
-	switch name {
-	case ModeNormal:
-	case ModeHighOnly:
-		if forDur == 0 {
-			forDur = modeDefaultFor
-		}
-		if forDur < time.Minute || forDur > modeMaxFor {
-			return Mode{}, opsErr(http.StatusBadRequest, "for: between 1m and %s", modeMaxFor)
-		}
-		until := now.Add(forDur)
+	if lasts > 0 {
+		until := now.Add(lasts)
 		m.Until = &until
-	default:
-		return Mode{}, opsErr(http.StatusBadRequest, "mode %q: normal or %s", name, ModeHighOnly)
 	}
 	if err := c.saveMode(m, now); err != nil {
 		return Mode{}, err
@@ -109,6 +103,24 @@ func (c *Controller) setMode(name string, forDur time.Duration, by string, now t
 	c.decision(now, "", "", "mode", "", words+" by "+by)
 	c.kickRound()
 	return m, nil
+}
+
+// modeFor checks a switch of the mode and says how long the mode lasts
+// (0 = until it is switched again).
+func modeFor(name string, forDur time.Duration) (time.Duration, error) {
+	switch name {
+	case ModeNormal:
+		return 0, nil
+	case ModeHighOnly:
+		if forDur == 0 {
+			forDur = modeDefaultFor
+		}
+		if forDur < time.Minute || forDur > modeMaxFor {
+			return 0, opsErr(http.StatusBadRequest, "for: between 1m and %s", modeMaxFor)
+		}
+		return forDur, nil
+	}
+	return 0, opsErr(http.StatusBadRequest, "mode %q: normal or %s", name, ModeHighOnly)
 }
 
 // modeReason is what a job held back by the mode waits for ("" = nothing holds it back).
@@ -222,13 +234,17 @@ func (c *Controller) removeRule(id, by string, now time.Time) error {
 
 func (c *Controller) runtimeRuleID(id string) (int64, error) {
 	if strings.HasPrefix(id, "file-") {
-		return 0, opsErr(http.StatusConflict, "rule %s is in %s: the file's rules are changed in the file (a running up reads it again)", id, c.cfg.Path)
+		return 0, fileRuleRefused(id, c.cfg.Path)
 	}
 	n, err := ledger.ParseRuleID(id)
 	if err != nil {
 		return 0, opsErr(http.StatusNotFound, "%v", err)
 	}
 	return n, nil
+}
+
+func fileRuleRefused(id, file string) error {
+	return opsErr(http.StatusConflict, "rule %s is in %s: the file's rules are changed in the file (a running up reads it again)", id, file)
 }
 
 func checkRule(pr config.PriorityRule, forDur time.Duration) error {
@@ -523,13 +539,6 @@ func aheadNote(x Expedited) string {
 		return "first in line: it gets the next room that fits it"
 	}
 	return strings.Join(notes, "; ")
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 // clearExpedite takes a job out of the front of the line.

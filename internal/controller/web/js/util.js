@@ -1,0 +1,122 @@
+// Small helpers shared by the scene, the HUD and the list view.
+
+export const GiB = 2 ** 30;
+export const gib = (b) => (b / GiB).toFixed(1) + "G";
+export const mib = (b) => Math.round(b / 2 ** 20) + "M";
+export const cpu = (c) => (c || 0).toFixed(1) + "cpu";
+export const size = (c, b) => cpu(c) + "/" + gib(b || 0);
+
+export function dur(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec / 60) + "m" + String(sec % 60).padStart(2, "0") + "s";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h" + String(Math.floor((sec % 3600) / 60)).padStart(2, "0") + "m";
+  return Math.floor(sec / 86400) + "d" + String(Math.floor((sec % 86400) / 3600)).padStart(2, "0") + "h";
+}
+export const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+export const since = (iso, now = Date.now()) => (now - new Date(iso).getTime()) / 1000;
+
+export const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+export const lerp = (a, b, t) => a + (b - a) * t;
+export const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+export const easeOut = (t) => 1 - (1 - t) ** 3;
+
+// hash: a stable 32-bit number for a string (layout jitter, per-entity phase).
+export function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+export function rng(seed) {
+  let a = seed >>> 0 || 1;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Colours as [r,g,b]; shade by a factor (>1 lighter), mix two, write as css.
+export function hex(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+export const rgb = (c, a = 1) => (a >= 1 ? `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})` : `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`);
+export function shade(c, f) {
+  if (f >= 1) return c.map((v) => v + (255 - v) * (f - 1));
+  return c.map((v) => v * f);
+}
+export const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+
+// The class colours: chosen apart in hue and lightness so neighbouring lines differ.
+export const CLASS_COLORS = ["#2fb3a8", "#e0a42e", "#8a6be0", "#e0644f", "#4aa3e8", "#8cc43f", "#d9609c", "#c9a86a", "#5fc4e0", "#b8b04a"].map(hex);
+
+export function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k === "style") e.style.cssText = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k in e && !k.startsWith("data") && !k.startsWith("aria")) e[k] = v;
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat(Infinity)) if (k !== null && k !== undefined && k !== false) e.append(k);
+  return e;
+}
+
+// Reason strings from the placement ("no host with 7.5cpu/30.8G free (h1 20.3cpu/1.4G, h2 in use)").
+const NEEDS = /^no host with ([\d.]+)cpu\/([\d.]+)G free \((.*)\)$/;
+export function parseReason(reason) {
+  const m = NEEDS.exec(reason || "");
+  if (!m) return null;
+  const needCpu = +m[1], needMem = +m[2];
+  const hosts = [];
+  for (const part of splitTop(m[3])) {
+    const h = /^(\S+) ([\d.]+)cpu\/([\d.]+)G(?::\s*(.*))?$/.exec(part);
+    if (h) hosts.push({ name: h[1], cpu: +h[2], mem: +h[3], note: h[4] || "", short: { cpu: Math.max(0, needCpu - h[2]), mem: Math.max(0, needMem - h[3]) } });
+    else hosts.push({ name: part.split(" ")[0], note: part.slice(part.indexOf(" ") + 1), closed: true });
+  }
+  return { needCpu, needMem, hosts };
+}
+// splitTop splits at commas outside parentheses.
+function splitTop(s) {
+  const out = [];
+  let depth = 0, cur = "";
+  for (const ch of s) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+// shortReason: what fits in a speech bubble.
+export function shortReason(reason) {
+  const p = parseReason(reason);
+  if (!p && /^high-only mode/.test(reason || "")) return "held at the gate: high-only mode";
+  if (!p) return clip(reason || "", 52);
+  const open = p.hosts.filter((h) => !h.closed);
+  open.sort((a, b) => b.mem - a.mem);
+  const best = open[0];
+  let s = `needs ${p.needCpu}cpu/${p.needMem}G`;
+  if (best) {
+    const short = best.short.mem > 0 ? `${best.mem}G free` : best.short.cpu > 0 ? `${best.cpu}cpu free` : "room soon";
+    s += ` · ${best.name} has ${short}`;
+  } else if (p.hosts.length) s += " · " + p.hosts[0].name + " " + p.hosts[0].note;
+  return s;
+}
+
+export const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+export const osBadge = (os) => ({ macos: "MAC", windows: "WIN", linux: "LNX" })[os] || "LNX";
