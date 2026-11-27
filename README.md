@@ -1,8 +1,8 @@
 # pumasi
 
-[![The pumasi dashboard: hosts are halls whose floor is their memory, classes are conveyor lines, waiting jobs are crates](docs/img/demo.gif)](docs/img/demo.mp4)
+[![The pumasi dashboard: each host's card says how full it is and what runs there, the list on the left says what waits and why; here a host goes offline and jobs start where there is room](docs/img/demo.gif)](docs/img/demo.mp4)
 
-<sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 44-second tour (mp4)](docs/img/demo.mp4): a host drops off, the line, expediting a job, high-only mode, the text view for agents.</sub>
+<sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 53-second tour (mp4)](docs/img/demo.mp4), in close-ups: how full each host is, why each job waits, a host dropping off, jobs starting where they fit, expediting a job, high-only mode, the text view for agents.</sub>
 
 **Ephemeral GitHub Actions runners on the machines you already have, placed where the room is, by measured size, without Kubernetes.**
 
@@ -89,15 +89,15 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 <table>
 <tr>
 <td width="50%"><img src="docs/img/dashboard-priority.webp" alt="The priority view: the line of waiting jobs with each one's level and reason"></td>
-<td width="50%"><img src="docs/img/dashboard-expedite.webp" alt="An expedited job: its crate turns pink and it is first in line"></td>
+<td width="50%"><img src="docs/img/dashboard-expedite.webp" alt="An expedited job: Run next puts it first in line, and its crate turns pink"></td>
 </tr>
 <tr>
 <td><b>Priorities.</b> When room is short, jobs wait in one line. Rules in the config, by workflow, job, class or event, make a job <code>high</code> (counts as having come 30 minutes earlier) or <code>low</code>. A job that has waited 30 minutes passes them, so nothing starves. <code>pumasi priority</code> shows the line and why each job stands where it does.</td>
 <td><b>Expedite.</b> <code>pumasi expedite &lt;job URL&gt;</code>, or one button on the dashboard, puts a waiting job before every other one and keeps room for it on a host. No running job is stopped to make room.</td>
 </tr>
 <tr>
-<td><img src="docs/img/dashboard-mode.webp" alt="High-only mode: a banner across the top and gates down on the lines"></td>
-<td><img src="docs/img/dashboard-list.webp" alt="The List view: the same facts as tables"></td>
+<td><img src="docs/img/dashboard-mode.webp" alt="High-only mode: a banner across the top, gates down on the lines, and each waiting job says it is held"></td>
+<td><img src="docs/img/dashboard-list.webp" alt="The List view: what needs attention, and the command to type for each"></td>
 </tr>
 <tr>
 <td><b>High-only mode.</b> <code>pumasi mode high-only --for 30m</code>: for a while, only expedited and high jobs get new runners. Other jobs wait at their gates, and everything running keeps running.</td>
