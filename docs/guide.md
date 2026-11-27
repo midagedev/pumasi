@@ -120,9 +120,19 @@ pumasi expedite --clear <위의 어느 것이든>
 
 ```
 $ pumasi expedite https://github.com/OWNER/REPO/actions/runs/123/job/456
-hold (2) of run 123 is expedited (class prio-b, position 2 in line)
-1 older job of class prio-b goes first, with it: GitHub gives a class its oldest job first
+expedited hold (1) (run 123) of class build: position 2 in line
+1 older job of class build goes first, with it: GitHub gives a class its oldest job first
+https://github.com/OWNER/REPO/actions/runs/123/job/456
+
+$ pumasi priority
+…
+LINE  CLASS   JOB       WORKFLOW    LEVEL     WAITED  WHY HERE                                            WAITS FOR
+1     build   hold (2)  ci.yml      expedite  11s     ahead of hold (1) in its class, which is expedited  no host with 2.0cpu/3.0G free (desk1 1.0cpu/0.0G)
+2     build   hold (1)  ci.yml      expedite  11s     expedited                                           behind an older job of its class that waits for room
+3     e2e     smoke     e2e.yml     normal    13s     by its age                                          no host with 2.0cpu/3.0G free (desk1 1.0cpu/0.0G)
 ```
+
+세운 잡이 시작하면 로그에 `expedited hold (1) of run 123: started on build-desk1-… 3m49s after it was expedited` 처럼 남는다.
 
 - **줄의 맨 앞에 선다** — high 잡보다도 앞이다. 여럿을 세우면 세운 순서대로 선다.
 - **그 잡이 갈 수 있는 호스트를 비워 둔다.** 그 호스트에는 다른 잡을 새로 놓지 않고, 도는 잡이 끝나 자리가 나면 그 잡이 들어간다.

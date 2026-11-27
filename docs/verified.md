@@ -8,6 +8,7 @@
 
 실물 호스트: Linux 서버(Docker), WSL2 Ubuntu 데스크톱(systemd 255), Apple silicon 노트북, Windows 11 x64 데스크톱. 2026-11-24 ~ 25.
 「크기」 절의 실물은 2026-11-26, 노트북과 그 위의 Linux VM(aarch64, 8cpu/32G, Docker, cgroup v2)에서 봤다.
+「줄」 절의 잡 세우기 · 모드 · 지금 규칙의 실물은 2026-11-27, 노트북 한 대를 호스트로(native, `--cpus 3 --mem 4G`, 2500MiB 를 쥐는 잡이라 한 번에 하나) 개인 레포에서 봤다.
 
 ## 미확인 한눈에
 
@@ -19,7 +20,8 @@
 | 재부팅 | 호스트의 진짜 재부팅(boot id 를 바꾼 흉내만) · 서비스로 띄운 controller 의 재부팅 뒤 · linger 가 꺼진 Linux, 화면에 로그인하지 않은 Mac |
 | 한도·압박 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 · Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 · 부하 걸린 Mac 에서 controller 를 수 시간 |
 | 인증·권한 | 진짜 GitHub App 으로 scale set 을 만들고 잡 돌리기 · fine-grained 권한(Actions: Read / Read and write)만으로 run 조회·다시 돌리기 |
-| 대시보드 | Job sizes 표와 러너의 now/est 칸 · Waiting 의 Line 칸 · 자격 노출 경고 칸 — 셋 다 화면을 열어 보지 않았다 |
+| 대시보드 | Job sizes 표와 러너의 now/est 칸 · Waiting 의 Line 칸 · 자격 노출 경고 칸 — 셋 다 화면을 열어 보지 않았다 · 우선순위 화면에서의 쓰기(세우기·모드·규칙) · 밖에 연 대시보드에 토큰으로 쓰기 |
+| 잡 세우기 | 세운 잡의 호스트를 더 작은 낮은 잡에게서 지키는 것 · 여럿을 세운 순서 · 취소·run 끝으로 풀림 · GitHub 이 5분마다 다시 배정한 뒤에도 이어지는 것 — 모두 유닛만 |
 | 알림 | 부재 알림: 호스트의 네트워크만 끊긴 경우, 자다 깬 노트북 호스트, 기본값 5분 그대로 |
 | 사람 우선 | Linux 화면 세션, Windows 입력 시각 |
 | 설정 조합 | `image` 가 `:latest` 일 때 native 러너 · 서비스에서 `hosts: - ssh:` 로 대신 붙이기 |
@@ -82,6 +84,18 @@
 | 도는 잡을 건드리지 않는다 | 유닛 + 실물 | 실물에서 규칙을 바꿀 때 돌던 잡은 끝까지 돌았다 |
 | 틀린 규칙 파일은 전의 규칙을 유지 | 유닛 | |
 | 대시보드 Waiting 의 Line 칸 | 미확인 | 화면을 열어 보지 않았다 |
+| **잡 세우기**: 줄 맨 앞, 같은 클래스의 앞 잡이 함께 감 (11-27) | 실물 | prio-a 잡 3개, 이어 prio-b 잡 2개를 보내 prio-a 의 하나가 돌 때 prio-b 의 뒤 잡을 잡 URL 로 세움: `position 2 in line` · `1 older job of class prio-b goes first, with it`. 시작 순서 prio-a → **prio-b(당겨진 것) → prio-b(세운 것)** → prio-a → prio-a(세우지 않았으면 prio-a 셋이 먼저). 줄에 `ahead of hold (1) in its class, which is expedited` |
+| 세운 잡이 시작하면 저절로 풀리고, 걸린 시간이 남는다 | 실물 | `expedited hold (1) of run …: started on prio-b-… 3m49s after it was expedited (it waited 4m0s in all)`. 3분 49초 가운데 약 80초는 같은 노트북의 다른 프로세스가 CPU 를 다 써서(load 55) 어느 잡도 놓이지 않던 시간이다 |
+| run URL + `--name` 으로 세우기, GitHub 잡 id 로 풀기, `pumasi expedite` 목록·최근 것 | 실물 | 풀린 것은 `cleared by cli <사용자>@127.0.0.1` 로 남음 |
+| GitHub 이 아직 쥔 `overflow` 클래스의 잡 세우기 (11-27) | 실물 | 같은 라벨의 러너가 없는 `overflow` 클래스(`TAKES 0`)에 잡 하나: pumasi 의 `status` 에 없음. 잡 URL 로 세우자 `GitHub still holds it for class prio-o`, 2초 뒤 GitHub 이 그 클래스에 배정(`TAKES 1`), 7초 뒤 러너 시작 — 7분째 기다리던 prio-a 잡들보다 먼저 |
+| 세운 잡의 호스트를 지키기(더 작은 낮은 잡이 들어갈 수 있어도), 러너가 모두 빠져도 안 들어가는 호스트는 지키지 않기 | 유닛 | 실물에서는 잡 크기가 모두 같아 이 경우가 생기지 않았다 |
+| 여럿을 세운 순서, 취소·run 끝·다른 러너가 받아 감으로 풀림, GitHub 의 재배정(잡 id 가 바뀜) 뒤에도 이어짐 | 유닛 | `internal/decide/expedite_test.go`, `internal/controller/ops_test.go` |
+| `mode high-only` 와 시간이 되면 저절로 끝 (11-27) | 실물 | `--for 2m`: 그동안 prio-a 잡 2개가 `mode high-only until 17:35 (by cli …)` 로 기다렸고(돌던 잡은 끝까지), `until` 3초 뒤 평가에서 `mode high-only is over … every job gets room again`. `--for 30s` 는 `for: between 1m and 24h0m0s` 로 거절 |
+| 지금 규칙(`priority add`·`rm`) (11-27) | 실물 | `class=prio-a job='hold (1)' --level high --for 10m` → `r-1`, 옮겨 적을 줄 `- {match: {class: "prio-a", job: "hold (1)"}, level: high}`, 앞 잡이 `ahead of hold (1) in its class, which is high by runtime rule r-1 (…)` 로 당겨져 시작. 두 번 지우면 `no runtime rule r-1 in force` |
+| 지금 규칙이 파일 규칙보다 먼저, 기한, 재시작 뒤에도 남음 | 유닛 | |
+| 쓰기는 loopback 에서 주소로, JSON 으로만 (11-27) | 실물 | 도는 controller 에 `Content-Type: text/plain` → 415, `Host: evil.example` → 403 |
+| 밖에서 온 쓰기(토큰 없으면 403, 틀린 토큰 401), 밖에 열면 이 머신도 토큰 | 유닛 | 대시보드를 네트워크에 열어 보지 않았다 |
+| 없는 잡을 세우면 404 와 이유 | 실물 → 고침 → 유닛 | 처음 실물에서 GitHub 의 404 를 502 로 답했다. 고친 뒤 유닛으로 404 |
 
 ## 받을 수 있는 만큼만 받기 (`overflow`)
 
