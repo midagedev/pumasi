@@ -188,6 +188,38 @@ func TestClassEnvAndPath(t *testing.T) {
 	}
 }
 
+func TestClassWork(t *testing.T) {
+	load := func(class string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		if err := os.WriteFile(p, []byte("url: u\nclasses: ["+class+"]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(p)
+	}
+	for _, good := range []string{
+		`{name: a, driver: native, work: "/srv/ci/w{slot}"}`,
+		`{name: a, os: windows, work: 'C:\ci\w{slot}'}`,
+	} {
+		c, err := load(good)
+		if err != nil {
+			t.Fatalf("%s: %v", good, err)
+		}
+		if got := c.Classes[0].WorkDir("r1"); got != c.Classes[0].Work {
+			t.Errorf("%s: WorkDir %q, want the class's work with {slot} still in it", good, got)
+		}
+	}
+	for _, bad := range []string{
+		`{name: a, work: "/srv/ci/w{slot}"}`,                      // a container keeps its work in its mount
+		`{name: a, driver: native, work: "/srv/ci/w"}`,            // every runner in one place
+		`{name: a, driver: native, work: "ci/w{slot}"}`,           // relative
+		`{name: a, driver: native, work: "/srv/{runner}/{slot}"}`, // gone with the runner
+	} {
+		if _, err := load(bad); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}
+
 func TestPriorityRules(t *testing.T) {
 	load := func(rules string) (*Config, error) {
 		p := filepath.Join(t.TempDir(), "pumasi.yaml")

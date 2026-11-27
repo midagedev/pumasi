@@ -150,6 +150,9 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 	if err != nil {
 		return fail(fmt.Errorf("clone runner: %w", err))
 	}
+	if err := linkWork(dir, s); err != nil {
+		return fail(err)
+	}
 	log, err := os.OpenFile(filepath.Join(dir, "log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fail(err)
@@ -267,6 +270,28 @@ func (n *Native) Remove(_ context.Context, name string) error {
 		return &Leftover{Path: trash, Err: err}
 	}
 	return fmt.Errorf("remove %s: %w", dir, err)
+}
+
+// linkWork makes the runner's _work a link to the class's work directory of
+// its slot, which stays when the runner goes: removing the runner removes the
+// link, not what it points to, so the next runner of the slot finds the
+// checkout and node_modules the last one left, as a fixed runner's next job
+// does. Nothing when the class names no work.
+func linkWork(dir string, s Spec) error {
+	if s.WorkDir == "" {
+		return nil
+	}
+	w := s.expand(s.WorkDir, "")
+	if s.Slot == 0 || strings.Contains(w, "{slot}") || !filepath.IsAbs(w) {
+		return fmt.Errorf("work %q of class %s: no slot number to put in it", s.WorkDir, s.Class)
+	}
+	if err := os.MkdirAll(w, 0o755); err != nil {
+		return fmt.Errorf("work of class %s, slot %d: %w (make it writable for this user)", s.Class, s.Slot, err)
+	}
+	if err := os.Symlink(w, filepath.Join(dir, "runner", "_work")); err != nil {
+		return fmt.Errorf("work of class %s, slot %d: link the runner's _work to %s: %w", s.Class, s.Slot, w, err)
+	}
+	return nil
 }
 
 // removeTree is os.RemoveAll that also gets through directories the job left

@@ -1205,7 +1205,11 @@ func (c *Controller) launch(ctx context.Context, name string, s decide.Start, no
 		return fail(fmt.Sprintf("host %s left before the runner was started", s.Host))
 	}
 	workDir := cl.cfg.WorkDir(name)
-	jit, err := c.gh.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name, WorkFolder: workDir}, cl.setID)
+	jitWork := workDir
+	if cl.cfg.Driver == "native" {
+		jitWork = "" // the agent links the runner's _work to the slot's directory
+	}
+	jit, err := c.gh.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name, WorkFolder: jitWork}, cl.setID)
 	if err != nil {
 		return fail("jit: " + err.Error())
 	}

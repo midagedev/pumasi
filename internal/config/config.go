@@ -167,6 +167,11 @@ type Class struct {
 	Env map[string]string `yaml:"env"`
 	// Path goes in front of PATH of a native runner (a fixed runner's .path).
 	Path []string `yaml:"path"`
+	// Work is where a native runner keeps its work directory (_work: the
+	// checkout, node_modules, build output), named with {slot}: the next
+	// runner of that slot finds the last one's work there, as a fixed
+	// runner's next job does. Empty = inside the runner, gone with it.
+	Work string `yaml:"work"`
 	// MaxDuration stops a runner whose job runs longer (0 = never: jobs are not touched).
 	MaxDuration time.Duration `yaml:"maxDuration"`
 }
@@ -354,14 +359,22 @@ func (c *Config) defaults() {
 	}
 }
 
+// winAbsRE is an absolute Windows path (C:\ci or C:/ci), checked where the
+// controller runs on another OS.
+var winAbsRE = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+
 // MountPath is the path of a mounts entry, without its ":ro".
 func MountPath(m string) string { return strings.TrimSuffix(m, ":ro") }
 
-// WorkDir is where a container runner of the class keeps its work directory:
-// inside the class's first writable mount, so that the job's checkout and the
+// WorkDir is where a runner of the class keeps its work directory. Native:
+// the class's work, still with {slot} (the host's agent knows the number).
+// Container: inside the class's first writable mount, so that the job's checkout and the
 // caches in that mount are one filesystem behind one mount and tools can
 // hard-link between them (pnpm's store, ccache). "" = inside the container.
 func (cl Class) WorkDir(runner string) string {
+	if cl.Driver == "native" {
+		return cl.Work
+	}
 	if cl.Driver != "docker" {
 		return ""
 	}
@@ -476,6 +489,10 @@ func (c *Config) validate() error {
 			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
 		case cl.Docker != "" && cl.Docker != "inside":
 			return fmt.Errorf("class %s: docker must be inside (or left out)", cl.Name)
+		case cl.Work != "" && cl.Driver != "native":
+			return fmt.Errorf("class %s: work is for native runners; a container runner keeps its work in its first writable mount", cl.Name)
+		case cl.Work != "" && (!filepath.IsAbs(cl.Work) && !strings.HasPrefix(cl.Work, "/") && !winAbsRE.MatchString(cl.Work) || !strings.Contains(cl.Work, "{slot}") || strings.Contains(cl.Work, "{runner}") || strings.ContainsAny(cl.Work, "\n\x00")):
+			return fmt.Errorf("class %s: work %q must be an absolute path with {slot} in it, so that two runners never share one", cl.Name, cl.Work)
 		case len(cl.Path) > 0 && cl.Driver != "native":
 			return fmt.Errorf("class %s: path is for native runners; a container has its image's PATH (set env: {PATH: ...} to replace it)", cl.Name)
 		case cl.Docker == "inside" && cl.Driver != "docker":

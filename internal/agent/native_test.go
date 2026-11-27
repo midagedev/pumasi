@@ -171,3 +171,33 @@ func TestClassEnv(t *testing.T) {
 		t.Fatalf("env PATH replaces: %v", got)
 	}
 }
+
+// A class's work outlives its runners: the runner's _work is a link to the
+// slot's directory, and removing the runner leaves what the job built there.
+func TestWorkStaysWithTheSlot(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "runners", "r1")
+	if err := os.MkdirAll(filepath.Join(dir, "runner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := Spec{Class: "c", Slot: 3, WorkDir: filepath.Join(root, "work", "w{slot}")}
+	if err := linkWork(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	slot := filepath.Join(root, "work", "w3")
+	if err := os.WriteFile(filepath.Join(dir, "runner", "_work", "node_modules"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeTree(dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(slot, "node_modules")); err != nil || string(b) != "x" {
+		t.Fatalf("slot's work after the runner went: %q, %v", b, err)
+	}
+	if err := linkWork(dir, Spec{Class: "c", WorkDir: "/w/{slot}"}); err == nil {
+		t.Error("no slot number: want an error")
+	}
+	if err := linkWork(dir, Spec{Class: "c"}); err != nil {
+		t.Errorf("no work: %v", err)
+	}
+}
