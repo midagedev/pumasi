@@ -54,7 +54,9 @@ export function shade(c, f) {
 export const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 
 // The class colours: chosen apart in hue and lightness so neighbouring lines differ.
-export const CLASS_COLORS = ["#2fb3a8", "#e0a42e", "#8a6be0", "#e0644f", "#4aa3e8", "#8cc43f", "#d9609c", "#c9a86a", "#5fc4e0", "#b8b04a"].map(hex);
+// Muted on purpose: a class only says which belt a thing belongs to, while the
+// status colours (ok green, waiting amber, failed red, offline grey) must win.
+export const CLASS_COLORS = ["#2fb3a8", "#e0a42e", "#8a6be0", "#e0644f", "#4aa3e8", "#8cc43f", "#d9609c", "#c9a86a", "#5fc4e0", "#b8b04a"].map(hex).map((c) => mix(c, [128, 134, 144], 0.38));
 
 export function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -124,3 +126,76 @@ export function shortReason(reason) {
 export const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 export const osBadge = (os) => ({ macos: "MAC", windows: "WIN", linux: "LNX" })[os] || "LNX";
+
+// ---------------------------------------------------------------- plain words
+// The same facts in the words a newcomer reads without a glossary. The API's
+// field names stay as they are; only what is shown changes.
+const num = (v) => (v >= 9.95 ? String(Math.round(v)) : (+v).toFixed(1));
+export const gbn = (g) => num(+g || 0) + " GB";
+export const gb = (b) => gbn((b || 0) / GiB);
+export const cpus = (c) => { const v = +(c || 0); return num(v) + (Math.abs(v - 1) < 0.05 ? " CPU" : " CPUs"); };
+export const ago = (sec) => dur(sec).replace(/^(\d+m)00s$/, "$1").replace(/^(\d+h)00m$/, "$1");
+
+// hostLoad: how full a host is, of what it shares with runners (its budget,
+// else the whole machine). Taken is all a new runner cannot have: what runners
+// reserve, other programs, and what is kept for the machine itself.
+export function hostLoad(h) {
+  const lendMem = h.budgetMem || h.memBytes || 0, lendCpu = h.budgetCpus || h.cpus || 0;
+  const part = (used, free, lend) => {
+    if (!lend) return null;
+    const taken = clamp((lend - (free || 0)) / lend, 0, 1);
+    const mine = Math.min(taken, Math.max(0, (used || 0) / lend));
+    return { pct: Math.round(taken * 100), taken, mine, other: taken - mine };
+  };
+  const mem = part(h.usedMem, h.freeMem, lendMem), cpu = part(h.usedCpus, h.freeCpus, lendCpu);
+  let word, tone, why = "";
+  if (h.reachable === null || h.reachable === undefined) { word = "no data"; tone = "off"; }
+  else if (!h.reachable) { word = "offline"; tone = "bad"; why = h.seenSeconds ? "no signal for " + ago(h.seenSeconds) : "no signal"; }
+  else if (h.closed) { word = "closed"; tone = "warn"; why = h.closed; }
+  else {
+    const top = Math.max(mem ? mem.pct : 0, cpu ? cpu.pct : 0);
+    if (top >= 90) { word = "full"; tone = "bad"; }
+    else if (top >= 70) { word = "busy"; tone = "warn"; }
+    else if (!h.runners) { word = "idle"; tone = "ok"; }
+    else { word = "ok"; tone = "ok"; }
+  }
+  return { mem, cpu, word, tone, why, lendMem, lendCpu };
+}
+
+// plainReason: why a class's next job waits, in one sentence. Placement says
+// "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
+// of the two is short and the most there is anywhere.
+// The free room the reason quotes is from the last placement round; the cards
+// show the host now. Hosts it names that are up are read from the latest state
+// (setLive), so the sentence and the card never disagree.
+let live = new Map();
+export const setLive = (hosts) => { live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, h])); };
+export function plainReason(reason, short = false) {
+  const r = reason || "";
+  if (!r) return "a runner is starting for it";
+  if (/^(high-only mode|mode high-only)/.test(r)) return "held: high-only mode is on, only high and expedited jobs start";
+  const p = parseReason(r);
+  if (!p) return r.replace(/(\d+(?:\.\d+)?)G\b/g, (_, g) => gbn(+g)).replace(/(\d+(?:\.\d+)?)cpu\b/g, (_, c) => cpus(+c));
+  const open = p.hosts.filter((h) => !h.closed);
+  for (const h of p.hosts) {
+    const now = !h.closed && live.get(h.name);
+    if (now) { h.cpu = +(now.freeCpus || 0).toFixed(1); h.mem = +((now.freeMem || 0) / GiB).toFixed(1); }
+  }
+  const shut = p.hosts.filter((h) => h.closed).map((h) => `${h.name} ${plainNote(h.note)}`);
+  const tail = shut.length && !short ? `; ${shut.join(", ")}` : "";
+  if (!open.length) return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; no host takes jobs now${tail}`;
+  const memOK = open.filter((h) => h.mem >= p.needMem);
+  if (!memOK.length) {
+    const best = open.slice().sort((a, b) => b.mem - a.mem)[0];
+    return `needs ${gbn(p.needMem)} memory, the most free is ${gbn(best.mem)} (${best.name})${tail}`;
+  }
+  const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
+  if (best.cpu < p.needCpu) return `needs ${cpus(p.needCpu)}, ${best.name} has the memory but only ${cpus(best.cpu)} free${tail}`;
+  return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; room is opening on ${best.name}${tail}`;
+}
+const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
+
+export const levelWord = (j) => (j.expedited || j.level === "expedite" ? "expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");
+
+// Problem kinds as headings.
+export const kindWord = (k) => ({ "host-unreachable": "host offline", "job-waiting": "waiting too long", "out-of-memory": "out of memory", "runner-died": "runner died", "disk-low": "disk almost full", "agent-restarted": "agent restarted" })[k] || String(k || "").replace(/-/g, " ");

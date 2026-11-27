@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, shortReason, osBadge, since } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, hostLoad, plainReason, gb, cpus, ago } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -285,7 +285,7 @@ export class Scene {
       }
       // the floor's own legend, painted near the front
       const free = hall.h.freeMem;
-      this.groundText(`${gib(free)} FREE`, x0 + 0.35, y0 + D - 0.45, 0.42, rgb(th.ok, 0.75), 0, "800");
+      this.groundText(`${gb(free)} FREE`, x0 + 0.35, y0 + D - 0.45, 0.42, rgb(th.ok, 0.75), 0, "800");
     }
     // where floor meets wall the light does not reach
     let g = ctx.createLinearGradient(0, y0, 0, y0 + 1.4);
@@ -322,7 +322,7 @@ export class Scene {
     const v = this.v, ctx = v.ctx, th = this.th, t = this.t;
     const c = l.cls;
     // a lane of the class's colour, the belt on it
-    ctx.fillStyle = rgb(c.color, th.night ? 0.12 : 0.18);
+    ctx.fillStyle = rgb(c.color, th.night ? 0.07 : 0.12);
     ctx.fillRect(l.x0 - 0.5, l.y0 - 0.5, 2.0 + (c.overflow ? 0.6 : 0), l.y1 - l.y0 + 0.5);
     ctx.fillStyle = rgb(th.dark);
     ctx.fillRect(l.x0 - 0.1, l.y0 - 0.1, 1.2, l.y1 - l.y0 + 0.2);
@@ -433,7 +433,7 @@ export class Scene {
       ctx.font = "700 32px ui-sans-serif, system-ui, sans-serif";
       ctx.textBaseline = "middle";
       ctx.fillStyle = th.dim;
-      ctx.fillText(`CPU ${used.toFixed(1)} held · ${free.toFixed(1)} free · ${cores} cores`, 0, 0);
+      ctx.fillText(`CPU ${used.toFixed(1)} reserved · ${free.toFixed(1)} free · ${cores} cores`, 0, 0);
       ctx.restore();
     }
     // the left wall: what the floor is
@@ -589,7 +589,7 @@ export class Scene {
     const down = hall.status === "down" || hall.status === "unknown";
     const x = m.x - s / 2, y = m.y - s / 2;
     const cls = m.cls ? m.cls.color : th.steel;
-    const body = mix(th.steel, cls, 0.55);
+    const body = mix(th.steel, cls, 0.3);
     const starting = r.state === "starting";
     const busy = r.state === "busy";
     box(v, x, y, 0, s, s, 0.12, th.dark);
@@ -620,7 +620,7 @@ export class Scene {
         ctx.font = "800 32px ui-monospace, SFMono-Regular, Menlo, monospace";
         ctx.textBaseline = "middle";
         ctx.fillStyle = rgb(shade(cls, 1.35));
-        ctx.fillText((r.slot ? "#" + r.slot + " " : "") + r.class.slice(0, 10), 0, 0);
+        ctx.fillText((r.job || r.class).slice(0, 14), 0, 0);
         ctx.restore();
       }
       // the right face: vents
@@ -958,14 +958,25 @@ export class Scene {
     const tags = [];
     const isSel = (k, id) => sel.kind === k && sel.id === id;
     const narrow = v.w < 640; // a phone: hosts say only what is free, and idle lines keep quiet
+    // each host: a card over its hall with its state in one word, how full it
+    // is (CPU and memory bars), and what runs there; zoomed in, the machines
+    // carry their own names and the card keeps to the bars
+    const close = z > 0.72;
+    // the cards are as wide as the room between two halls, so they stand side by side
+    const anchors = w.halls.map((hall) => v.P(hall.x0 + hall.W / 2, hall.y0 - 0.4, WALL_H + 0.9));
+    let step = Infinity;
+    for (let i = 1; i < anchors.length; i++) step = Math.min(step, anchors[i][0] - anchors[i - 1][0]);
+    const cw = clamp(step - 10, narrow ? 150 : 176, narrow ? 176 : 250);
+    w.halls.forEach((hall, i) => {
+      const h = hall.h || {};
+      const [sx, sy] = anchors[i];
+      const L = hostLoad(h);
+      const mine = w.state.runners.filter((r) => r.host === hall.name);
+      tags.push({ x: sx, y: sy, ax: sx, ay: sy, card: true, cw, title: hall.name, L, h, runs: close || narrow ? null : runningSummary(mine), n: mine.filter((r) => r.job).length, all: mine.length, narrow,
+        kind: "host", id: hall.name, sel: isSel("host", hall.name), prio: isSel("host", hall.name) ? 0 : 1 });
+    });
     for (const hall of w.halls) {
       const h = hall.h || {};
-      const [sx, sy] = v.P(hall.x0 + hall.W / 2, hall.y0 - 0.4, WALL_H + 1.4);
-      const st = hall.status === "ok" ? "" : hall.status === "closed" ? h.closed : hall.status === "down" ? "no signal" + (h.seenSeconds ? " · " + dur(h.seenSeconds) : "") : "no data";
-      const col = hall.status === "ok" ? th.ok : hall.status === "closed" ? th.warn : hall.status === "down" ? th.bad : th.off;
-      const line2 = h.memBytes ? `${(h.usedCpus || 0).toFixed(1)}/${h.cpus} cpu · ${gib(h.usedMem || 0)} held · ${gib(h.freeMem || 0)} free` : "";
-      const sub = st ? st + (line2 ? " · " + gib(h.freeMem || 0) + " free" : "") : narrow && line2 ? `${gib(h.freeMem || 0)} free` : line2;
-      tags.push({ x: sx, y: sy, title: hall.name, sub, dot: col, big: true, kind: "host", id: hall.name, sel: isSel("host", hall.name), prio: isSel("host", hall.name) ? 0 : 1 });
       if (hall.siloAt && h.diskFreePct !== null && h.diskFreePct !== undefined && h.diskFreePct < (((w.state || {}).limits || {}).diskMinFree || 10) + 5) {
         const [dx, dy] = v.P(...hall.siloAt);
         tags.push({ x: dx, y: dy - 4, title: `${hall.name}: disk ${h.diskFreePct.toFixed(0)}% free${h.diskPath ? " on " + h.diskPath : ""}`, dot: th.bad, small: true, kind: "host", id: hall.name, prio: 2 });
@@ -974,8 +985,8 @@ export class Scene {
     for (const l of w.lines) {
       const ww = l.w;
       if (narrow && !ww && !l.ov && !isSel("class", l.name)) continue;
-      let sub = ww ? `${ww.jobs} waiting · #${ww.order || "-"} in line` : "nothing waiting";
-      if (l.ov) sub = `overflow · takes ${l.ov.take} · holds ${l.ov.held}` + (ww ? ` · ${ww.jobs} waiting` : "");
+      let sub = ww ? `${ww.jobs} waiting · oldest ${ago(ww.oldestSeconds)}` : "nothing waiting";
+      if (l.ov) sub = `overflow · room for ${l.ov.take}, has ${l.ov.held}` + (ww ? ` · ${ww.jobs} waiting` : "");
       // on the dock roof, past the belt's end: a long queue is not covered by its name
       const [sx, sy] = v.P(l.x0 + 0.5, l.y1 + 0.9, 1.0);
       tags.push({ x: sx, y: sy, title: l.name, sub, dot: l.cls.color, kind: "class", id: l.name, sel: isSel("class", l.name), prio: isSel("class", l.name) ? 0 : 3 });
@@ -985,7 +996,7 @@ export class Scene {
       if (ww && ww.reason && z > 0.3 && speaks) {
         const front = [...w.crates.values()].find((c) => c.mode === "queue" && c.line === l && c.idx === 0);
         const at = front && front.top ? v.P(...front.top) : v.P(l.x0 + 0.5, l.y0 + 0.7, 1);
-        tags.push({ x: at[0], y: at[1] - 6, bubble: shortReason(ww.reason), hot: ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600), kind: "class", id: l.name, prio: 2 });
+        tags.push({ x: at[0], y: at[1] - 6, bubble: plainReason(ww.reason, true), hot: ww.oldestSeconds > ((w.state.limits || {}).waitAlertSeconds || 600), kind: "class", id: l.name, prio: 2 });
       }
       if (l.extra > 0 && l.pileAt) {
         const [px, py] = v.P(...l.pileAt);
@@ -994,11 +1005,22 @@ export class Scene {
     }
     for (const m of w.machines.values()) {
       if (!m.top || m.dying) continue;
-      if (z <= 0.8 && !isSel("runner", m.name)) continue;
+      if (!close && !isSel("runner", m.name)) continue;
       const [sx, sy] = v.P(...m.top);
       if (sx < -80 || sy < -40 || sx > v.w + 80 || sy > v.h + 40) continue;
       const r = m.r;
-      tags.push({ x: sx, y: sy - 6, title: r.job || (r.state === "starting" ? "starting…" : "waiting for its job"), sub: `${(r.cpuNow || 0).toFixed(1)}cpu · ${gib(r.memBytes || 0)} / ${gib(r.heldMem || r.estMem)}`, dot: m.cls.color, small: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
+      const detail = z > 1.35 || isSel("runner", m.name);
+      const lamp = r.state === "starting" ? th.warn : m.hall.status === "down" ? th.off : th.ok;
+      tags.push({ x: sx, y: sy - 6, title: r.job || (r.state === "starting" ? "starting…" : "waiting for its job"), sub: detail && r.state !== "starting" ? `${cpus(r.cpuNow || 0)} · ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)}` : "", dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
+    }
+    // zoomed in, a waiting crate says which job it is
+    if (z > 1.3) {
+      for (const c of w.crates.values()) {
+        if (c.mode !== "queue" || c.hidden || !c.top || !c.j || !c.j.job) continue;
+        const [sx, sy] = v.P(...c.top);
+        if (sx < -80 || sy < -40 || sx > v.w + 80 || sy > v.h + 40) continue;
+        tags.push({ x: sx, y: sy - 4, title: c.j.job, sub: "waiting " + ago(c.j.waitedSeconds), dot: c.j.expedited ? [255, 122, 217] : th.warn, small: true, kind: "job", id: c.key, prio: 5 });
+      }
     }
     if (this.opts.prioView) {
       for (const c of w.crates.values()) {
@@ -1012,7 +1034,8 @@ export class Scene {
       const [sx, sy] = v.P(...w.shipSignAt);
       const done = [...w.crates.values()].filter((c) => c.mode === "ship");
       const n = (r) => done.filter((c) => c.result === r).length;
-      tags.push({ x: sx, y: sy, title: "shipped", sub: `${n("ok")} ok · ${n("fail") + n("oom")} failed · ${n("cancel")} cancelled`, dot: th.ok, prio: 3 });
+      const bad = n("fail") + n("oom");
+      tags.push({ x: sx, y: sy, title: "finished jobs", sub: `${n("ok")} ok · ${bad} failed · ${n("cancel")} cancelled`, dot: bad ? th.bad : th.ok, prio: 3 });
     }
     // place: the important first; a label that would cover one already placed moves up, or is left out
     ctx.textBaseline = "middle";
@@ -1022,6 +1045,12 @@ export class Scene {
     const shown = [];
     for (const tg of tags) {
       if (tg.prio >= 9) { shown.push(tg); continue; }
+      if (tg.card) {
+        // a card that would cover another goes up over it, with a line down to its hall
+        let r = this.measure(tg);
+        for (let k = 0; k < 4; k++) { const q = placed.find((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0); if (!q) break; tg.y = q.y0 - 8; r = this.measure(tg); }
+        placed.push(r); shown.push(tg); continue;
+      }
       let r = this.measure(tg);
       let ok = !hit(r);
       for (let k = 0; !ok && k < 3 && tg.prio <= 3; k++) {
@@ -1038,22 +1067,145 @@ export class Scene {
 
   measure(tg) {
     const ctx = this.v.ctx;
+    if (tg.card) return this.cardBox(tg);
     if (tg.bubble) {
-      ctx.font = "600 11.5px ui-sans-serif, system-ui, sans-serif";
-      const w = Math.min(300, ctx.measureText(tg.bubble).width + 16), h = 22;
+      ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+      const w = Math.min(470, ctx.measureText(tg.bubble).width + 18), h = 24;
       return { x0: tg.x - w / 2, y0: tg.y - h - 8, x1: tg.x + w / 2, y1: tg.y, w, h };
     }
-    const big = tg.big, small = tg.small;
-    ctx.font = `${big ? 800 : 700} ${big ? 14 : small ? 11 : 12.5}px ui-sans-serif, system-ui, sans-serif`;
+    const big = tg.big, small = tg.small, mid = tg.mid;
+    ctx.font = `${big ? 800 : 700} ${big ? 14 : mid ? 12.5 : small ? 11 : 12.5}px ui-sans-serif, system-ui, sans-serif`;
     const tw = ctx.measureText(tg.title).width;
     ctx.font = `500 ${small ? 10 : 11}px ui-sans-serif, system-ui, sans-serif`;
     const sw = tg.sub ? ctx.measureText(tg.sub).width : 0;
-    const w = Math.max(tw + 22, sw + 14), h = tg.sub ? (big ? 38 : small ? 30 : 34) : 22;
+    const w = Math.max(tw + 22, sw + 14), h = tg.sub ? (big ? 38 : small ? 30 : 34) : mid ? 24 : 22;
     return { x0: Math.round(tg.x - w / 2), y0: Math.round(tg.y - h), x1: Math.round(tg.x + w / 2), y1: Math.round(tg.y), w, h };
+  }
+
+  // A host's card: laid out once per frame, drawn by cardDraw.
+  cardBox(tg) {
+    const ctx = this.v.ctx;
+    const W = tg.cw || 220, pad = 10;
+    let lines = [];
+    if (tg.runs && tg.runs.length) {
+      // whole names, packed into three lines at most; what does not fit is counted
+      ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+      const max = W - 2 * pad, fits = (s) => ctx.measureText(s).width <= max;
+      const clip = (s) => { while (s.length > 3 && !fits(s + "…")) s = s.slice(0, -1); return fits(s) ? s : s + "…"; };
+      const rows = [[]];
+      let k = 0;
+      for (; k < tg.runs.length; k++) {
+        const row = rows[rows.length - 1];
+        if (fits([...row, tg.runs[k]].join(" · "))) { row.push(tg.runs[k]); continue; }
+        if (!row.length) { row.push(clip(tg.runs[k])); continue; }
+        if (rows.length === 3) break;
+        rows.push([clip(tg.runs[k])]);
+      }
+      let left = tg.runs.length - k;
+      if (left > 0) {
+        const last = rows[rows.length - 1];
+        while (last.length > 1 && !fits([...last, `+${left} more`].join(" · "))) { last.pop(); left++; }
+        last.push(`+${left} more`);
+      }
+      lines = rows.filter((r) => r.length).map((r) => r.join(" · "));
+    }
+    const off = tg.L.word === "offline" || tg.L.word === "no data";
+    const h = 30 + (off ? 50 : 44) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
+    tg.lines = lines;
+    return { x0: Math.round(tg.x - W / 2), y0: Math.round(tg.y - h), x1: Math.round(tg.x + W / 2), y1: Math.round(tg.y), w: W, h };
+  }
+
+  cardDraw(tg, r) {
+    const ctx = this.v.ctx, th = this.th, L = tg.L, h = tg.h;
+    const { x0: x, y0: y, w, h: hh } = r, pad = 10;
+    const tone = { ok: th.ok, warn: th.warn, bad: th.bad, off: th.off }[L.tone];
+    ctx.fillStyle = th.night ? "rgba(10,14,20,0.9)" : "rgba(255,255,255,0.94)";
+    roundRect(ctx, x, y, w, hh, 8); ctx.fill();
+    ctx.strokeStyle = tg.sel ? rgb(th.paint) : L.tone === "ok" ? th.labelLine : rgb(tone, 0.8);
+    ctx.lineWidth = tg.sel || L.tone === "bad" ? 2 : 1;
+    ctx.stroke();
+    // the pointer down to the hall
+    ctx.fillStyle = th.night ? "rgba(10,14,20,0.9)" : "rgba(255,255,255,0.94)";
+    const px = clamp(tg.ax, x + 14, x + w - 14);
+    ctx.beginPath(); ctx.moveTo(px - 7, y + hh - 0.5); ctx.lineTo(px, y + hh + 7); ctx.lineTo(px + 7, y + hh - 0.5); ctx.fill();
+    if (tg.ay - (y + hh) > 10) {
+      ctx.strokeStyle = th.night ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.4)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(px, y + hh + 7); ctx.lineTo(tg.ax, tg.ay); ctx.stroke();
+    }
+    // name, and the state in one word
+    ctx.textBaseline = "middle";
+    const word = L.word.toUpperCase();
+    ctx.font = "800 12px ui-sans-serif, system-ui, sans-serif";
+    const ww = ctx.measureText(word).width + 12;
+    ctx.fillStyle = rgb(tone, L.tone === "ok" ? 0.2 : 0.9);
+    roundRect(ctx, x + w - pad - ww, y + 8, ww, 19, 5); ctx.fill();
+    ctx.fillStyle = L.tone === "ok" ? rgb(tone) : L.tone === "off" ? "#fff" : "#111";
+    ctx.fillText(word, x + w - pad - ww + 6, y + 18);
+    ctx.fillStyle = th.text;
+    let fs = 15;
+    for (; fs > 11; fs--) { ctx.font = `800 ${fs}px ui-sans-serif, system-ui, sans-serif`; if (ctx.measureText(tg.title).width <= w - ww - 2 * pad - 6) break; }
+    ctx.save(); ctx.beginPath(); ctx.rect(x, y, w - ww - pad - 4, hh); ctx.clip();
+    ctx.fillText(tg.title, x + pad, y + 18);
+    ctx.restore();
+    let cy = y + 30;
+    const off = L.word === "offline" || L.word === "no data";
+    if (off) {
+      ctx.fillStyle = rgb(tone);
+      ctx.font = "700 12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(L.why || "no data from its agent", x + pad, cy + 8);
+      ctx.fillStyle = th.dim;
+      ctx.font = "500 11.5px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(`${tg.n} ${tg.n === 1 ? "job is" : "jobs are"} still running there;`, x + pad, cy + 25);
+      ctx.fillText("no new jobs go here", x + pad, cy + 40);
+      cy += 50;
+    } else {
+      const bar = (label, p, yy) => {
+        ctx.font = "700 11px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillStyle = th.dim;
+        ctx.fillText(label, x + pad, yy);
+        const bx = x + pad + 34, bw = w - 2 * pad - 34 - 48, by = yy - 5;
+        ctx.fillStyle = th.night ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)";
+        roundRect(ctx, bx, by, bw, 10, 4); ctx.fill();
+        if (p) {
+          ctx.save(); roundRect(ctx, bx, by, bw, 10, 4); ctx.clip();
+          ctx.fillStyle = rgb(tone);
+          ctx.fillRect(bx, by, bw * p.mine, 10);
+          ctx.fillStyle = rgb(th.off, 0.85);
+          ctx.fillRect(bx + bw * p.mine, by, bw * p.other, 10);
+          ctx.restore();
+        }
+        ctx.font = "800 13px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillStyle = th.text;
+        ctx.textAlign = "right";
+        ctx.fillText(p ? p.pct + "%" : "-", x + w - pad, yy + 0.5);
+        ctx.textAlign = "left";
+      };
+      bar("CPU", L.cpu, cy + 7);
+      bar("MEM", L.mem, cy + 23);
+      ctx.font = "500 11.5px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillStyle = L.why ? rgb(tone) : th.dim;
+      ctx.fillText(L.why ? "closed: " + L.why : h.memBytes ? `free: ${gb(h.freeMem || 0)} · ${cpus(h.freeCpus || 0)}` : "", x + pad, cy + 38);
+      cy += 44;
+    }
+    if (tg.lines && tg.lines.length) {
+      ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillStyle = th.dim;
+      ctx.fillText(`RUNNING ${tg.n}`, x + pad, cy + 7);
+      ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillStyle = th.text;
+      tg.lines.forEach((ln, i) => ctx.fillText(ln, x + pad, cy + 24 + i * 16));
+    } else if (tg.all === 0 && !off) {
+      ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillStyle = th.dim;
+      ctx.fillText("nothing running", x + pad, cy + 8);
+    }
+    this.hits.push({ kind: tg.kind, id: tg.id, x0: x, y0: y, x1: x + w, y1: y + hh, z: 10 });
   }
 
   tag(tg) {
     const ctx = this.v.ctx, th = this.th;
+    if (tg.card) { this.cardDraw(tg, this.measure(tg)); return; }
     if (tg.num !== undefined) {
       const col = { expedite: "#ff7ad9", high: "#ffd640", low: "#7f9ad0", normal: th.night ? "#e9eef4" : "#14191f" }[tg.lvl];
       const r = 11;
@@ -1080,14 +1232,14 @@ export class Scene {
       roundRect(ctx, x, y, w, h, 6); ctx.fill();
       ctx.beginPath(); ctx.moveTo(tg.x - 6, y + h); ctx.lineTo(tg.x, y + h + 7); ctx.lineTo(tg.x + 6, y + h); ctx.fill();
       ctx.fillStyle = tg.hot ? "#fff" : "#1a1d22";
-      ctx.font = "600 11.5px ui-sans-serif, system-ui, sans-serif";
+      ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
       ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-      ctx.fillText(tg.bubble, x + 8, y + h / 2 + 0.5);
+      ctx.fillText(tg.bubble, x + 9, y + h / 2 + 0.5);
       ctx.restore();
       this.hits.push({ kind: tg.kind, id: tg.id, x0: x, y0: y, x1: x + w, y1: y + h, z: 9 });
       return;
     }
-    const big = tg.big, small = tg.small;
+    const big = tg.big, small = tg.small, mid = tg.mid;
     const { x0: x, y0: y, w, h } = r;
     ctx.fillStyle = th.label;
     roundRect(ctx, x, y, w, h, 6); ctx.fill();
@@ -1099,7 +1251,7 @@ export class Scene {
       ctx.beginPath(); ctx.arc(x + 10, y + (tg.sub ? 12 : h / 2), 4, 0, Math.PI * 2); ctx.fill();
     }
     ctx.fillStyle = th.text;
-    ctx.font = `${big ? 800 : 700} ${big ? 14 : small ? 11 : 12.5}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.font = `${big ? 800 : 700} ${big ? 14 : mid ? 12.5 : small ? 11 : 12.5}px ui-sans-serif, system-ui, sans-serif`;
     ctx.fillText(tg.title, x + 18, y + (tg.sub ? 12 : h / 2) + 0.5);
     if (tg.sub) {
       ctx.fillStyle = th.dim;
@@ -1137,6 +1289,21 @@ export class Scene {
     }
     return null;
   }
+}
+
+// runningSummary: a host's runners as job names, the same name counted once
+// ("e2e (chromium) ×2"), the most first; runners still starting at the end.
+function runningSummary(runners) {
+  const n = new Map();
+  let starting = 0;
+  for (const r of runners) {
+    if (!r.job) { starting++; continue; }
+    const name = r.job.replace(/\s+\d+\/\d+$/, ""); // "nightly-soak 2/3": one of a set
+    n.set(name, (n.get(name) || 0) + 1);
+  }
+  const out = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, c]) => (c > 1 ? `${k} ×${c}` : k));
+  if (starting) out.push(`${starting} starting`);
+  return out;
 }
 
 function gear(ctx, x, y, r, teeth, a, col) {

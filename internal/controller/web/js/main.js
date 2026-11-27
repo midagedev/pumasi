@@ -5,7 +5,7 @@ import { View, TW, TH, TZ } from "./iso.js";
 import { World, HALL_D } from "./world.js";
 import { Scene } from "./draw.js";
 import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, jobKey, atParam, subjectOf } from "./hud.js";
-import { clamp, ease, rgb } from "./util.js";
+import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive } from "./util.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -73,6 +73,7 @@ async function refreshSeries() {
 
 function apply() {
   const s = store.state;
+  setLive(s.hosts);
   const express = expressOf();
   world.update(s, store.jobs, now(), { instant: !ui.motion, express, mode: store.prio && store.prio.mode });
   if (!view.fitted) fit(true);
@@ -125,6 +126,11 @@ const actions = {
   },
 };
 function select(sel, fromLink) {
+  // "Run next" on a waiting row: open the job and press its expedite button,
+  // so the answer (or the command to type when the controller has no API) shows there
+  const runNext = sel && sel.expedite;
+  if (runNext) sel = { kind: sel.kind, id: sel.id };
+  if (runNext) setTimeout(() => { const b = document.querySelector('#panel [data-action="expedite"]'); if (b) b.click(); }, 0);
   if (sel && sel.kind === "job") {
     // a deep link may name a job by its GitHub job id, run id or name
     const j = (store.state.waitingJobs || []).find((x) => jobKey(x) === sel.id || x.id === sel.id || String(x.githubJobId) === sel.id || String(x.runId) === sel.id || x.job === sel.id);
@@ -184,7 +190,11 @@ function fit(instant) {
   let x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
   let y0 = Math.min(top[1], ...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
   const wide = view.w > 900;
-  const padL = wide ? 236 : 6, padR = wide ? 16 : 6, padT = 56, padB = wide ? 70 : 50;
+  // leave the left column alone (the map does not hide under what describes it),
+  // and room above the halls for their gauges
+  const idx = $("index");
+  const padL = wide && idx.offsetParent ? idx.getBoundingClientRect().right - $("stage").getBoundingClientRect().left + 8 : 6;
+  const padR = wide ? 16 : 6, padT = wide ? 150 : 96, padB = wide ? 40 : 50;
   let z = Math.min((view.w - padL - padR) / (x1 - x0), (view.h - padT - padB) / (y1 - y0));
   // a tall phone: the plant is a diagonal band, so fitting its width leaves most of
   // the screen empty. Come closer (the ends are a drag away) so the halls read.
@@ -269,11 +279,11 @@ function hover(x, y) {
 }
 function tipText(h) {
   const s = store.state;
-  if (h.kind === "runner") { const r = s.runners.find((x) => x.name === h.id); return r && [r.job || r.name, `${r.class} on ${r.host} · ${r.state}`]; }
-  if (h.kind === "job") { const c = world.crates.get(h.id); return c && c.j && [c.j.job || "a job", `${c.j.class} · waited ${Math.round(c.j.waitedSeconds / 60)}m${c.j.position ? " · #" + c.j.position + " in line" : ""}${c.j.expedited ? " · expedited" : c.j.level ? " · " + c.j.level : ""}`]; }
-  if (h.kind === "done") { const c = world.crates.get(h.id); return c && c.j && [c.j.job, `${c.result} · ${c.j.host}`]; }
-  if (h.kind === "host") return [h.id, "host: click for its floor, runners and what to do"];
-  if (h.kind === "class") return [h.id, "line: click for its queue and why it waits"];
+  if (h.kind === "runner") { const r = s.runners.find((x) => x.name === h.id); return r && [r.job || (r.state === "starting" ? "a runner starting" : r.name), r.state === "starting" ? `class ${r.class} on ${r.host}` : `running ${ago(r.ageSeconds)} on ${r.host} · using ${cpus(r.cpuNow || 0)} and ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)} reserved`]; }
+  if (h.kind === "job") { const c = world.crates.get(h.id); return c && c.j && [c.j.job || "a job", `waiting ${ago(c.j.waitedSeconds)}${c.j.position ? " · " + c.j.position + ". in line" : ""}${c.j.expedited ? " · expedited" : c.j.level ? " · " + c.j.level : ""} — ${plainReason(c.j.reason)}`]; }
+  if (h.kind === "done") { const c = world.crates.get(h.id); return c && c.j && [c.j.job, `${{ ok: "finished ok", fail: "failed", oom: "out of memory", cancel: "cancelled" }[c.result] || c.result} · on ${c.j.host}`]; }
+  if (h.kind === "host") return [h.id, "a host: click for how full it is and what runs there"];
+  if (h.kind === "class") return [h.id, "a class of runner: click for its waiting jobs and why they wait"];
   return null;
 }
 
@@ -349,6 +359,17 @@ $("index-toggle").onclick = () => {
   $("index-toggle").setAttribute("aria-expanded", String(!c));
 };
 if (innerWidth < 640) { $("index").dataset.collapsed = "true"; $("index-toggle").setAttribute("aria-expanded", "false"); }
+
+// the legend: shown until someone says they have it, then a "?" away
+const legendKey = "pumasi.legend";
+const legendSeen = () => { try { return localStorage.getItem(legendKey) === "seen"; } catch (e) { return false; } };
+const legend = (on) => {
+  $("legend").hidden = !on;
+  $("legend-open").setAttribute("aria-pressed", String(on));
+};
+legend(params.get("legend") === "on" || (params.get("legend") !== "off" && !legendSeen()));
+$("legend-close").onclick = () => { legend(false); try { localStorage.setItem(legendKey, "seen"); } catch (e) { /* this page only */ } };
+$("legend-open").onclick = () => legend($("legend").hidden);
 for (const b of document.querySelectorAll("#zoom button")) {
   b.onclick = () => { const z = b.dataset.zoom; if (z === "fit") fit(); else zoomAt(z === "in" ? 1.3 : 0.77, view.w / 2, view.h / 2); };
 }
