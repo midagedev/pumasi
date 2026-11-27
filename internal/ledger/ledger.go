@@ -359,13 +359,15 @@ func (l *Ledger) JobCompleted(runner string, j Job, result string, at time.Time)
 
 // UpsertDemand records a JobAssigned. When GitHub reassigns a job it comes
 // with a new job id; the earlier, unassigned row of the same run and job name
-// lends its first_seen and count so waiting time and order survive.
+// lends its first_seen and count so waiting time and order survive. Only a
+// row GitHub took back within the last half hour: the same run and job name
+// hours later is somebody running the job again, and that wait starts anew.
 func (l *Ledger) UpsertDemand(j Job, at time.Time) error {
 	return l.exec(`INSERT INTO demand(job_id, class, repo, workflow, job, run_id, labels, event, queue_time, first_seen, last_seen, assigned_count)
-	  SELECT ?,?,?,?,?,?,?,?,?, COALESCE(MIN(first_seen), ?), ?, COUNT(*)+1
-	  FROM demand WHERE run_id=? AND job=? AND class=? AND served_by LIKE 'unassigned-%'
+	  SELECT ?,?,?,?,?,?,?,?,?, COALESCE(MIN(first_seen), ?), ?, COALESCE(MAX(assigned_count), 0)+1
+	  FROM demand WHERE run_id=? AND job=? AND class=? AND served_by LIKE 'unassigned-%' AND closed_at >= ?
 	  ON CONFLICT(job_id) DO UPDATE SET last_seen=excluded.last_seen`,
-		j.ID, j.Class, j.Repo, j.Workflow, j.Name, j.RunID, j.Labels, j.Event, ts(j.QueueTime), ts(at), ts(at), j.RunID, j.Name, j.Class)
+		j.ID, j.Class, j.Repo, j.Workflow, j.Name, j.RunID, j.Labels, j.Event, ts(j.QueueTime), ts(at), ts(at), j.RunID, j.Name, j.Class, ts(at.Add(-30*time.Minute)))
 }
 
 func (l *Ledger) CloseDemand(jobID, servedBy string, at time.Time) error {

@@ -247,3 +247,32 @@ func TestJobRuns(t *testing.T) {
 		t.Errorf("runner %+v", r)
 	}
 }
+
+// A job somebody runs again hours later has the run id and name of the one
+// GitHub once took back; it has not waited since then.
+func TestJobRunAgainLaterStartsItsWaitAnew(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	t0 := time.Date(2026, 11, 27, 1, 0, 0, 0, time.UTC)
+	j := Job{ID: "a", Class: "c", Repo: "o/r", RunID: 7, Name: "scope"}
+	for _, err := range []error{
+		l.UpsertDemand(j, t0),
+		l.CloseDemand("a", "unassigned-canceled", t0.Add(5*time.Minute)),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	j.ID = "b"
+	again := t0.Add(4 * time.Hour)
+	if err := l.UpsertDemand(j, again); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := l.OpenDemand()
+	if err != nil || len(ds) != 1 || !ds[0].FirstSeen.Equal(again) {
+		t.Fatalf("demand %+v (%v), want one first seen at %v", ds, err, again)
+	}
+}
