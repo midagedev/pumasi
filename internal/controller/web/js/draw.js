@@ -1019,7 +1019,7 @@ export class Scene {
         if (c.mode !== "queue" || c.hidden || !c.top || !c.j || !c.j.job) continue;
         const [sx, sy] = v.P(...c.top);
         if (sx < -80 || sy < -40 || sx > v.w + 80 || sy > v.h + 40) continue;
-        tags.push({ x: sx, y: sy - 4, title: c.j.job, sub: "waiting " + ago(c.j.waitedSeconds), dot: c.j.expedited ? [255, 122, 217] : th.warn, small: true, kind: "job", id: c.key, prio: 5 });
+        tags.push({ x: sx, y: sy - 4, title: c.j.job, sub: c.j._go ? "starting" : "waiting " + ago(c.j.waitedSeconds), dot: c.j.expedited ? [255, 122, 217] : th.warn, small: true, kind: "job", id: c.key, prio: 5 });
       }
     }
     if (this.opts.prioView) {
@@ -1125,7 +1125,12 @@ export class Scene {
     const off = tg.L.word === "offline" || tg.L.word === "no data";
     const h = 30 + (off ? 50 : 44) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
     tg.lines = lines;
-    return { x0: Math.round(tg.x - W / 2), y0: Math.round(tg.y - h), x1: Math.round(tg.x + W / 2), y1: Math.round(tg.y), w: W, h };
+    // a hall near the screen's edge keeps its whole card in view (a narrow screen)
+    const vw = this.v.w;
+    let x0 = tg.x - W / 2;
+    if (vw > W + 8 && tg.ax > 0 && tg.ax < vw) x0 = clamp(x0, 4, vw - W - 4);
+    x0 = Math.round(x0);
+    return { x0, y0: Math.round(tg.y - h), x1: x0 + W, y1: Math.round(tg.y), w: W, h };
   }
 
   cardDraw(tg, r) {

@@ -4,7 +4,7 @@
 import { View, TW, TH, TZ } from "./iso.js";
 import { World, HALL_D } from "./world.js";
 import { Scene } from "./draw.js";
-import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, jobKey, atParam, subjectOf } from "./hud.js";
+import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, jobKey, atParam, subjectOf, waitRows } from "./hud.js";
 import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive } from "./util.js";
 
 const $ = (id) => document.getElementById(id);
@@ -74,6 +74,9 @@ async function refreshSeries() {
 function apply() {
   const s = store.state;
   setLive(s.hosts);
+  // a job whose runner is already starting says so on its crate too, as in the list
+  const going = new Set(waitRows(s).filter((r) => r._go).map(jobKey));
+  for (const j of s.waitingJobs || []) j._go = going.has(jobKey(j));
   const express = expressOf();
   world.update(s, store.jobs, now(), { instant: !ui.motion, express, mode: store.prio && store.prio.mode });
   if (!view.fitted) fit(true);

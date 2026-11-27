@@ -123,7 +123,7 @@ export function renderChrome(onSelect) {
       "aria-label": `host ${h.name}: ${L.word}${L.why ? " (" + L.why + ")" : ""}, CPU ${L.cpu ? L.cpu.pct + "%" : "-"} taken, memory ${L.mem ? L.mem.pct + "%" : "-"} taken, ${h.runners} jobs running, ${h.memBytes ? gb(h.freeMem) + " free" : "no data"}`,
       onclick: () => onSelect({ kind: "host", id: h.name }),
     }, el("span", { class: "dot " + L.tone }), el("span", { class: "name", text: h.name }), el("span", { class: "word " + L.tone, text: off ? L.word : L.word + (L.why ? ": " + L.why : "") }),
-      off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${h.runners} ${h.runners === 1 ? "job" : "jobs"} still running there, none new` })
+      off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${h.runners} ${h.runners === 1 ? "job" : "jobs"} still running` })
         : el("span", { class: "gauges" }, gauge("CPU", L.cpu), gauge("Mem", L.mem))));
   }));
 
