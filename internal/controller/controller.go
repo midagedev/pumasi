@@ -797,6 +797,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 
 func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) decide.Snapshot {
 	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold, PSIMemThreshold: c.cfg.PSIMemThreshold,
+		PSIIOThreshold: c.cfg.PSIIOThreshold, MaxStarting: c.cfg.MaxStarting,
 		HeadStart: c.cfg.PriorityHeadStart, BlindHold: size.BlindHold,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
@@ -811,6 +812,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			a := h.snap
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
 			dh.PSIMem, dh.KeepMem = a.PSI["memory"], keepMem(a.MemBytes)
+			dh.PSIIO = a.PSI["io"]
 			dh.BudgetCPUs = minPositive(dh.BudgetCPUs, a.BudgetCPUs)
 			dh.BudgetMem = int64(minPositive(float64(dh.BudgetMem), float64(a.BudgetMem)))
 			if a.Kind != "" {

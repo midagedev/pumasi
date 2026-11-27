@@ -58,6 +58,7 @@ type Host struct {
 	KeepMem int64
 	PSICPU  float64
 	PSIMem  float64
+	PSIIO   float64
 	// Closed: why the host takes no new runners although it is up
 	// ("quarantined", "disk 4% free"). Empty = open.
 	Closed string
@@ -126,6 +127,13 @@ type Snapshot struct {
 	Runners         []Runner
 	PSICPUThreshold float64
 	PSIMemThreshold float64
+	// PSIIOThreshold: a host whose disk makes its work wait this much gets no
+	// new runner: a job's first minutes are its checkout and install.
+	PSIIOThreshold float64
+	// MaxStarting: at most this many runners come up on one host at a time
+	// (0 = any number). Jobs that waited together would otherwise all start
+	// in the tick the room came, and the disk shows it only after.
+	MaxStarting int
 	// HeadStart: a job of level L is placed as if it had come L*HeadStart earlier.
 	HeadStart time.Duration
 	// BlindHold: a blind job holds this many times its memory while it is
@@ -188,6 +196,7 @@ func Decide(s Snapshot) Plan {
 	live := map[string]int{}         // class -> runners holding capacity
 	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
 	watched := map[string]int{}      // host -> runners of jobs nobody has measured, still watched
+	starting := map[string]int{}     // host -> runners coming up
 	for _, r := range runners {
 		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r); ok {
 			p.Stop = append(p.Stop, st)
@@ -208,6 +217,9 @@ func Decide(s Snapshot) Plan {
 		}
 		if r.Watched {
 			watched[r.Host]++
+		}
+		if r.State == "starting" {
+			starting[r.Host]++
 		}
 	}
 
@@ -290,6 +302,9 @@ func Decide(s Snapshot) Plan {
 			case !ok:
 				why = append(why, reason)
 				continue
+			case s.MaxStarting > 0 && starting[hn] >= s.MaxStarting:
+				why = append(why, fmt.Sprintf("%s has %d runners coming up; the next when they are", hn, starting[hn]))
+				continue
 			case freeCPU+1e-9 < needCPU || (freeMem < needMem && (watched[hn] == 0 || holdMem == needMem)):
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				short = append(short, hn)
@@ -351,6 +366,7 @@ func Decide(s Snapshot) Plan {
 		if holdMem > needMem {
 			watched[best]++
 		}
+		starting[best]++
 		live[c.Name]++
 	}
 
@@ -430,6 +446,8 @@ func takes(s Snapshot, c Class, h Host) (ok bool, reason string) {
 		return false, fmt.Sprintf("%s cpu pressure %.0f", h.Name, h.PSICPU)
 	case s.PSIMemThreshold > 0 && h.PSIMem >= s.PSIMemThreshold:
 		return false, fmt.Sprintf("%s memory pressure %.0f", h.Name, h.PSIMem)
+	case s.PSIIOThreshold > 0 && h.PSIIO >= s.PSIIOThreshold:
+		return false, fmt.Sprintf("%s disk pressure %.0f", h.Name, h.PSIIO)
 	case c.Native && h.NoNative != "":
 		return false, h.Name + ": " + h.NoNative
 	case missing(c.Paths, h.Paths) != "":

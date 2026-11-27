@@ -36,6 +36,8 @@ type Config struct {
 	DemandTTL       time.Duration `yaml:"-"`
 	PSICPUThreshold float64       `yaml:"-"`
 	PSIMemThreshold float64       `yaml:"-"`
+	PSIIOThreshold  float64       `yaml:"-"`
+	MaxStarting     int           `yaml:"-"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -304,6 +306,7 @@ func (c *Config) defaults() {
 	def(&c.WaitAlert, 10*time.Minute)
 	def(&c.PriorityHeadStart, DefaultHeadStart)
 	c.IdleTimeout, c.DemandTTL, c.PSICPUThreshold, c.PSIMemThreshold = 5*time.Minute, 24*time.Hour, 40, 10
+	c.PSIIOThreshold, c.MaxStarting = 50, 4
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
 	}

@@ -238,3 +238,34 @@ func TestNoJobPassesAnOlderJobOfItsClassThatWaitsForRoom(t *testing.T) {
 		t.Errorf("without the big job: started %v, want 2", got)
 	}
 }
+
+// Jobs that waited together do not all start in the tick the room came, and
+// a host whose disk is behind gets none.
+func TestRunnersComeUpAFewAtATimeAndNotOnABusyDisk(t *testing.T) {
+	host := Host{Name: "h1", Kind: "server", Up: true, CPUs: 32, MemBytes: 64 * gb}
+	s := snap([]Host{host}, demand("build", 10), nil)
+	s.Classes = []Class{{Name: "build", CPUs: 1, MemBytes: gb}}
+	if n := len(Decide(s).Start); n != 10 {
+		t.Fatalf("no limit: %d started, want 10", n)
+	}
+	s.MaxStarting = 4
+	if n := len(Decide(s).Start); n != 4 {
+		t.Errorf("at most 4 at a time: %d started", n)
+	}
+	// Three are still coming up from the tick before: one more.
+	s.Runners = []Runner{
+		{Name: "a", Class: "build", Host: "h1", State: "starting", Container: "running", CreatedAt: s.Now},
+		{Name: "b", Class: "build", Host: "h1", State: "starting", Container: "running", CreatedAt: s.Now},
+		{Name: "c", Class: "build", Host: "h1", State: "starting", Container: "running", CreatedAt: s.Now},
+	}
+	if n := len(Decide(s).Start); n != 1 {
+		t.Errorf("3 coming up: %d started, want 1", n)
+	}
+	s.Runners, s.MaxStarting = nil, 0
+	s.PSIIOThreshold = 50
+	s.Hosts[0].PSIIO = 62
+	p := Decide(s)
+	if len(p.Start) != 0 || len(p.Defer) == 0 || !strings.Contains(p.Defer[0].Reason, "disk pressure 62") {
+		t.Errorf("disk behind: %d started, deferred %+v", len(p.Start), p.Defer)
+	}
+}
