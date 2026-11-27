@@ -110,7 +110,8 @@ type host struct {
 	ensuredAt time.Time // last restart attempt
 	// Guarded by Controller.mu: runners in a row that failed to start here, and
 	// since when the host is closed for new runners because of it.
-	closed      string // why the last round placed nothing here ("" = open); Evaluate's goroutine only
+	pressed     []string // pressures over their threshold at the last round (decide.Over); Evaluate's goroutine only
+	closed      string   // why the last round placed nothing here ("" = open); Evaluate's goroutine only
 	provFails   int
 	quarantined time.Time
 	probedAt    time.Time
@@ -813,6 +814,13 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
 			dh.PSIMem, dh.KeepMem = a.PSI["memory"], keepMem(a.MemBytes)
 			dh.PSIIO = a.PSI["io"]
+			dh.Pressed = h.pressed
+			h.pressed = nil
+			for res, thr := range map[string]float64{"cpu": c.cfg.PSICPUThreshold, "memory": c.cfg.PSIMemThreshold, "io": c.cfg.PSIIOThreshold} {
+				if decide.Over(a.PSI[res], thr, slices.Contains(dh.Pressed, res)) {
+					h.pressed = append(h.pressed, res)
+				}
+			}
 			dh.BudgetCPUs = minPositive(dh.BudgetCPUs, a.BudgetCPUs)
 			dh.BudgetMem = int64(minPositive(float64(dh.BudgetMem), float64(a.BudgetMem)))
 			if a.Kind != "" {

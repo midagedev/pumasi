@@ -268,4 +268,17 @@ func TestRunnersComeUpAFewAtATimeAndNotOnABusyDisk(t *testing.T) {
 	if len(p.Start) != 0 || len(p.Defer) == 0 || !strings.Contains(p.Defer[0].Reason, "disk pressure 62") {
 		t.Errorf("disk behind: %d started, deferred %+v", len(p.Start), p.Defer)
 	}
+	// Just under the line: a host that was over stays shut, one that was not takes.
+	s.Hosts[0].PSIIO, s.Hosts[0].Pressed = 45, []string{"io"}
+	if n := len(Decide(s).Start); n != 0 {
+		t.Errorf("pressure 45 after being over 50: %d started, want 0", n)
+	}
+	s.Hosts[0].Pressed = nil
+	if n := len(Decide(s).Start); n == 0 {
+		t.Error("pressure 45, never over: nothing started")
+	}
+	s.Hosts[0].PSIIO, s.Hosts[0].Pressed = 39, []string{"io"}
+	if n := len(Decide(s).Start); n == 0 {
+		t.Error("pressure 39 after being over: still shut")
+	}
 }

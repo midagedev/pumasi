@@ -59,6 +59,9 @@ type Host struct {
 	PSICPU  float64
 	PSIMem  float64
 	PSIIO   float64
+	// Pressed names what the host was over its threshold for at the last look
+	// ("cpu", "memory", "io"): it opens again only well under, see Over.
+	Pressed []string
 	// Closed: why the host takes no new runners although it is up
 	// ("quarantined", "disk 4% free"). Empty = open.
 	Closed string
@@ -429,6 +432,20 @@ func Decide(s Snapshot) Plan {
 
 const lacks = "lacks "
 
+// Over reports whether a pressure keeps runners off a host. A host that was
+// over (was) stays so until it is a fifth under the threshold: a pressure
+// that hovers at the line would otherwise open and close the host every few
+// seconds, and an overflow class would take a job only to give it back.
+func Over(pressure, threshold float64, was bool) bool {
+	if threshold <= 0 {
+		return false
+	}
+	if was {
+		return pressure >= threshold*0.8
+	}
+	return pressure >= threshold
+}
+
 // takes reports whether a host may get runners of a class at all, apart from
 // room. When not, reason says why for the people waiting ("" = not worth
 // telling: another class's host, another OS).
@@ -442,11 +459,11 @@ func takes(s Snapshot, c Class, h Host) (ok bool, reason string) {
 		return false, h.Name + " down"
 	case h.Closed != "":
 		return false, h.Name + " " + h.Closed
-	case s.PSICPUThreshold > 0 && h.PSICPU >= s.PSICPUThreshold:
+	case Over(h.PSICPU, s.PSICPUThreshold, slices.Contains(h.Pressed, "cpu")):
 		return false, fmt.Sprintf("%s cpu pressure %.0f", h.Name, h.PSICPU)
-	case s.PSIMemThreshold > 0 && h.PSIMem >= s.PSIMemThreshold:
+	case Over(h.PSIMem, s.PSIMemThreshold, slices.Contains(h.Pressed, "memory")):
 		return false, fmt.Sprintf("%s memory pressure %.0f", h.Name, h.PSIMem)
-	case s.PSIIOThreshold > 0 && h.PSIIO >= s.PSIIOThreshold:
+	case Over(h.PSIIO, s.PSIIOThreshold, slices.Contains(h.Pressed, "io")):
 		return false, fmt.Sprintf("%s disk pressure %.0f", h.Name, h.PSIIO)
 	case c.Native && h.NoNative != "":
 		return false, h.Name + ": " + h.NoNative
