@@ -75,3 +75,20 @@ func TestSharedRunnerFilesAreReadOnlyLinks(t *testing.T) {
 		t.Errorf("a writable shared file: err %v, want errDistChanged", err)
 	}
 }
+
+// The unpacked runner is kept where its files can be linked into a runner's
+// directory: beside the cache when that is the runners' filesystem.
+func TestUnpackedRunnerIsKeptWhereItCanBeLinked(t *testing.T) {
+	root := t.TempDir()
+	n := &Native{Root: filepath.Join(root, "cache"), Runners: filepath.Join(root, "runners")}
+	if got, want := n.distRoot(), filepath.Join(root, "cache", "dist"); got != want {
+		t.Errorf("same filesystem: kept at %s, want %s", got, want)
+	}
+	if !linkable(filepath.Join(root, "a"), filepath.Join(root, "b")) {
+		t.Error("two directories of one filesystem are linkable")
+	}
+	left, _ := os.ReadDir(filepath.Join(root, "b"))
+	if len(left) != 0 {
+		t.Errorf("the probe left %d files", len(left))
+	}
+}

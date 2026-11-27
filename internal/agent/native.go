@@ -42,6 +42,8 @@ type Native struct {
 	trees     map[string]*tree
 	refreshed time.Time // when the trees were last read from the process table
 	dists     map[string]*distFetch
+	distOnce  sync.Once
+	distAt    string // where unpacked runners are kept (distRoot)
 }
 
 // meta is pumasi.json.
@@ -77,6 +79,44 @@ func RunnerRoot(cache string) string {
 		return p
 	}
 	return filepath.Join(cache, "runners")
+}
+
+// distRoot is where the unpacked runner is kept: beside the cache, unless a
+// file there cannot be linked into a runner's directory (the cache on another
+// filesystem). Every runner would then be a copy of hundreds of megabytes,
+// one after the other on a busy disk; so it is kept with the runners instead.
+func (n *Native) distRoot() string {
+	n.distOnce.Do(func() {
+		n.distAt = filepath.Join(n.Root, "dist")
+		if !linkable(n.Root, n.runners()) {
+			n.distAt = filepath.Join(n.runners(), distDir)
+		}
+	})
+	return n.distAt
+}
+
+// distDir is the unpacked runners' place in the runners' directory. It has no
+// pumasi.json, so it is no runner.
+const distDir = ".dist"
+
+// linkable reports whether a file in one directory can be hard-linked into
+// the other. Where that cannot be tried, it says yes: nothing is moved.
+func linkable(from, to string) bool {
+	if os.MkdirAll(from, 0o700) != nil || os.MkdirAll(to, 0o700) != nil {
+		return true
+	}
+	f, err := os.CreateTemp(from, ".link-*")
+	if err != nil {
+		return true
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+	probe := filepath.Join(to, filepath.Base(f.Name()))
+	if os.Link(f.Name(), probe) != nil {
+		return false
+	}
+	os.Remove(probe)
+	return true
 }
 
 // trashDir holds what could not be deleted of removed runners.
@@ -410,7 +450,7 @@ func (n *Native) dist(ctx context.Context, image string) (string, error) {
 		return "", err
 	}
 	name := distName(version)
-	dir := filepath.Join(n.Root, "dist", name)
+	dir := filepath.Join(n.distRoot(), name)
 	if _, err := os.Stat(dir); err == nil {
 		return dir, nil
 	}
