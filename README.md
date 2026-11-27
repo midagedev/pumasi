@@ -1,40 +1,48 @@
 # pumasi
 
-[![대시보드: 호스트는 공장 건물(바닥이 메모리), 클래스는 라인, 기다리는 잡은 상자](docs/img/dashboard-dark.webp)](docs/guide.md#대시보드)
+[![The pumasi dashboard: hosts are halls whose floor is their memory, classes are conveyor lines, waiting jobs are crates](docs/img/demo.gif)](docs/img/demo.mp4)
 
-<sub>`pumasi open --demo` 의 한 장면. 건물 바닥은 그 호스트의 메모리이고, 기계(러너)는 자기가 잡은 만큼의 바닥에 선다. 라인 위의 상자는 기다리는 잡이며, 맨 앞 상자가 왜 못 들어가는지 말한다.</sub>
+<sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 44-second tour (mp4)](docs/img/demo.mp4): a host drops off, the line, expediting a job, high-only mode, the text view for agents.</sub>
 
-**Kubernetes 없이, 이미 가진 머신들에, GitHub 의 공식 경로(runner scale set)로 일회용 Actions 러너를 띄운다.**
-잡의 크기는 pumasi 가 재서 놓는다 — 사람이 CPU·메모리 숫자를 적거나 고치지 않는다.
+**Ephemeral GitHub Actions runners on the machines you already have, placed where the room is, by measured size, without Kubernetes.**
 
-- **가진 머신 그대로.** Linux 서버, 사람이 쓰는 Mac·Windows·Linux 데스크톱. 바이너리 하나를 한 머신(controller)에서 실행하고, 나머지(호스트)는 초대 한 줄로 붙는다. 호스트에 열 포트는 없다.
-- **잡 하나에 러너 하나.** 잡이 오면 자리가 있는 머신에 러너를 띄우고 끝나면 지운다. 자리가 없으면 잡은 이유와 함께 기다린다.
-- **재서 놓는다.** 처음 보는 잡은 짐작으로, 한 번 돈 잡은 잰 크기로 놓는다. 머신이 다른 일로 바쁘면 덜 놓고, 사람이 쓰는 데스크톱은 쓰는 동안 새 잡을 받지 않는다.
-- **도는 잡은 죽이지 않는다.** 크기를 넘어도, controller 가 죽어도, 연결이 끊겨도 잡은 호스트에서 끝까지 돈다. 스스로 고친 것도 못 고친 것도 사건으로 남기고 알린다.
+## Why
 
-## 5분 시작
+Fixed self-hosted runners make you guess. GitHub hands a job to any idle runner whatever the host is already doing, and a lint run and a browser e2e suite each count as "one runner". Register too few runners and a big machine sits idle while jobs queue. Register too many and three heavy jobs land on one host and starve each other, or the person working at that desktop. Leftover containers and directories from one job eat into the next.
 
-**필요한 것**
+pumasi starts one ephemeral runner per job, on the host that has room for it right now, and removes it when the job ends. It learns each job's size from the runs before it, so nobody writes CPU or memory numbers. When room is short, jobs wait in one line with a stated reason. You can raise a workflow's priority, expedite a single job, or for a while give new runners only to high-priority jobs. With an overflow class, pumasi takes only the jobs that fit and leaves the rest to your existing fixed runners. It's a single Go binary, built on GitHub's runner scale set API, the same one GitHub's actions-runner-controller uses.
 
-- controller 머신: Go(빌드용), 그리고 호스트들이 이 머신의 포트 하나(기본 7411)에 닿을 수 있을 것(같은 망, VPN, tailnet).
-- 호스트: Linux 는 그 사용자가 쓸 수 있는 Docker 와 cgroup v2. Mac·Windows 는 아무것도 필요 없다(러너가 그 사용자의 프로세스로 돈다).
-- GitHub 자격: 그 레포에 러너를 등록할 수 있는 토큰(classic PAT 면 `repo`, 조직 단위면 `admin:org`. 레포의 admin 이어야 한다) 또는 GitHub App. 필요한 권한의 전부는 [GitHub 자격](docs/guide.md#github-자격).
-  모자라면 `up` 이 `create scale set …: 403` 으로 끝난다. `gh` 를 쓰면 `gh auth refresh -s repo` 뒤 `gh auth token`.
-  토큰은 controller 밖으로 나가지 않는다 — 호스트로는 러너 하나짜리 일회용 설정만 간다.
+## Try it in a minute
 
-**1. 설정** — `pumasi.yaml` ([예시](pumasi.example.yaml))
+Look at the dashboard first. The demo runs the real placement code on a made-up shop of four hosts and eight classes:
+
+```sh
+git clone https://github.com/midagedev/pumasi && cd pumasi
+make                          # Go 1.27; builds ./dist/pumasi and the per-OS builds hosts fetch
+./dist/pumasi open --demo     # opens a browser; -seed N picks another shop, ?at=<seconds> freezes a moment
+```
+
+The demo doesn't connect to anything. The same `-seed` always shows the same scenes, and every ten minutes they repeat: someone working at a desktop, a nightly batch that waits, a deploy that goes first, a job killed at its class's memory limit, a host that drops off and comes back, a Mac short of disk.
+
+## Real setup
+
+**You need**
+
+- **A controller machine** with Go to build. Hosts must reach one port on it (default 7411), over the same network, a VPN or a tailnet.
+- **Hosts.** Linux needs Docker usable by that user and cgroup v2. macOS and Windows need nothing: runners run as that user's processes.
+- **A GitHub credential** that can register runners on the repo. That's a token (a classic PAT needs `repo`, or `admin:org` for an organization, from a repo admin) or a GitHub App. The token stays on the controller. A host only ever gets a one-time registration for one runner.
+
+**1. Config:** `pumasi.yaml` (see the [annotated example](pumasi.example.yaml))
 
 ```yaml
 url: https://github.com/OWNER/REPO
-listen: 0.0.0.0:7411                       # 호스트가 붙으러 오는 주소 (기본값)
 classes:
-  - {name: small}                          # 워크플로우: runs-on: [self-hosted, pumasi-small]
+  - {name: small}            # in a workflow: runs-on: [self-hosted, pumasi-small]
 ```
 
-**2. controller 를 띄운다**
+**2. Start the controller**
 
 ```sh
-make                                              # dist/pumasi 와, 호스트가 받아 갈 OS별 빌드
 PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi up
 ```
 
@@ -45,22 +53,7 @@ PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi up
 11:57:40 listening for jobs (Ctrl-C to stop)
 ```
 
-**3. 호스트를 붙인다** — 다른 터미널에서 초대 줄을 받아, 붙일 머신에서 실행한다. `up` 이 떠 있는 동안만 붙는다.
-
-```
-$ ./dist/pumasi invite
-Run this on the host that should join. It works for one host, until 12:57.
-
-Linux, macOS:
-
-  curl -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.sh | PUMASI_TOKEN=<token> sh -s --
-
-Windows (PowerShell, in a window on that machine's desktop):
-
-  $env:PUMASI_TOKEN='<token>'; & ([scriptblock]::Create((curl.exe -fsSk --pinnedpubkey 'sha256//…' https://10.0.0.5:7411/join.ps1 | Out-String)))
-```
-
-호스트는 붙기 전에 하나씩 확인하고 막힌 것을 이름으로 말한다:
+**3. Join a host.** `pumasi invite` prints a one-line command (curl | sh on Linux and macOS, PowerShell on Windows). It's pinned to the controller's key and valid for one host for an hour. Run it on the host. Before joining, the host checks each requirement and names whatever is missing:
 
 ```
 ok    tcp 10.0.0.5:7411 (3ms)
@@ -72,11 +65,9 @@ ok    cgroup v2 with memory and cpu controllers
 joined as desk1 (server): lends what it has free, runs as the systemd user unit pumasi.service
 ```
 
-- 기본은 hostname 으로 붙고, **그때그때 재서 비어 있는 만큼** 빌려준다. 줄 끝의 `--name desk1` 로 이름을, `--cpus 6 --mem 9G` 로 빌려주는 양의 상한을 정한다.
-- 초대 줄은 호스트 하나, 1시간 동안만 통한다(`pumasi invite --uses 5 --ttl 24h`). `-k` 는 위험하지 않다 — `--pinnedpubkey` 가 이 controller 의 키만 받는다.
-- 주소가 여럿인 머신이면 `invite` 가 나머지도 알려 준다. 호스트가 닿는 주소를 쓴다.
+Hosts you can reach over ssh can go in the config instead (`hosts: [{ssh: server1}]`), and `up` runs the invite there for you.
 
-**4. 잡을 보낸다** — 워크플로우에 `runs-on: [self-hosted, pumasi-small]`.
+**4. Send a job:** `runs-on: [self-hosted, pumasi-small]`.
 
 ```
 11:58:52 start small on desk1  takes 2.0cpu/4.0G of the free 6.0cpu/9.0G for build (the class's first estimate; …)  (small-desk1-1ea93ba5)
@@ -85,93 +76,62 @@ joined as desk1 (server): lends what it has free, runs as the systemd user unit 
 12:01:02 done build on small-desk1-1ea93ba5  succeeded
 ```
 
-첫 러너는 느리다: Linux 호스트는 러너 이미지(수백 MB)를, Mac·Windows 는 러너 배포판을 처음 한 번 받는다. 3분(`provisionTimeout`) 안에 못 뜨면 지우고 다시 띄우고,
-같은 호스트에서 세 번 연속이면 그 호스트를 잠시 쉬게 한다(5분마다 다시 본다). 회선이 느리면 호스트에서 `docker pull ghcr.io/actions/actions-runner:2.338.2` 를 먼저 해 둔다.
+Ctrl-C stops only the controller. Running jobs finish on their hosts, and the next `up` adopts them. `pumasi down` removes everything pumasi created on the hosts and on GitHub. It refuses while runners are up unless you pass `--force`. `pumasi service install` keeps the controller running across crashes and reboots (Linux and macOS).
 
-**끄기** — Ctrl-C 는 controller 만 내린다. 도는 잡은 호스트에서 계속 돌고 다음 `up` 이 이어받는다.
-`pumasi down` 이 전부 지운다: 호스트의 러너·에이전트·파일, GitHub 의 scale set. 러너가 떠 있으면 목록을 보이고 거부한다(`--force`).
-러너 이미지는 pumasi 가 받은 것만 지운다(원래 있던 것, 다른 컨테이너가 쓰는 것은 남긴다).
-호스트 하나만 떼려면 그 호스트에서 `pumasi leave`.
+## What it does
 
-**대신 붙여 주기** — ssh 로 들어갈 수 있는 호스트는 설정에 적어 두면 `up` 이 거기서 초대 줄을 대신 실행한다. 붙은 뒤는 같다.
+**Placement by measured size.** A job is identified by its repo, workflow file and job name. Its next run is placed with the largest of its last 10 runs plus 20% (memory without page cache). A job never seen before starts at the class's first estimate (2 CPUs / 4 GB unless you set one), or at the size of other jobs in the same workflow. A host's room is measured live: what its runners hold, what other processes use, and a memory reserve. A host under memory pressure gets no new runners. An estimate is not a limit. A job that outgrows it keeps running and is placed bigger next time.
 
-```yaml
-hosts:
-  - {ssh: server1}
-  - {ssh: desk1, desktop: true, budget: {cpus: 6, memory: 9G}}   # budget 은 상한이다(없으면 비어 있는 만큼). WSL 을 쓰는 Windows 면 shell: wsl -e sh -s
-```
+**Any mix of machines.** Linux servers run container runners (or `driver: native`, a process of the host user). Macs and Windows PCs run native runners. A host marked `desktop` is used after the servers fill up, and gets no new runner while someone is using it (input in the last 15 minutes).
 
-그 호스트가 `listen` 주소에 닿지 못하면 `up` 이 `server1 cannot reach this controller at …` 로 말한다.
+**Running jobs are never stopped by placement.** Not when they outgrow their estimate, not when the controller dies or restarts, not when a host's connection drops. What pumasi fixes on its own and what it can't are both recorded as incidents, which can go to a webhook or a command. With `rerun: 1`, a run that failed because of pumasi is rerun once.
 
-## 클래스
+<table>
+<tr>
+<td width="50%"><img src="docs/img/dashboard-priority.webp" alt="The priority view: the line of waiting jobs with each one's level and reason"></td>
+<td width="50%"><img src="docs/img/dashboard-expedite.webp" alt="An expedited job: its crate turns pink and it is first in line"></td>
+</tr>
+<tr>
+<td><b>Priorities.</b> When room is short, jobs wait in one line. Rules in the config, by workflow, job, class or event, make a job <code>high</code> (counts as having come 30 minutes earlier) or <code>low</code>. A job that has waited 30 minutes passes them, so nothing starves. <code>pumasi priority</code> shows the line and why each job stands where it does.</td>
+<td><b>Expedite.</b> <code>pumasi expedite &lt;job URL&gt;</code>, or one button on the dashboard, puts a waiting job before every other one and keeps room for it on a host. No running job is stopped to make room.</td>
+</tr>
+<tr>
+<td><img src="docs/img/dashboard-mode.webp" alt="High-only mode: a banner across the top and gates down on the lines"></td>
+<td><img src="docs/img/dashboard-list.webp" alt="The List view: the same facts as tables"></td>
+</tr>
+<tr>
+<td><b>High-only mode.</b> <code>pumasi mode high-only --for 30m</code>: for a while, only expedited and high jobs get new runners. Other jobs wait at their gates, and everything running keeps running.</td>
+<td><b>Readable by people and agents.</b> <code>pumasi status</code>, the List view and <code>GET /api/explain</code> give the same facts as text: each open problem and the command to type next. Deep links (<code>?host=</code>, <code>?job=</code>, <code>?view=priority</code>), <code>data-*</code> attributes for browser-driving tools, and <code>/metrics</code> for Prometheus.</td>
+</tr>
+</table>
 
-클래스는 러너의 종류고 GitHub 의 scale set 하나다. 잡은 `runs-on: [self-hosted, pumasi-<이름>]` 으로 고른다. 숫자 없이 이름만 적어도 된다.
+**Moving off fixed runners.** Give a class your fixed runners' `labels` and workflows move over unchanged. `env`, `path` and `{slot}` (a per-runner number for directories that persist between jobs) recreate the runner environment. A class with `overflow: true` takes only the jobs it has room for right now. The rest go to fixed runners with the same labels, so you can move over one host at a time.
 
-```yaml
-classes:
-  - {name: small}                                     # 컨테이너 러너. 호스트의 것은 안 보인다
-  - {name: e2e,    docker: inside, maxDuration: 2h}   # 잡이 자기 docker 로 compose 스택을 띄운다
-  - {name: cache,  mounts: [/srv/ci-cache]}           # 호스트 경로를 붙인다(그 경로가 있는 호스트에만)
-  - {name: build,  driver: native, hosts: [server1]}  # 호스트 사용자의 프로세스로, 그 호스트에서만
-  - {name: macos,  os: macos}                         # Mac·Windows 는 늘 그 사용자의 프로세스
-  - {name: deploy, reserve: 1}                        # 다른 클래스가 못 쓰는 자리 하나
-  - {name: fenced, limit: {memory: 8G}}               # 묶고 싶을 때만: 8G 를 넘는 잡은 죽는다
-```
+**Security in one line.** GitHub credentials stay on the controller. Hosts get one-time registrations. Container jobs see only their container. A native job sees what that host user sees, so use native classes only for repos you trust. The dashboard listens on loopback by default. Its write endpoints (expedite, mode, rules) take JSON only and, unless you set a dashboard token, only from this machine.
 
-키 전부(`labels` · `overflow` · `env` · `path` · `cpus`/`memory` …)와 주의할 점은 [안내서: 클래스](docs/guide.md#클래스).
-native 러너는 격리가 약하다 — 잡이 그 사용자의 홈·자격을 읽을 수 있으니 믿는 레포의 잡에만 쓴다.
+<p>
+<img src="docs/img/dashboard-light.webp" width="66%" alt="The dashboard in the light theme">
+<img src="docs/img/dashboard-phone.webp" width="22%" alt="The dashboard on a phone">
+</p>
 
-## 크기는 재서 놓는다
+## How it works
 
-- 레포 · 워크플로우 파일 · 잡 이름이 같으면 같은 잡이다. 끝난 실행 최근 10번의 최대에 20% 를 얹은 것이 다음 실행의 크기다(메모리는 페이지 캐시를 뺀 값).
-- 처음 보는 잡은 클래스의 첫 추정(기본 2cpu/4G)이나 같은 워크플로우의 다른 잡 크기로 놓고, 아무것도 모르는 잡은 한 호스트에 한꺼번에 나란히 놓지 않는다.
-- 호스트의 자리는 그때그때 잰다: 머신에서 러너들이 쥔 것, 다른 프로세스가 쓰는 것, 남겨 두는 메모리를 뺀 것. 메모리 압박이 있으면 새 러너를 놓지 않는다.
-- **추정은 한도가 아니다.** 넘은 잡은 끝까지 돌고 다음에는 크게 놓인다. 강제하는 것은 호스트를 지키는 한도(러너 하나가 머신 메모리의 80%)와, 적었을 때만 클래스의 `limit` 이다.
+One binary plays both roles. `pumasi up` is the controller. It keeps one GitHub runner scale set per class, a ledger of runners and measured job sizes (SQLite), and decides placement every round. Every host runs `pumasi agent`, which dials the controller over TLS pinned to the controller's key. Hosts open no ports. The agent reports what the machine has free and runs the runners it is told to. The design and the reasons behind it, set against what the scale set API allows, are in [docs/design.md](docs/design.md).
 
-```
-$ pumasi status
-RUNNER                CLASS  HOST     SLOT  STATE  JOB    AGE     EST          NOW
-e2e-server1-d8139867  e2e    server1  1     busy   smoke  23m43s  0.4cpu/3.7G  0.2cpu/3.1G
+What pumasi can't do, because GitHub or the platform gives it no handle:
 
-WAITING  JOBS  LINE  WHY
-macos    1     1     no host with 2.0cpu/4.0G free (mac1 in use)
+- **Keep a run's jobs on one machine.** Within a scale set, GitHub decides which runner gets which job.
+- **Move or preempt a running job.** Killing one only leaves a failed job.
+- **Enforce memory or CPU limits on macOS.** On a Mac, placement is the only protection.
+- **Reach hosts behind NAT.** A host must reach the controller's `listen` address directly. There is no relay.
+- **Provide VM isolation** (Tart, microVMs), other CI systems, or cloud instances. These are out of scope.
 
-JOB SIZE  WORKFLOW  NEXT RUN     LAST RUN     LARGEST      RUNS
-smoke     e2e.yml   0.4cpu/3.7G  0.2cpu/3.0G  0.3cpu/3.1G  10
-```
+## Status
 
-자세히: [안내서: 숫자를 고치지 않는 배치](docs/guide.md#숫자를-고치지-않는-배치).
+Early, pre-1.0. It has run real GitHub jobs on a Linux server (Docker), a WSL2 desktop, an Apple silicon Mac and a Windows 11 desktop. [docs/verified.md](docs/verified.md) lists every behavior of the design and how far each was checked: on real hosts, by unit tests only, or not yet run. Not yet run, among others: Windows size measurement, real host reboots, and a GitHub App end to end (the App path is unit-tested).
 
-## 더 하는 것
+The detailed docs are in Korean for now: [guide](docs/guide.md) (every config key and command), [design](docs/design.md), [verified](docs/verified.md), [research](docs/research/). The CLI, the dashboard and their output are in English.
 
-| | 한 줄로 | 안내서 |
-|---|---|---|
-| 잡 우선순위 | 자리가 모자랄 때의 줄을 규칙으로(`priority:`). 도는 잡은 밀어내지 않고, 굶는 잡이 없다 | [잡 우선순위](docs/guide.md#잡-우선순위) |
-| 고정 러너에서 옮기기 | 클래스에 고정 러너의 `labels` 를 그대로 적으면 워크플로우를 안 고치고 넘어온다. 환경은 `env`·`path`·`{slot}` | [옮기기](docs/guide.md#기존-고정-러너에서-옮기기) |
-| 조금씩 옮기기 | `overflow: true` 인 클래스는 받을 수 있는 만큼만 받고, 넘치는 잡은 같은 라벨의 고정 러너·다른 클래스로 흐른다 | [overflow](docs/guide.md#받을-수-있는-만큼만-받기-overflow) |
-| 사람 우선 | 데스크톱은 서버가 찬 뒤에 쓰고, 누가 쓰는 동안(입력 15분 안)에는 새 러너를 받지 않는다 | [호스트 종류](docs/guide.md#호스트-종류와-사람-우선) |
-| 사건과 알림 | 러너가 죽음·호스트 끊김·메모리 한도·오래 기다림을 웹훅이나 명령으로. controller 가 없어진 것은 호스트가 알린다. `rerun: 1` 이면 우리 쪽 잘못으로 실패한 run 을 다시 돌린다 | [사건과 알림](docs/guide.md#사건과-알림) |
-| 대시보드 | `pumasi open` — 공장 지도로 보는 호스트·라인·대기 사유·최근 잡·추이와 같은 내용의 표. `/api/explain` 은 문제와 다음 명령을 글로. `pumasi open --demo` 는 controller 없이 본다. `/metrics` 는 Prometheus | [대시보드](docs/guide.md#대시보드) |
-| 계속 켜 두기 | `pumasi service install` — 죽으면 다시 띄우고 재부팅 뒤에도 올라온다(Linux·macOS) | [서비스](docs/guide.md#controller-를-계속-켜-두기) |
-| GitHub 자격 | 토큰 또는 GitHub App. 레포 단위면 Administration: Read and write 면 된다 | [GitHub 자격](docs/guide.md#github-자격) |
+## License
 
-## 보안 한 줄
-
-**GitHub 자격은 controller 에만 있다.** 호스트에는 러너 하나가 잡 하나를 받을 일회용 등록만 간다. 컨테이너 러너의 잡은 자기 컨테이너만 보고, native 러너의 잡은 그 호스트 사용자가 보는 것을 다 본다.
-잡이 controller 의 사용자로 도는 구성(자기 노트북 한 대에 둘 다)은 `up` 이 찾아 경고한다. 전부: [안내서: 보안 모델](docs/guide.md#보안-모델).
-
-## 풀지 못하는 것
-
-- **한 run 의 잡들을 같은 머신에 보내기.** scale set 안에서는 어느 러너가 어느 잡을 받을지 정할 수 없다. 호스트에 띄운 것을 뒤 잡이 이어 쓰는 워크플로우는 호스트마다 클래스를 하나씩 두고(`hosts:`) 앞 잡이 run 전체의 클래스를 고르게 한다.
-- **native 잡이 호스트 docker 로 띄운 컨테이너의 사용량.** 러너의 한도에도 수치에도 안 잡히고 호스트 전체 압박으로만 보인다. 컨테이너 클래스는 `docker: inside` 로 안에 넣을 수 있다.
-- **Mac 의 메모리·CPU 한도.** 강제할 수단이 없다. 폭주하는 잡에서 Mac 을 지키는 것은 배치가 재서 새 러너를 안 놓는 것뿐이다.
-- **호스트 전체의 메모리가 바닥나는 것.** 러너 하나는 한도로 막지만, 여러 러너가 함께 커져 머신이 바닥나면 커널이 고르는 프로세스가 죽는다. 남겨 두는 메모리와 압박 감지가 그 전에 새 러너를 멈출 뿐이다.
-- **처음 보는 큰 잡.** 첫 실행은 클래스의 첫 추정으로 놓인다. 워크플로우째로 처음인 잡은 3배를 쥐어 두고 지켜보지만([처음 보는 잡](docs/guide.md#숫자를-고치지-않는-배치)), 첫 추정의 3배보다 크거나 3분 뒤에야 자라는 잡이 몰리면 그 한 번은 호스트가 빡빡해질 수 있다. 큰 잡이 올 클래스는 `cpus`·`memory` 를 크게 적어 둔다.
-- **native 러너와 에이전트는 같은 사용자다.** 잡이 에이전트의 가입 자격을 읽을 수 있다. 배포 자격을 쥔 호스트는 믿는 워크플로우의 클래스만 받게 `hosts:` 로 가른다.
-- **NAT 너머의 호스트.** 호스트가 controller 의 `listen` 주소에 직접 닿아야 한다. 중계는 없다.
-- **잡을 다른 호스트로 옮기기, 도는 잡을 밀어내기.** GitHub 에 그런 길이 없어서, 죽이면 실패한 잡만 남는다.
-- VM 격리(Tart, microVM), GitHub 이외의 CI, 클라우드 인스턴스 만들기는 범위 밖이다.
-
-## 문서
-
-[안내서](docs/guide.md) · [지금의 설계](docs/design.md) · [실물로 확인된 것](docs/verified.md) · [조사](docs/research/)
+[MIT](LICENSE) © 2026 midagedev
