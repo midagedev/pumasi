@@ -3,6 +3,8 @@
 package agent
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -172,32 +174,76 @@ func TestClassEnv(t *testing.T) {
 	}
 }
 
-// A class's work outlives its runners: the runner's _work is a link to the
-// slot's directory, and removing the runner leaves what the job built there.
+// A class's work outlives its runners. The runner is told the slot
+// directory's real path through its JIT config, so what it hands the job is
+// where the files are; removing the runner leaves what the job built there.
 func TestWorkStaysWithTheSlot(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "runners", "r1")
 	if err := os.MkdirAll(filepath.Join(dir, "runner"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := Spec{Class: "c", Slot: 3, WorkDir: filepath.Join(root, "work", "w{slot}")}
-	if err := linkWork(dir, s); err != nil {
+	b64 := base64.StdEncoding.EncodeToString
+	runner, _ := json.Marshal(map[string]any{"AgentName": "r1", "WorkFolder": "_work", "Ephemeral": true})
+	files, _ := json.Marshal(map[string]string{".runner": b64(append([]byte("\xef\xbb\xbf"), runner...)), ".credentials": b64([]byte("{}"))})
+	// The slot's directory is a link to an older one (a fixed runner's _work):
+	// the runner gets where it leads.
+	old := filepath.Join(root, "fixed", "_work")
+	if err := os.MkdirAll(old, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	slot := filepath.Join(root, "work", "w3")
-	if err := os.WriteFile(filepath.Join(dir, "runner", "_work", "node_modules"), []byte("x"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(old, filepath.Join(root, "work", "w3")); err != nil {
+		t.Fatal(err)
+	}
+	s := Spec{Class: "c", Slot: 3, WorkDir: filepath.Join(root, "work", "w{slot}"), JITConfig: b64(files)}
+	jit, err := setWork(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(jit)
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := base64.StdEncoding.DecodeString(got[".runner"])
+	var r map[string]any
+	if err := json.Unmarshal(rb, &r); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(old)
+	if r["WorkFolder"] != want || r["AgentName"] != "r1" || r["Ephemeral"] != true || got[".credentials"] != b64([]byte("{}")) {
+		t.Errorf("rewritten JIT: .runner %v, files %v; want WorkFolder %s and the rest as it was", r, got, want)
+	}
+	if err := os.WriteFile(filepath.Join(want, "node_modules"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeTree(dir); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(filepath.Join(slot, "node_modules")); err != nil || string(b) != "x" {
+	if b, err := os.ReadFile(filepath.Join(old, "node_modules")); err != nil || string(b) != "x" {
 		t.Fatalf("slot's work after the runner went: %q, %v", b, err)
 	}
-	if err := linkWork(dir, Spec{Class: "c", WorkDir: "/w/{slot}"}); err == nil {
+
+	// A JIT config it does not know: the runner's _work is a link instead.
+	dir2 := filepath.Join(root, "runners", "r2")
+	if err := os.MkdirAll(filepath.Join(dir2, "runner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.JITConfig = "not-a-jit"
+	if jit, err := setWork(dir2, s); err != nil || jit != "not-a-jit" {
+		t.Fatalf("unknown JIT: %q, %v", jit, err)
+	}
+	if l, err := os.Readlink(filepath.Join(dir2, "runner", "_work")); err != nil || l != want {
+		t.Errorf("_work link %q, %v; want %s", l, err, want)
+	}
+
+	if _, err := setWork(dir, Spec{Class: "c", WorkDir: "/w/{slot}"}); err == nil {
 		t.Error("no slot number: want an error")
 	}
-	if err := linkWork(dir, Spec{Class: "c"}); err != nil {
-		t.Errorf("no work: %v", err)
+	if jit, err := setWork(dir, Spec{Class: "c", JITConfig: "j"}); err != nil || jit != "j" {
+		t.Errorf("no work: %q, %v", jit, err)
 	}
 }

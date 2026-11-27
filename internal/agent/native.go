@@ -3,8 +3,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -150,7 +152,8 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 	if err != nil {
 		return fail(fmt.Errorf("clone runner: %w", err))
 	}
-	if err := linkWork(dir, s); err != nil {
+	jit, err := setWork(dir, s)
+	if err != nil {
 		return fail(err)
 	}
 	log, err := os.OpenFile(filepath.Join(dir, "log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -167,7 +170,7 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 		}
 	}
 	// The JIT config goes through the environment so it never lands on disk or in argv.
-	env := append(classEnv(runnerEnv(os.Environ()), s, dir), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig)
+	env := append(classEnv(runnerEnv(os.Environ()), s, dir), "ACTIONS_RUNNER_INPUT_JITCONFIG="+jit)
 	t, err := startTree(dir, s, env, log)
 	if err != nil {
 		return fail(fmt.Errorf("start runner: %w", err))
@@ -272,26 +275,80 @@ func (n *Native) Remove(_ context.Context, name string) error {
 	return fmt.Errorf("remove %s: %w", dir, err)
 }
 
-// linkWork makes the runner's _work a link to the class's work directory of
-// its slot, which stays when the runner goes: removing the runner removes the
-// link, not what it points to, so the next runner of the slot finds the
-// checkout and node_modules the last one left, as a fixed runner's next job
-// does. Nothing when the class names no work.
-func linkWork(dir string, s Spec) error {
+// setWork puts the runner's work directory in the class's work directory of
+// its slot, which stays when the runner goes: the next runner of the slot
+// finds the checkout and node_modules the last one left, as a fixed runner's
+// next job does. The runner is told the real path (WorkFolder in the JIT
+// config's .runner), so the paths it hands the job — GITHUB_WORKSPACE,
+// RUNNER_TEMP — are where the files are: a docker VM that mounts only some
+// host directories (colima mounts $HOME) sees what the job bind-mounts.
+// If the JIT config is not what it expects, the runner's _work becomes a
+// link instead. Returns the JIT config to start the runner with.
+func setWork(dir string, s Spec) (string, error) {
 	if s.WorkDir == "" {
-		return nil
+		return s.JITConfig, nil
 	}
 	w := s.expand(s.WorkDir, "")
 	if s.Slot == 0 || strings.Contains(w, "{slot}") || !filepath.IsAbs(w) {
-		return fmt.Errorf("work %q of class %s: no slot number to put in it", s.WorkDir, s.Class)
+		return "", fmt.Errorf("work %q of class %s: no slot number to put in it", s.WorkDir, s.Class)
 	}
 	if err := os.MkdirAll(w, 0o755); err != nil {
-		return fmt.Errorf("work of class %s, slot %d: %w (make it writable for this user)", s.Class, s.Slot, err)
+		return "", fmt.Errorf("work of class %s, slot %d: %w (make it writable for this user)", s.Class, s.Slot, err)
+	}
+	if real, err := filepath.EvalSymlinks(w); err == nil {
+		w = real
+	}
+	if jit, err := jitWithWork(s.JITConfig, w); err == nil {
+		return jit, nil
 	}
 	if err := os.Symlink(w, filepath.Join(dir, "runner", "_work")); err != nil {
-		return fmt.Errorf("work of class %s, slot %d: link the runner's _work to %s: %w", s.Class, s.Slot, w, err)
+		return "", fmt.Errorf("work of class %s, slot %d: link the runner's _work to %s: %w", s.Class, s.Slot, w, err)
 	}
-	return nil
+	return s.JITConfig, nil
+}
+
+// jitWithWork is the JIT config with the runner's WorkFolder set to work. The
+// config is base64 of a JSON object of file name to base64 content; the
+// runner writes those files and reads .runner, whose WorkFolder is "_work".
+func jitWithWork(jit, work string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(jit)
+	if err != nil {
+		return "", err
+	}
+	var files map[string]string
+	if err := json.Unmarshal(raw, &files); err != nil {
+		return "", err
+	}
+	enc, ok := files[".runner"]
+	if !ok {
+		return "", errors.New("no .runner in the JIT config")
+	}
+	b, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		return "", err
+	}
+	var runner map[string]any
+	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &runner); err != nil {
+		return "", err
+	}
+	key := ""
+	for k := range runner {
+		if strings.EqualFold(k, "WorkFolder") {
+			key = k
+		}
+	}
+	if key == "" {
+		return "", errors.New("no WorkFolder in .runner")
+	}
+	runner[key] = work
+	if b, err = json.Marshal(runner); err != nil {
+		return "", err
+	}
+	files[".runner"] = base64.StdEncoding.EncodeToString(b)
+	if raw, err = json.Marshal(files); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // removeTree is os.RemoveAll that also gets through directories the job left
