@@ -338,7 +338,21 @@ func Decide(s Snapshot) Plan {
 		if d.Blind && s.BlindHold > 1 {
 			holdMem = needMem * s.BlindHold
 		}
+		// A job larger than any host of the class could ever lend would wait
+		// for good: where it is, it is sized at what a host lends with no
+		// runner on it, and runs there alone (see sizeOn).
+		ceil := ceiling(s, c)
+		on := func(h Host) (cpu, mem, hold float64, capped, ok bool) {
+			cpu, mem, capped, ok = sizeOn(h, needCPU, needMem, ceil)
+			hold = holdMem
+			if capped {
+				hold = mem
+			}
+			return cpu, mem, hold, capped, ok
+		}
 		best, bestSlots := "", -1.0
+		var bestCPU, bestMem, bestHold float64
+		capped := false
 		var why, short []string
 		lacking := "" // a path no host that could otherwise take the class has
 		for _, hn := range c.Hosts {
@@ -362,13 +376,19 @@ func Decide(s Snapshot) Plan {
 			case s.MaxStarting > 0 && starting[hn] >= s.MaxStarting:
 				why = append(why, fmt.Sprintf("%s has %d runners coming up; the next when they are", hn, starting[hn]))
 				continue
-			case freeCPU+1e-9 < needCPU || (freeMem < needMem && (watched[hn] == 0 || holdMem == needMem)):
+			}
+			hCPU, hMem, hHold, hCapped, lends := on(h)
+			switch {
+			case !lends:
+				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
+				continue
+			case freeCPU+1e-9 < hCPU || (freeMem < hMem && (watched[hn] == 0 || hHold == hMem)):
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				short = append(short, hn)
 				continue
-			case watched[hn] > 0 && freeMem < holdMem:
+			case watched[hn] > 0 && freeMem < hHold:
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s: it watches %d unmeasured job there and takes the next with %s free or when that one has shown its size",
-					hn, freeCPU, gib(freeMem), watched[hn], gib(holdMem)))
+					hn, freeCPU, gib(freeMem), watched[hn], gib(hHold)))
 				short = append(short, hn)
 				continue
 			}
@@ -376,13 +396,17 @@ func Decide(s Snapshot) Plan {
 				why = append(why, hn+" kept for "+k.what)
 				continue
 			}
-			if r := reservedFor(s, c, hn, needCPU, needMem, hosts, alloc, live); r != "" {
+			if r := reservedFor(s, c, hn, hCPU, hMem, hosts, alloc, live); r != "" {
 				why = append(why, hn+" reserved for "+r)
 				continue
 			}
-			slots := math.Min(freeCPU/needCPU, freeMem/needMem)
+			slots := math.Min(freeCPU/hCPU, freeMem/hMem)
+			if hCapped {
+				slots = hMem + hCPU // it runs alone wherever it goes: the most room first
+			}
 			if best == "" || better(h, slots, hosts[best], bestSlots) {
 				best, bestSlots = hn, slots
+				bestCPU, bestMem, bestHold, capped = hCPU, hMem, hHold, hCapped
 			}
 		}
 		if best == "" {
@@ -396,12 +420,18 @@ func Decide(s Snapshot) Plan {
 			if len(why) == 0 {
 				why = append(why, "no allowed host")
 			}
-			wait(fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
+			showCPU, showMem, alone := needCPU, needMem, ""
+			if ceil[0] > 0 && needCPU > ceil[0]+1e-9 || ceil[1] > 0 && needMem > ceil[1] {
+				showCPU, showMem = math.Min(needCPU, ceil[0]), math.Min(needMem, ceil[1])
+				alone = "; " + tooBig(c, needCPU, needMem, ceil) + ": it runs alone on one once one is empty"
+			}
+			wait(fmt.Sprintf("no host with %.1fcpu/%s free (%s)%s", showCPU, gib(showMem), strings.Join(why, ", "), alone))
 			behind[c.Name] = true
 			for _, hn := range short {
 				// A host the job would not fit even with every runner gone is not
 				// kept for it: nothing would come of the wait.
-				if ec, em := Free(hosts[hn], 0, 0); ec+1e-9 < needCPU || em < needMem {
+				hCPU, hMem, _, _, _ := on(hosts[hn])
+				if ec, em := Free(hosts[hn], 0, 0); ec+1e-9 < hCPU || em < hMem {
 					continue
 				}
 				if k, ok := kept[hn]; !ok || rank(d) > k.rank {
@@ -420,21 +450,24 @@ func Decide(s Snapshot) Plan {
 		}
 		h := hosts[best]
 		freeCPU, freeMem := free(h, alloc[best])
-		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", needCPU, gib(needMem), freeCPU, gib(freeMem))
+		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", bestCPU, gib(bestMem), freeCPU, gib(freeMem))
 		if d.Sized != "" {
 			reason += " " + d.Sized
 		}
-		if holdMem > needMem {
-			reason += fmt.Sprintf("; holds %s while it is watched", gib(holdMem))
+		if capped {
+			reason += "; " + tooBig(c, needCPU, needMem, ceil) + ": it runs alone on " + best
+		}
+		if bestHold > bestMem {
+			reason += fmt.Sprintf("; holds %s while it is watched", gib(bestHold))
 		}
 		if d.Ranked != "" {
 			reason += "; " + d.Ranked
 		}
-		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: needCPU, MemBytes: int64(needMem)})
+		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: bestCPU, MemBytes: int64(bestMem)})
 		p.Line = append(p.Line, lined(d, best, ""))
 		a := alloc[best]
-		alloc[best] = [2]float64{a[0] + needCPU, a[1] + holdMem}
-		if holdMem > needMem {
+		alloc[best] = [2]float64{a[0] + bestCPU, a[1] + bestHold}
+		if bestHold > bestMem {
 			watched[best]++
 		}
 		starting[best]++
@@ -478,21 +511,26 @@ func Decide(s Snapshot) Plan {
 			// a job it does not take goes to the other runners of its labels, while
 			// one it takes and cannot place waits here.
 			hold := float64(c.MemBytes) * s.BlindHold
+			ceil := ceiling(s, next)
 			for name, h := range open {
 				if ok, _ := takes(s, next, h); !ok {
+					continue
+				}
+				nextCPU, nextMem, _, lends := sizeOn(h, next.CPUs, float64(next.MemBytes), ceil)
+				if !lends {
 					continue
 				}
 				cpu, mem := free(h, alloc[name])
 				var byMem int
 				switch {
 				case c.NextMem > 0 && watched[name] == 0:
-					byMem = int(mem / float64(next.MemBytes))
+					byMem = int(mem / nextMem)
 				case watched[name] == 0 && mem >= float64(c.MemBytes):
 					byMem = 1 + max(0, int((mem-hold)/hold))
 				default:
 					byMem = int(mem / hold)
 				}
-				n += max(0, min(int((cpu+1e-9)/next.CPUs), byMem))
+				n += max(0, min(int((cpu+1e-9)/nextCPU), byMem))
 			}
 		}
 		// Room kept for an expedited job GitHub still holds: the class takes
@@ -595,13 +633,79 @@ func takes(s Snapshot, c Class, h Host) (ok bool, reason string) {
 // room is how many more runners of a class fit on the hosts that take it.
 func room(s Snapshot, c Class, hosts map[string]Host, alloc map[string][2]float64) int {
 	n := 0
+	ceil := ceiling(s, c)
 	for name, h := range hosts {
 		if ok, _ := takes(s, c, h); ok {
+			needCPU, needMem, _, lends := sizeOn(h, c.CPUs, float64(c.MemBytes), ceil)
+			if !lends {
+				continue
+			}
 			cpu, mem := free(h, alloc[name])
-			n += max(0, int(math.Min((cpu+1e-9)/c.CPUs, mem/float64(c.MemBytes))))
+			n += max(0, int(math.Min((cpu+1e-9)/needCPU, mem/needMem)))
 		}
 	}
 	return n
+}
+
+// lendable is the most host h could ever lend one runner: the machine less
+// what is always kept free on it, within its budget. Unlike Free it leaves
+// out what the runners and everyone else use now. 0 = not known (a host that
+// has not answered yet).
+func lendable(h Host) (cpu, mem float64) {
+	if h.CPUs <= 0 || h.MemBytes <= 0 {
+		return 0, 0
+	}
+	cpu, mem = h.CPUs, float64(h.MemBytes-h.KeepMem)
+	if h.BudgetCPUs > 0 {
+		cpu = math.Min(cpu, h.BudgetCPUs)
+	}
+	if h.BudgetMem > 0 {
+		mem = math.Min(mem, float64(h.BudgetMem))
+	}
+	return cpu, mem
+}
+
+// ceiling is the most any host class c may go to could ever lend one runner,
+// cpu and memory, whether the host is open now or not (0 = no such host is
+// known). Hosts that have not answered do not count: a job does not wait for
+// good on a host nobody has seen.
+func ceiling(s Snapshot, c Class) [2]float64 {
+	var out [2]float64
+	for _, h := range s.Hosts {
+		if len(c.Hosts) > 0 && !slices.Contains(c.Hosts, h.Name) || osOf(h.OS) != osOf(c.OS) {
+			continue
+		}
+		cpu, mem := lendable(h)
+		out[0], out[1] = math.Max(out[0], cpu), math.Max(out[1], mem)
+	}
+	return out
+}
+
+// sizeOn is what a job of cpu/mem takes on host h. A job larger than any host
+// of its class could ever lend (ceil, see ceiling) would otherwise wait for
+// good: on each axis it is too large on, it is sized at what h has to lend
+// with no runner on it, so that it starts there once h is empty and runs
+// there alone. capped says so; lends = false: h has nothing to lend it.
+func sizeOn(h Host, cpu, mem float64, ceil [2]float64) (c, m float64, capped, lends bool) {
+	overCPU := ceil[0] > 0 && cpu > ceil[0]+1e-9
+	overMem := ceil[1] > 0 && mem > ceil[1]
+	if !overCPU && !overMem {
+		return cpu, mem, false, true
+	}
+	aloneCPU, aloneMem := Free(h, 0, 0)
+	if overCPU {
+		cpu = aloneCPU
+	}
+	if overMem {
+		mem = aloneMem
+	}
+	return cpu, mem, true, cpu > 0 && mem > 0
+}
+
+// tooBig says why a job of cpu/mem is placed smaller than it is taken to be.
+func tooBig(c Class, cpu, mem float64, ceil [2]float64) string {
+	return fmt.Sprintf("its size %.1fcpu/%s is more than any host of %s can ever lend (%.1fcpu/%s at most)",
+		cpu, gib(mem), c.Name, ceil[0], gib(ceil[1]))
 }
 
 // reservedFor names the class whose reserve a runner of c on host would eat

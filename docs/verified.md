@@ -63,6 +63,9 @@
 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 | 미확인 | 걸리게 하려면 VM 메모리의 80%(25G)를 쥐어야 해서 하지 않았다. 한도 값의 계산은 유닛, 한도가 걸렸을 때의 동작은 위 `limit` 과 같은 경로 |
 | 추정 계산, 러너가 쥔 것 = max(추정, 실측), 자리 계산, 메모리 압박 닫힘 | 유닛 | `internal/size`, `internal/decide` 의 표 테스트 |
 | 크기를 이유로 멈추는 러너가 없다 | 유닛 | 추정의 1 ~ 1000배, 압박 0·99, 상태 셋의 조합 전부에서 Stop 0 |
+| 러너 하나의 메모리는 머신의 물리 메모리에서 잘린다(첫 샘플부터, 치울 때의 마지막 샘플도) (11-27) | 유닛 | `internal/agent/measure_test.go`. 계기는 실물: 32G Mac 에서 한 잡의 트리가 113.8G 로 재어져 추정이 12.8G → 127.2G. 고친 판을 Mac 에서 다시 돌려 보지는 않았다 |
+| 장부에 있는, 호스트 메모리보다 큰 표본은 추정에서 빠진다(출처에 `left out`), 한도에서 끊긴 표본은 호스트 메모리로 잘려 남는다 (11-27) | 유닛 | `internal/size` `TestLearnLeavesOutARunAboveItsHostsMemory`, `internal/controller` `TestEstimateLeavesOutARunAboveItsHostsMemory` |
+| 어느 호스트도 빌려줄 수 없는 크기는 빈 호스트에 그 호스트가 빌려줄 만큼으로 혼자 놓인다, 가장 큰 호스트 먼저, 더 큰 호스트가 닫혀 있을 뿐이면 기다린다, `overflow` 의 자리도 같이 (11-27) | 유닛 | `internal/decide/alone_test.go`, `explain` 의 대기 문구는 `TestExplainJobLargerThanAnyHost`. 대시보드 말풍선(`util.js`)은 node 로 사유 한 줄을 읽혀 본 것뿐 |
 | 숫자 없는 설정이 통한다, `limit` 파싱 | 유닛 + 실물 | 실물은 위 설정 |
 | `status` 의 EST·NOW·JOB SIZE, 로그의 `estimate` 줄 | 실물 | `EST 2.0cpu/4.0G (first)  NOW 0.0cpu/0.4G`, `hold (1)  labels.yml  0.4cpu/3.2G  0.3cpu/2.7G  0.3cpu/2.7G  4` |
 | 대시보드의 Job sizes 표와 러너의 now/est 칸 | 미확인 | 코드만. 화면을 열어 보지 않았다 |

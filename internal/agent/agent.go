@@ -57,6 +57,8 @@ type Agent struct {
 	prevHostUsec uint64
 	prevAt       time.Time
 	dataDir      string // the driver's data directory, asked once
+	// memTotal: the machine's physical memory, from the last host sample (opMu).
+	memTotal int64
 }
 
 type rec struct {
@@ -122,6 +124,11 @@ func (a *Agent) Sample(ctx context.Context) {
 		return
 	}
 	now := a.now()
+	if a.memTotal == 0 {
+		// Before the first runner sample: a runner's memory is capped by it (capMem).
+		hu, _ := a.met.Host()
+		a.memTotal = hu.MemBytes
+	}
 	seen := map[string]bool{}
 	var runnerUsecDelta uint64
 	var runnerMem int64
@@ -146,6 +153,7 @@ func (a *Agent) Sample(ctx context.Context) {
 					a.log.Warn("runner usage", "runner", c.Name, "err", err)
 				}
 			} else {
+				u.capMem(a.memTotal)
 				st = &u
 				runnerUsecDelta += u.CPUUsec - min(r.lastUsec, u.CPUUsec)
 				if c.State == "running" {
@@ -220,6 +228,19 @@ func (a *Agent) Sample(ctx context.Context) {
 	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem)
 }
 
+// capMem holds a runner's memory to what the machine has (total; 0 = not
+// known). One runner cannot hold more, so a sample above it counted something
+// twice: on macOS the per-process footprints of a tree, summed, count memory
+// the processes share (copy-on-write pages after fork, shared mappings, GPU
+// buffers) once for each of them. Such a sample would make its job's next
+// estimate larger than any host.
+func (u *Usage) capMem(total int64) {
+	if total <= 0 {
+		return
+	}
+	u.MemCurrent, u.MemPeak, u.MemWork = min(u.MemCurrent, total), min(u.MemPeak, total), min(u.MemWork, total)
+}
+
 func applyStats(r *rec, u Usage, now time.Time) {
 	if dt := now.Sub(r.lastAt).Seconds(); !r.lastAt.IsZero() && dt > 0.5 && u.CPUUsec >= r.lastUsec {
 		r.CPUNow = float64(u.CPUUsec-r.lastUsec) / 1e6 / dt
@@ -260,6 +281,7 @@ func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta u
 		h.noNative = n.NativeProblem()
 	}
 	if hu.MemBytes > 0 {
+		a.memTotal = hu.MemBytes
 		h.memBytes = hu.MemBytes
 		h.nonRunnerMem = max(0, hu.MemBytes-hu.MemAvailable-runnerMem)
 	}
@@ -377,6 +399,7 @@ func (a *Agent) Delete(ctx context.Context, name string) (api.Runner, error) {
 	a.dataMu.Unlock()
 	if ok && r.State == "running" {
 		if u, err := a.met.Runner(Container{Name: name, State: r.State, Pid: r.pid}); err == nil {
+			u.capMem(a.memTotal)
 			a.dataMu.Lock()
 			applyStats(r, u, a.now())
 			a.dataMu.Unlock()

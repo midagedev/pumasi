@@ -289,6 +289,12 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			h.FreeCPUs, h.FreeMem = cpu, int64(mem)
 		}
 	}
+	hostMem := map[string]int64{}
+	for name, snap := range live.Hosts {
+		if snap != nil {
+			hostMem[name] = snap.MemBytes
+		}
+	}
 	keys, err := l.MeasuredJobs(50)
 	if err != nil {
 		return out, err
@@ -298,6 +304,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		if err != nil || len(runs) == 0 {
 			continue
 		}
+		withHostMem(runs, hostMem)
 		e := size.Learn(runs, size.Estimate{})
 		out.Sizes = append(out.Sizes, JobSize{Repo: k.Repo, Workflow: path.Base(k.Workflow), Job: k.Job, Platform: k.Platform, EstCPUs: e.CPUs, EstMem: e.MemBytes,
 			LastCPUs: runs[0].CPUs, LastMem: runs[0].MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs})

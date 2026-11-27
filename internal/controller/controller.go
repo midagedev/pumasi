@@ -66,7 +66,10 @@ type Controller struct {
 	sized map[string]size.Estimate
 	// seenNow: per workflow, the use right now of its jobs that have run long
 	// enough to show their size. A job of the workflow that never ran is sized by it.
-	seenNow     map[ledger.JobKey]size.Sample
+	seenNow map[ledger.JobKey]size.Sample
+	// hostMem: each host's physical memory as its agent last said (under mu).
+	// A measured run that held more than its host has is left out of an estimate.
+	hostMem     map[string]int64
 	starts      sync.WaitGroup
 	lastDefer   map[string]deferRec
 	runCheck    map[int64]time.Time
@@ -729,6 +732,14 @@ func (c *Controller) syncRunners(ctx context.Context, live []ledger.Runner) []de
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seenNow = seenNow
+	if c.hostMem == nil {
+		c.hostMem = map[string]int64{}
+	}
+	for _, h := range c.hosts {
+		if h.snap != nil && h.snap.MemBytes > 0 {
+			c.hostMem[h.cfg.Name] = h.snap.MemBytes // kept while the host is down
+		}
+	}
 	for _, lr := range live {
 		if seen[lr.Name] {
 			delete(c.inflight, lr.Name)
@@ -948,6 +959,7 @@ func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estim
 		c.log.Error("ledger job runs", "err", err)
 		return blind
 	}
+	withHostMem(runs, c.hostMem)
 	if len(runs) > 0 {
 		return size.Learn(runs, first)
 	}
@@ -958,6 +970,7 @@ func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estim
 	if now, ok := c.seenNow[ledger.JobKey{Repo: k.Repo, Workflow: k.Workflow, Platform: k.Platform}]; ok {
 		others = append(others, now)
 	}
+	withHostMem(others, c.hostMem)
 	if len(others) == 0 {
 		return blind
 	}
@@ -967,6 +980,16 @@ func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estim
 // keepMem is what stays free on a machine whatever else is true: a tenth of
 // its memory, between 1G and 4G.
 func keepMem(total int64) int64 { return min(max(total/10, 1<<30), 4<<30) }
+
+// withHostMem fills in each run's HostMem from what the hosts last said of their
+// memory, so that Learn leaves out a run that held more than its host has.
+func withHostMem(runs []size.Sample, mem map[string]int64) {
+	for i := range runs {
+		if runs[i].HostMem == 0 {
+			runs[i].HostMem = mem[runs[i].Host]
+		}
+	}
+}
 
 // limits are what a runner of the class is held to on a host. The class's
 // own limit when it has one. Otherwise no cpu limit (a busy cpu slows jobs,
@@ -1174,6 +1197,11 @@ func (c *Controller) start(ctx context.Context, s decide.Start, now time.Time) {
 	c.mu.Unlock()
 	if !ok {
 		est = size.Estimate{CPUs: s.CPUs, MemBytes: s.MemBytes}
+	}
+	// A job larger than any host of its class could lend was placed at what
+	// the host lends (it runs alone there): its runner holds that, not more.
+	if s.CPUs > 0 && s.MemBytes > 0 {
+		est.CPUs, est.MemBytes = min(est.CPUs, s.CPUs), min(est.MemBytes, s.MemBytes)
 	}
 	if err := c.ledger.InsertRunner(name, s.Class, c.platformOf(s.Class), s.Host, now, est); err != nil {
 		c.log.Error("ledger insert", "err", err)

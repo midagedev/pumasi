@@ -306,11 +306,17 @@ var (
 	watchesRE = regexp.MustCompile(`it watches (\d+) unmeasured job there and takes the next with ([\d.]+G) free`)
 )
 
-// parseReason splits decide's "no host with Xcpu/YG free (…)" reason.
-func parseReason(reason string, known map[string]HostState) (needCPU, needMem float64, per []shortage, ok bool) {
+// parseReason splits decide's "no host with Xcpu/YG free (…)" reason. alone:
+// what follows it for a job larger than any host of its class could ever
+// lend, "its size … is more than any host of … can ever lend (…)" ("" = none).
+func parseReason(reason string, known map[string]HostState) (needCPU, needMem float64, per []shortage, alone string, ok bool) {
+	if i := strings.Index(reason, "); its size "); i >= 0 {
+		reason, alone = reason[:i+1], reason[i+3:]
+		alone, _, _ = strings.Cut(alone, ": it runs alone")
+	}
 	m := noHostRE.FindStringSubmatch(reason)
 	if m == nil {
-		return 0, 0, nil, false
+		return 0, 0, nil, "", false
 	}
 	needCPU, _ = strconv.ParseFloat(m[1], 64)
 	needMem, _ = strconv.ParseFloat(m[2], 64)
@@ -335,7 +341,7 @@ func parseReason(reason string, known map[string]HostState) (needCPU, needMem fl
 		}
 		per = append(per, s)
 	}
-	return needCPU, needMem, per, true
+	return needCPU, needMem, per, alone, true
 }
 
 // shortText says what one host lacks for a job of needCPU/needMem.
@@ -390,7 +396,7 @@ func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, cla
 	case r == "":
 		f.Text = head + " — no reason given yet (the next placement round says)"
 	case strings.HasPrefix(r, "no host with "):
-		needCPU, needMem, per, ok := parseReason(r, hosts)
+		needCPU, needMem, per, alone, ok := parseReason(r, hosts)
 		if !ok {
 			f.Text = head + " — " + r
 			break
@@ -400,6 +406,11 @@ func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, cla
 			parts = append(parts, shortText(s, needCPU, needMem))
 		}
 		f.Text = fmt.Sprintf("%s — the next needs %.1fcpu/%.1fG and no host has it: %s", head, needCPU, needMem, strings.Join(parts, "; "))
+		if alone != "" {
+			// The measured size no host could ever lend: placed at what one lends, alone.
+			f.Text += ". " + strings.ToUpper(alone[:1]) + alone[1:] + ": it is placed at what a host lends with no runner on it and starts once one is empty, alone there" +
+				" (a size near or above a whole machine may be a measurement that counted shared memory twice: see the job's runs under JOB SIZE in `pumasi status`)"
+		}
 		if c, ok := classes[w.Class]; ok && c.LimitMem > 0 && needMem*float64(gb) > float64(c.LimitMem) {
 			f.Text += fmt.Sprintf(". Its size %.1fG is over class %s's memory limit %s: it was cut short there before and will be again",
 				needMem, w.Class, gib(c.LimitMem))

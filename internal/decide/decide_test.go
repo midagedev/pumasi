@@ -465,6 +465,7 @@ func TestPlacementBySize(t *testing.T) {
 		host    func(*Host)
 		demand  []Demand
 		runners []Runner
+		more    []Host // other hosts of the class
 		starts  int
 		reason  string // of the first start or defer
 	}{
@@ -490,7 +491,14 @@ func TestPlacementBySize(t *testing.T) {
 		{name: "a budget is a cap on top of what is measured",
 			host: func(h *Host) { h.BudgetMem = 6 * gb }, demand: []Demand{job("a", 1, 4*gb), job("b", 1, 4*gb)}, starts: 1},
 		{name: "the memory kept free is not lent",
-			demand: []Demand{job("a", 1, 30*gb)}, starts: 0, reason: "no host with 1.0cpu/30.0G free (h1 16.0cpu/29.0G)"},
+			more:   []Host{{Name: "h9", Kind: "server", Up: true, Closed: "in use", CPUs: 16, MemBytes: 64 * gb, KeepMem: 4 * gb}},
+			demand: []Demand{job("a", 1, 30*gb)}, starts: 0, reason: "no host with 1.0cpu/30.0G free (h1 16.0cpu/29.0G, h9 in use)"},
+		{name: "not even to a job larger than any host could ever lend: it runs alone on what is there to lend",
+			demand: []Demand{job("a", 1, 30*gb)}, starts: 1,
+			reason: "takes 1.0cpu/29.0G of the free 16.0cpu/29.0G for build (learned from 10 runs, the largest 3.0cpu/16.0G); its size 1.0cpu/30.0G is more than any host of linux-s can ever lend (16.0cpu/29.0G at most): it runs alone on h1"},
+		{name: "and waits, until the host is empty, at that size",
+			runners: []Runner{busy("r1", 1, gb)}, demand: []Demand{job("a", 1, 30*gb)}, starts: 0,
+			reason: "no host with 1.0cpu/29.0G free (h1 15.0cpu/28.0G); its size 1.0cpu/30.0G is more than any host of linux-s can ever lend (16.0cpu/29.0G at most): it runs alone on one once one is empty"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -498,7 +506,7 @@ func TestPlacementBySize(t *testing.T) {
 			if tt.host != nil {
 				tt.host(&h)
 			}
-			s := snap([]Host{h}, tt.demand, tt.runners)
+			s := snap(append([]Host{h}, tt.more...), tt.demand, tt.runners)
 			s.PSIMemThreshold = 10
 			p := Decide(s)
 			if len(p.Start) != tt.starts || len(p.Stop) != 0 {
@@ -565,11 +573,15 @@ func TestPriority(t *testing.T) {
 		CreatedAt: t0, ListeningAt: t0, JobStartedAt: t0, CPUs: 2, MemBytes: 3 * gb}
 	bigBusy := busy
 	bigBusy.MemBytes = 10 * gb
+	// A host big enough for any job here, closed now: a job that does not fit h1
+	// waits for it rather than run alone on h1.
+	bigClosed := Host{Name: "h9", Kind: "server", Up: true, Closed: "in use", CPUs: 16, MemBytes: 64 * gb}
 	tests := []struct {
 		name    string
 		host    Host
 		demand  []Demand
 		runners []Runner
+		more    []Host   // other hosts
 		starts  []string // class of each start, in order
 		defers  []string // "class: priority" in the order of the line
 		reason  string   // in the first defer's reason
@@ -603,10 +615,12 @@ func TestPriority(t *testing.T) {
 			defers:  []string{"big: high by rule 1", "small: "}, reason: "no host with 2.0cpu/16.0G free"},
 		{name: "but not a host it would not fit with every runner gone",
 			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
+			more:   []Host{bigClosed},
 			demand: []Demand{job("release", "big", time.Minute, 1), job("build", "small", 5*time.Minute, 0)},
 			starts: []string{"small"}, defers: []string{"big: high by rule 1"}},
 		{name: "jobs of the same level still fill the gap",
 			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
+			more:   []Host{bigClosed},
 			demand: []Demand{job("release", "big", 10*time.Minute, 0), job("build", "small", 5*time.Minute, 0)},
 			starts: []string{"small"}, defers: []string{"big: "}},
 		{name: "a running job is not touched for a high one",
@@ -619,7 +633,7 @@ func TestPriority(t *testing.T) {
 			if h.Name == "" {
 				h = tight()
 			}
-			s := snap([]Host{h}, tt.demand, tt.runners)
+			s := snap(append([]Host{h}, tt.more...), tt.demand, tt.runners)
 			s.Now, s.Classes, s.HeadStart = t0, []Class{small, other, big}, 30*time.Minute
 			p := Decide(s)
 			var gotStarts, gotDefers []string
