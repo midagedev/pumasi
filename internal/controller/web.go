@@ -98,7 +98,8 @@ type ctlSource struct{ c *Controller }
 
 func (s ctlSource) live() Status { return s.c.liveStatus() }
 func (s ctlSource) state() (State, error) {
-	return CollectState(s.c.cfg, s.c.ledger, s.c.liveStatus(), true, s.c.now())
+	// the snapshot: a running up reads the file's priority rules again under c.mu
+	return CollectState(s.c.cfgSnapshot(), s.c.ledger, s.c.liveStatus(), true, s.c.now())
 }
 func (s ctlSource) jobs() ([]ledger.FinishedJob, error) { return s.c.ledger.RecentJobs(50) }
 func (s ctlSource) job(runner string) ([]ledger.Decision, string, error) {

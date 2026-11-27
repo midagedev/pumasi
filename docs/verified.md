@@ -20,7 +20,7 @@
 | 재부팅 | 호스트의 진짜 재부팅(boot id 를 바꾼 흉내만) · 서비스로 띄운 controller 의 재부팅 뒤 · linger 가 꺼진 Linux, 화면에 로그인하지 않은 Mac |
 | 한도·압박 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 · Linux 메모리 압박(PSI 10%)으로 실제로 닫히는 것 · 부하 걸린 Mac 에서 controller 를 수 시간 |
 | 인증·권한 | 진짜 GitHub App 으로 scale set 을 만들고 잡 돌리기 · fine-grained 권한(Actions: Read / Read and write)만으로 run 조회·다시 돌리기 |
-| 대시보드 | Job sizes 표와 러너의 now/est 칸 · Waiting 의 Line 칸 · 자격 노출 경고 칸 — 셋 다 화면을 열어 보지 않았다 · 우선순위 화면에서의 쓰기(세우기·모드·규칙) · 밖에 연 대시보드에 토큰으로 쓰기 |
+| 대시보드 | Job sizes 표와 러너의 now/est 칸 · 자격 노출 경고 칸 — 둘 다 화면을 열어 보지 않았다 · 우선순위 화면의 모드·규칙 쓰기(데모에서만; 세우기는 실물) · 밖에 연 대시보드에 토큰으로 쓰기, 401 뒤에 열리는 토큰 칸 |
 | 잡 세우기 | 세운 잡의 호스트를 더 작은 낮은 잡에게서 지키는 것 · 여럿을 세운 순서 · 취소·run 끝으로 풀림 · GitHub 이 5분마다 다시 배정한 뒤에도 이어지는 것 — 모두 유닛만 |
 | 알림 | 부재 알림: 호스트의 네트워크만 끊긴 경우, 자다 깬 노트북 호스트, 기본값 5분 그대로 |
 | 사람 우선 | Linux 화면 세션, Windows 입력 시각 |
@@ -83,7 +83,8 @@
 | 기다리는 높은 잡의 호스트를 낮은 잡에게서 지키기, 같은 등급의 빈틈 채우기 | 유닛 | |
 | 도는 잡을 건드리지 않는다 | 유닛 + 실물 | 실물에서 규칙을 바꿀 때 돌던 잡은 끝까지 돌았다 |
 | 틀린 규칙 파일은 전의 규칙을 유지 | 유닛 | |
-| 대시보드 Waiting 의 Line 칸 | 미확인 | 화면을 열어 보지 않았다 |
+| 대시보드의 줄(Priority 화면) (11-27) | 실물 | 도는 controller 의 화면에서 `#1 hold (2) prio-a`, `#2 hold (1) prio-b`, 러너가 올라오는 잡은 `#-` — 같은 때 `pumasi priority` 의 LINE 과 같음 |
+| **대시보드 화면에서 잡 세우기** (11-27) | 실물 | prio-a 잡 2개, 20초 뒤 prio-b 잡 1개(한 번에 러너 하나). 헤드리스 브라우저로 화면의 줄에서 prio-b 잡을 열고 Expedite 버튼: 요청 `POST /api/expedite {"job":"<pumasi 잡 id>"}` (`Content-Type: application/json`, `X-Pumasi-Client: web`), 답 `place 1 in line`, controller 로그 `expedite hold (1) of run … by web 127.0.0.1: waits in class prio-b; 0 of its class go first`. 시작 순서 prio-a → **prio-b(세운 것)** → prio-a, 화면 콘솔 오류 0 |
 | **잡 세우기**: 줄 맨 앞, 같은 클래스의 앞 잡이 함께 감 (11-27) | 실물 | prio-a 잡 3개, 이어 prio-b 잡 2개를 보내 prio-a 의 하나가 돌 때 prio-b 의 뒤 잡을 잡 URL 로 세움: `position 2 in line` · `1 older job of class prio-b goes first, with it`. 시작 순서 prio-a → **prio-b(당겨진 것) → prio-b(세운 것)** → prio-a → prio-a(세우지 않았으면 prio-a 셋이 먼저). 줄에 `ahead of hold (1) in its class, which is expedited` |
 | 세운 잡이 시작하면 저절로 풀리고, 걸린 시간이 남는다 | 실물 | `expedited hold (1) of run …: started on prio-b-… 3m49s after it was expedited (it waited 4m0s in all)`. 3분 49초 가운데 약 80초는 같은 노트북의 다른 프로세스가 CPU 를 다 써서(load 55) 어느 잡도 놓이지 않던 시간이다 |
 | run URL + `--name` 으로 세우기, GitHub 잡 id 로 풀기, `pumasi expedite` 목록·최근 것 | 실물 | 풀린 것은 `cleared by cli <사용자>@127.0.0.1` 로 남음 |

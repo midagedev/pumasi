@@ -24,7 +24,7 @@ func (c *Controller) writeMetrics(w io.Writer) error {
 		}
 	}
 	slices.SortFunc(snaps, func(a, b api.Snapshot) int { return cmpString(a.Host, b.Host) })
-	st, err := CollectState(c.cfg, c.ledger, live, true, c.now())
+	st, err := CollectState(c.cfgSnapshot(), c.ledger, live, true, c.now())
 	if err != nil {
 		return err
 	}

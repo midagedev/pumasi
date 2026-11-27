@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +178,43 @@ func TestPriorityRulesAreReadAgain(t *testing.T) {
 	r.reloadPriority()
 	if level, _ := r.cfg.LevelOf(job); level != 0 || r.cfg.PriorityHeadStart != config.DefaultHeadStart {
 		t.Errorf("rules removed from the file are still in force")
+	}
+}
+
+// The dashboard's reads take the rules as they stand while a running up reads
+// the file again (go test -race finds a read that does not take c.mu).
+func TestDashboardReadsWhileRulesAreReadAgain(t *testing.T) {
+	r := newRig(t)
+	p := filepath.Join(t.TempDir(), "pumasi.yaml")
+	r.cfg.Path = p
+	h := r.webHandler()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 20 {
+			body := "url: u\nclasses: [{name: small}]\n"
+			if i%2 == 1 {
+				body += "priority:\n  - {match: {workflow: \"deploy-*.yml\"}, level: high}\n"
+			}
+			_ = os.WriteFile(p, []byte(body), 0o600)
+			at := time.Now().Add(time.Duration(i-40) * time.Minute)
+			_ = os.Chtimes(p, at, at)
+			r.reloadPriority()
+		}
+	}()
+	for {
+		for _, path := range []string{"/api/state", "/api/explain", "/metrics"} {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+			}
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
 	}
 }
 
