@@ -27,6 +27,7 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (running jobs survive Ctrl-C; the next up picks them up)
   pumasi status  problems, hosts, runners and waiting jobs (--json for machines)
   pumasi open    the same in a browser, with recent jobs and the last 24 hours
+                 (--demo: a simulated shop to look at, no controller needed)
   pumasi down    remove everything pumasi created on the hosts and on GitHub
                  (refuses while jobs run, unless --force)
   pumasi invite  print the line that joins a host to this controller
@@ -40,7 +41,8 @@ On a host that joined:
   pumasi doctor  check the way to the controller, what runners need here, and the agent
   pumasi leave   remove this host from the controller and pumasi from this host
 
-Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log).
+Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log),
+open --demo [-seed N] [-listen 127.0.0.1:0] [-browser=false].
 up and down are a GitHub App when the config has githubApp: {id, installationId,
 privateKeyFile} (or PUMASI_GITHUB_APP_ID, _INSTALLATION_ID, _PRIVATE_KEY_FILE);
 otherwise they read a token from PUMASI_GITHUB_TOKEN, or from the file

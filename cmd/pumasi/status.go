@@ -2,14 +2,20 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -198,12 +204,20 @@ func dash(s string) string {
 
 func gib(b int64) string { return fmt.Sprintf("%.1fG", float64(b)/(1<<30)) }
 
-// runOpen opens the running controller's dashboard in the browser.
+// runOpen opens the running controller's dashboard in the browser, or with
+// --demo serves a simulated one that needs no controller, config or GitHub.
 func runOpen(args []string) error {
 	fs := flag.NewFlagSet("pumasi open", flag.ContinueOnError)
 	cfgPath := fs.String("config", "pumasi.yaml", "config file")
+	demo := fs.Bool("demo", false, "serve a simulated controller's dashboard (no config, no GitHub) until Ctrl-C")
+	seed := fs.Int64("seed", 1, "demo: the simulation's seed; the same seed shows the same moments")
+	listen := fs.String("listen", "127.0.0.1:0", "demo: the address to serve on")
+	browser := fs.Bool("browser", true, "open the browser")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *demo {
+		return serveDemo(*seed, *listen, *browser)
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -211,12 +225,48 @@ func runOpen(args []string) error {
 	}
 	url := controller.DashboardURL(cfg)
 	if url == "" {
-		return fmt.Errorf("no controller running: the dashboard is served by `pumasi up`")
+		return fmt.Errorf("no controller running: the dashboard is served by `pumasi up` (`pumasi open --demo` shows a simulated one)")
 	}
 	fmt.Println(url)
+	if !*browser {
+		return nil
+	}
+	return openBrowser(url)
+}
+
+func openBrowser(url string) error {
 	opener := "xdg-open"
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		opener = "open"
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	}
 	return exec.Command(opener, url).Start()
+}
+
+// serveDemo serves the dashboard of a made-up shop that the real placement runs.
+func serveDemo(seed int64, listen string, browser bool) error {
+	l, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: controller.NewDemo(seed).Handler()}
+	url := "http://" + l.Addr().String() + "/"
+	fmt.Printf("demo dashboard %s  (simulated: 4 hosts, 8 classes, seed %d; ?at=<seconds> shows one moment; Ctrl-C to stop)\n", url, seed)
+	if browser {
+		if err := openBrowser(url); err != nil {
+			fmt.Fprintln(os.Stderr, "pumasi: could not open a browser:", err)
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
