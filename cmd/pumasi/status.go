@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -138,6 +139,16 @@ func printStatus(w io.Writer, s controller.State) {
 	}
 
 	fmt.Fprintln(w)
+	if s.Mode.Name != "" && s.Mode.Name != controller.ModeNormal {
+		fmt.Fprintln(w, "MODE"+strings.TrimPrefix(modeLine(s.Mode, time.Now()), "mode"))
+	}
+	for _, x := range s.Expedited {
+		where := fmt.Sprintf("line %d", x.Position)
+		if x.Pending {
+			where = "GitHub still holds it"
+		}
+		fmt.Fprintf(w, "EXPEDITED %s (run %d) of %s, by %s: %s, %d of its class ahead\n", x.Name, x.RunID, x.Class, x.By, where, x.Ahead)
+	}
 	if len(s.Waiting) == 0 {
 		fmt.Fprintln(w, "no jobs waiting")
 	} else {

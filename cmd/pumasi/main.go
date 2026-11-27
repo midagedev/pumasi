@@ -33,14 +33,24 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  (one host within the hour; --uses N and --ttl 24h say otherwise)
   pumasi service install|remove|status
                  keep up running: started again when it dies and after a reboot
-  pumasi priority  the config's priority rules and where they put the jobs waiting now
-                 (edit the rules in the config; a running up reads them again by itself)
+  pumasi priority  the mode, expedited jobs, rules and where they put the jobs waiting now
+  pumasi priority add workflow='deploy-*.yml' --level high [--for 2h]
+  pumasi priority rm r-1
+                 rules for now, before the config's (the config's: edit the file;
+                 a running up reads it again by itself)
+  pumasi expedite <job>
+                 put a waiting job before every other one (--clear takes it out);
+                 <job> is its URL, GitHub's job id or pumasi's (status --json)
+  pumasi mode high-only --for 30m | pumasi mode normal
+                 for a while, only expedited and high jobs get new runners
+
+expedite, mode and priority add|rm ask the running up (its dashboard address).
 
 On a host that joined:
   pumasi doctor  check the way to the controller, what runners need here, and the agent
   pumasi leave   remove this host from the controller and pumasi from this host
 
-Flags: -config pumasi.yaml (up, status, open, down, invite, priority), -v (up: verbose log).
+Flags: -config pumasi.yaml (up, status, open, down, invite, priority, expedite, mode), -v (up: verbose log).
 up and down are a GitHub App when the config has githubApp: {id, installationId,
 privateKeyFile} (or PUMASI_GITHUB_APP_ID, _INSTALLATION_ID, _PRIVATE_KEY_FILE);
 otherwise they read a token from PUMASI_GITHUB_TOKEN, or from the file
@@ -69,6 +79,10 @@ func main() {
 		err = runInvite(args)
 	case "priority":
 		err = runPriority(args)
+	case "expedite":
+		err = runExpedite(args)
+	case "mode":
+		err = runMode(args)
 	case "service":
 		err = runService(args)
 	case "join":
