@@ -563,6 +563,8 @@ func TestPriority(t *testing.T) {
 	big := Class{Name: "big", CPUs: 2, MemBytes: 16 * gb}
 	busy := Runner{Name: "r1", Class: "small", Host: "h1", State: "busy", JobKnown: true, Container: "running", Working: true,
 		CreatedAt: t0, ListeningAt: t0, JobStartedAt: t0, CPUs: 2, MemBytes: 3 * gb}
+	bigBusy := busy
+	bigBusy.MemBytes = 10 * gb
 	tests := []struct {
 		name    string
 		host    Host
@@ -595,9 +597,14 @@ func TestPriority(t *testing.T) {
 			demand: []Demand{job("nightly", "other", time.Minute, -1), job("deploy", "small", time.Minute, 1), job("build", "small", time.Minute, 0)},
 			starts: []string{"small", "small", "other"}},
 		{name: "a high job waiting for room keeps that host from lower jobs",
+			host:    Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 24 * gb},
+			runners: []Runner{bigBusy},
+			demand:  []Demand{job("release", "big", time.Minute, 1), job("build", "small", 5*time.Minute, 0)},
+			defers:  []string{"big: high by rule 1", "small: "}, reason: "no host with 2.0cpu/16.0G free"},
+		{name: "but not a host it would not fit with every runner gone",
 			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
 			demand: []Demand{job("release", "big", time.Minute, 1), job("build", "small", 5*time.Minute, 0)},
-			defers: []string{"big: high by rule 1", "small: "}, reason: "no host with 2.0cpu/16.0G free"},
+			starts: []string{"small"}, defers: []string{"big: high by rule 1"}},
 		{name: "jobs of the same level still fill the gap",
 			host:   Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 12 * gb},
 			demand: []Demand{job("release", "big", 10*time.Minute, 0), job("build", "small", 5*time.Minute, 0)},

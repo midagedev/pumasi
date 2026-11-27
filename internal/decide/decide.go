@@ -36,6 +36,11 @@ type Class struct {
 	Overflow bool
 	NextCPUs float64
 	NextMem  int64
+	// MayBeHigh: some priority rule can make a job of the class high. While
+	// only high jobs are placed (Snapshot.HighOnly), an overflow class offers
+	// room only then, or for an expedited job of its own: a job it took
+	// otherwise would only wait.
+	MayBeHigh bool
 }
 
 type Host struct {
@@ -120,6 +125,15 @@ type Demand struct {
 	Ranked string
 	// Blind: nothing is measured of the job or of its workflow; its size is a guess.
 	Blind bool
+	// Expedite: an operator put the job before every other one: 1 is the
+	// first of those, 2 the next (0 = not expedited). It is a place, not a
+	// level: it does not age, and it ends when the job starts.
+	Expedite int
+	// Pending: an expedited job its class has not been given yet: GitHub
+	// still holds it (an overflow class takes only what fits). It keeps the
+	// hosts it could go to as a waiting job does, and no runner is started
+	// for it: a runner is handed only a job its scale set holds.
+	Pending bool
 }
 
 type Snapshot struct {
@@ -142,7 +156,11 @@ type Snapshot struct {
 	// BlindHold: a blind job holds this many times its memory while it is
 	// watched, and where a watched runner already is the next blind job needs
 	// that much free (0 or 1 = blind jobs are placed like any other).
-	BlindHold        float64
+	BlindHold float64
+	// HighOnly: while set, only expedited and high jobs (and the jobs ahead
+	// of them in their class) get new runners; the others wait with it as
+	// the reason. Running jobs go on.
+	HighOnly         string
 	ProvisionTimeout time.Duration
 	IdleTimeout      time.Duration
 	HostLostAfter    time.Duration
@@ -177,6 +195,22 @@ type Plan struct {
 	// Room: for each overflow class, how many more jobs it could start now,
 	// after this plan's starts and with the class's waiting jobs served first.
 	Room map[string]int
+	// Line: each job that waited for room at the start of the plan, in the
+	// order it was given room, and what came of it.
+	Line []Lined
+}
+
+// Lined is one job in the line and what the plan did for it.
+type Lined struct {
+	ID, Class, Name string
+	// Level and Expedite as the job stands: a job ahead of a higher one in
+	// its class has that one's (see Line).
+	Level    int
+	Expedite int
+	Pending  bool
+	Ranked   string // why it stands where it does ("" = by its age)
+	Host     string // where a runner starts for it ("" = none)
+	Reason   string // why it waits ("" = a runner starts for it)
 }
 
 // Decide is deterministic: the same snapshot always gives the same plan.
@@ -237,20 +271,27 @@ func Decide(s Snapshot) Plan {
 	sort.Strings(hostNames)
 	deferIdx := map[string]int{}
 	var d Demand
-	deferred := func(class, reason string) {
-		if i, ok := deferIdx[class]; ok {
+	// wait records that d gets no runner in this plan. A pending job is not
+	// its class's yet, so it is no defer of the class.
+	wait := func(reason string) {
+		p.Line = append(p.Line, lined(d, "", reason))
+		if d.Pending {
+			return
+		}
+		if i, ok := deferIdx[d.Class]; ok {
 			p.Defer[i].Count++
 			return
 		}
-		deferIdx[class] = len(p.Defer)
-		p.Defer = append(p.Defer, Defer{Class: class, Count: 1, Reason: reason, Priority: d.Ranked})
+		deferIdx[d.Class] = len(p.Defer)
+		p.Defer = append(p.Defer, Defer{Class: d.Class, Count: 1, Reason: reason, Priority: d.Ranked})
 	}
-	// kept: hosts where a job waits for room. No job of a lower level is
+	// kept: hosts where a job waits for room. No job that stands lower is
 	// started there meanwhile: it would take the room the other waits for.
 	// Running jobs are never touched for it.
 	type keep struct {
-		level int
+		rank  int
 		class string
+		what  string // the job it is kept for, for the reason of the others
 	}
 	kept := map[string]keep{}
 	// behind: classes with a job that waits for room. GitHub gives a class's
@@ -258,18 +299,31 @@ func Decide(s Snapshot) Plan {
 	// for: a runner started for a later, smaller job would be handed the one
 	// that waits, on a host that has no room for it.
 	behind := map[string]bool{}
+	// pendingRoom: classes with an expedited job GitHub still holds and room
+	// kept for it: the class takes a job now (Room), and GitHub sends the next
+	// of its labels. pendingFor: classes with such a job at all.
+	pendingRoom := map[string]bool{}
+	pendingFor := map[string]bool{}
 	for _, d = range open {
+		if d.Pending {
+			pendingFor[d.Class] = true
+		}
 		c, ok := classes[d.Class]
 		if !ok {
-			deferred(d.Class, "unknown class")
+			wait("unknown class")
 			continue
 		}
 		if behind[d.Class] {
-			deferred(d.Class, "behind an older job of its class that waits for room")
+			wait("behind an older job of its class that waits for room")
+			continue
+		}
+		if s.HighOnly != "" && d.Expedite == 0 && d.Level <= 0 {
+			wait(s.HighOnly)
+			behind[d.Class] = true
 			continue
 		}
 		if c.MaxRunners > 0 && live[c.Name] >= c.MaxRunners {
-			deferred(c.Name, fmt.Sprintf("at maxRunners %d", c.MaxRunners))
+			wait(fmt.Sprintf("at maxRunners %d", c.MaxRunners))
 			continue
 		}
 		// The job's own size where it is known; the class's first estimate otherwise.
@@ -318,8 +372,8 @@ func Decide(s Snapshot) Plan {
 				short = append(short, hn)
 				continue
 			}
-			if k, ok := kept[hn]; ok && k.level > d.Level {
-				why = append(why, fmt.Sprintf("%s kept for a %s job of %s", hn, levelName(k.level), k.class))
+			if k, ok := kept[hn]; ok && k.rank > rank(d) {
+				why = append(why, hn+" kept for "+k.what)
 				continue
 			}
 			if r := reservedFor(s, c, hn, needCPU, needMem, hosts, alloc, live); r != "" {
@@ -333,7 +387,7 @@ func Decide(s Snapshot) Plan {
 		}
 		if best == "" {
 			if len(why) == 0 && lacking != "" {
-				deferred(c.Name, "no host has "+lacking)
+				wait("no host has " + lacking)
 				continue
 			}
 			if lacking != "" {
@@ -342,13 +396,26 @@ func Decide(s Snapshot) Plan {
 			if len(why) == 0 {
 				why = append(why, "no allowed host")
 			}
-			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
+			wait(fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
 			behind[c.Name] = true
 			for _, hn := range short {
-				if k, ok := kept[hn]; !ok || d.Level > k.level {
-					kept[hn] = keep{d.Level, c.Name}
+				// A host the job would not fit even with every runner gone is not
+				// kept for it: nothing would come of the wait.
+				if ec, em := Free(hosts[hn], 0, 0); ec+1e-9 < needCPU || em < needMem {
+					continue
+				}
+				if k, ok := kept[hn]; !ok || rank(d) > k.rank {
+					kept[hn] = keep{rank(d), c.Name, keptFor(d)}
 				}
 			}
+			continue
+		}
+		if d.Pending {
+			// GitHub still holds the job. The room is kept, and its class offers
+			// it (Room), so that GitHub hands over the next job of its labels.
+			kept[best] = keep{rank(d), c.Name, keptFor(d)}
+			pendingRoom[c.Name] = true
+			p.Line = append(p.Line, lined(d, "", fmt.Sprintf("GitHub still holds it; room kept on %s until GitHub gives class %s the next job of its labels", best, c.Name)))
 			continue
 		}
 		h := hosts[best]
@@ -364,6 +431,7 @@ func Decide(s Snapshot) Plan {
 			reason += "; " + d.Ranked
 		}
 		p.Start = append(p.Start, Start{Class: c.Name, Host: best, Reason: reason, Job: d.ID, CPUs: needCPU, MemBytes: int64(needMem)})
+		p.Line = append(p.Line, lined(d, best, ""))
 		a := alloc[best]
 		alloc[best] = [2]float64{a[0] + needCPU, a[1] + holdMem}
 		if holdMem > needMem {
@@ -389,9 +457,20 @@ func Decide(s Snapshot) Plan {
 		if c.NextCPUs > 0 && c.NextMem > 0 {
 			next.CPUs, next.MemBytes = c.NextCPUs, c.NextMem
 		}
+		// A host kept for a job of another class that stands above an ordinary
+		// one has no room for this class's next job: it would wait there.
+		open := hosts
+		for name, k := range kept {
+			if k.class != c.Name && k.rank > 0 {
+				if len(open) == len(hosts) {
+					open = maps.Clone(hosts)
+				}
+				delete(open, name)
+			}
+		}
 		n := 0
 		if s.BlindHold <= 1 {
-			n = room(s, next, hosts, alloc)
+			n = room(s, next, open, alloc)
 		} else {
 			// The next job may be one nobody has measured, and such a job is placed
 			// on the guess only where none is watched; where one is, it needs the
@@ -399,7 +478,7 @@ func Decide(s Snapshot) Plan {
 			// a job it does not take goes to the other runners of its labels, while
 			// one it takes and cannot place waits here.
 			hold := float64(c.MemBytes) * s.BlindHold
-			for name, h := range hosts {
+			for name, h := range open {
 				if ok, _ := takes(s, next, h); !ok {
 					continue
 				}
@@ -416,6 +495,16 @@ func Decide(s Snapshot) Plan {
 				n += max(0, min(int((cpu+1e-9)/next.CPUs), byMem))
 			}
 		}
+		// Room kept for an expedited job GitHub still holds: the class takes
+		// one, whatever its usual job's size.
+		if pendingRoom[c.Name] {
+			n = max(n, 1)
+		}
+		// While only high jobs are placed, a class whose jobs no rule makes
+		// high takes none: they would only wait here.
+		if s.HighOnly != "" && !c.MayBeHigh && !pendingFor[c.Name] {
+			n = 0
+		}
 		if c.MaxRunners > 0 {
 			n = min(n, c.MaxRunners-live[c.Name])
 		}
@@ -428,6 +517,36 @@ func Decide(s Snapshot) Plan {
 		p.Room[c.Name] = max(0, n)
 	}
 	return p
+}
+
+func lined(d Demand, host, reason string) Lined {
+	return Lined{ID: d.ID, Class: d.Class, Name: d.Name, Level: d.Level, Expedite: d.Expedite, Pending: d.Pending,
+		Ranked: d.Ranked, Host: host, Reason: reason}
+}
+
+// expedited ranks above every level.
+const expedited = 1 << 20
+
+// rank is how a job stands against another that wants the same room: an
+// expedited job above every level (the first expedited above the next),
+// then by level.
+func rank(d Demand) int {
+	if d.Expedite > 0 {
+		return expedited - d.Expedite
+	}
+	return d.Level
+}
+
+// keptFor names the job a host is kept for, in the reason of the others.
+func keptFor(d Demand) string {
+	name := d.Name
+	if name == "" {
+		name = "a job"
+	}
+	if d.Expedite > 0 {
+		return "expedited " + name + " of " + d.Class
+	}
+	return fmt.Sprintf("a %s job of %s", levelName(d.Level), d.Class)
 }
 
 const lacks = "lacks "
@@ -596,7 +715,8 @@ func better(h Host, slots float64, cur Host, curSlots float64) bool {
 
 // Line is the waiting jobs in the order they are given room. covering says
 // how many runners of each class are up without a job yet: that many of the
-// class's oldest jobs are theirs and not in the line.
+// class's oldest jobs are theirs and not in the line. A pending job comes
+// last in its class: GitHub gives it to the class after the jobs it holds.
 func Line(demand []Demand, covering map[string]int, headStart time.Duration) []Demand {
 	byClass := map[string][]Demand{}
 	for _, d := range demand {
@@ -604,39 +724,68 @@ func Line(demand []Demand, covering map[string]int, headStart time.Duration) []D
 	}
 	var open []Demand
 	for c, ds := range byClass {
-		sort.Slice(ds, func(i, j int) bool { return less(ds[i], ds[j]) })
+		sort.Slice(ds, func(i, j int) bool { return inClass(ds[i], ds[j]) })
 		inherit(ds)
-		if n := covering[c]; n < len(ds) {
-			open = append(open, ds[n:]...)
+		held := 0
+		for _, d := range ds {
+			if !d.Pending {
+				held++
+			}
 		}
+		open = append(open, ds[min(covering[c], held):]...)
 	}
 	sort.Slice(open, func(i, j int) bool { return before(open[i], open[j], headStart) })
 	return open
 }
 
-// inherit gives a class's waiting jobs (oldest first) the level of the most
-// urgent job behind them. GitHub hands a class's jobs to its runners oldest
-// first, whichever job a runner was started for: an urgent job is served only
-// after those before it, so they move up with it.
+// inClass is the order GitHub gives a class's jobs to its runners: the
+// oldest first, and a job it has not given the class yet after all of them.
+func inClass(a, b Demand) bool {
+	if a.Pending != b.Pending {
+		return b.Pending
+	}
+	return less(a, b)
+}
+
+// inherit gives a class's waiting jobs (in class order) the standing of the
+// most urgent job behind them: its level, and its place when it is
+// expedited. GitHub hands a class's jobs to its runners oldest first,
+// whichever job a runner was started for: an urgent job is served only after
+// those before it, so they move up with it.
 func inherit(ds []Demand) {
 	for i := len(ds) - 2; i >= 0; i-- {
-		if next := ds[i+1]; next.Level > ds[i].Level {
-			ds[i].Level = next.Level
-			name := next.Name
-			if name == "" {
-				name = "a job"
-			}
-			ds[i].Ranked = "ahead of " + name + " in its class, which is " + next.Ranked
-			if strings.HasPrefix(next.Ranked, "ahead of ") {
-				ds[i].Ranked = next.Ranked // the same job further back pulls both
-			}
+		next := ds[i+1]
+		if rank(next) <= rank(ds[i]) {
+			continue
+		}
+		if next.Expedite > 0 {
+			ds[i].Expedite = next.Expedite
+		}
+		ds[i].Level = max(ds[i].Level, next.Level)
+		name := next.Name
+		if name == "" {
+			name = "a job"
+		}
+		ds[i].Ranked = "ahead of " + name + " in its class, which is " + next.Ranked
+		if strings.HasPrefix(next.Ranked, "ahead of ") {
+			ds[i].Ranked = next.Ranked // the same job further back pulls both
 		}
 	}
 }
 
-// before is the line: by age, a job of level L counting as headStart*L older.
+// before is the line: expedited jobs first, in the order they were
+// expedited; then by age, a job of level L counting as headStart*L older.
 // However high a job's level, one that has waited long enough goes first.
 func before(a, b Demand, headStart time.Duration) bool {
+	if (a.Expedite > 0) != (b.Expedite > 0) {
+		return a.Expedite > 0
+	}
+	if a.Expedite != b.Expedite {
+		return a.Expedite < b.Expedite
+	}
+	if a.Expedite > 0 {
+		return inClass(a, b) // one class: its own and the jobs it pulls
+	}
 	ta, tb := a.FirstSeen.Add(-time.Duration(a.Level)*headStart), b.FirstSeen.Add(-time.Duration(b.Level)*headStart)
 	if !ta.Equal(tb) {
 		return ta.Before(tb)
