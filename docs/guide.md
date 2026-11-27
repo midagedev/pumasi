@@ -91,7 +91,7 @@ priority:                                   # 위에서부터, 처음 맞는 규
 - `level` 은 `high` · `normal` · `low`. **high 는 30분(`priorityHeadStart`) 먼저 온 것으로, low 는 30분 늦게 온 것으로 친다.** 줄은 그렇게 친 시각 순이다.
   그래서 굶는 잡이 없다: 30분 넘게 기다린 normal 잡은 방금 온 high 잡보다 앞이고, low 잡도 30분이 지나면 새로 온 normal 잡보다 앞이다.
 - **바꾸면 바로 적용된다.** 돌고 있는 `up` 이 설정 파일이 바뀐 것을 보고 `priority` 와 `priorityHeadStart` 만 다시 읽는다(다음 평가, 10초 안. 로그에 `priority: 3 rules read again …`). 파일이 틀리면 전의 규칙을 그대로 쓰고 경고한다. 다른 키는 `up` 을 다시 띄워야 바뀐다.
-- `pumasi priority` 가 규칙과 지금 기다리는 잡의 줄을 보여 준다. `pumasi status` 의 `WAITING` 은 줄 순서대로 나오고 `LINE` 칸이 그 자리에 선 이유를 말한다.
+- `pumasi priority` 가 모드, [맨 앞에 세운 잡](#한-잡을-맨-앞으로-pumasi-expedite), 규칙과 지금 기다리는 잡의 줄을 보여 준다. `pumasi status` 의 `WAITING` 은 줄 순서대로 나오고 `LINE` 칸이 그 자리에 선 이유를 말한다.
 - 높은 잡이 자리가 없어 기다리는 동안, 그 잡이 갈 수 있는 호스트에는 그보다 낮은 잡을 새로 놓지 않는다(같은 등급끼리는 전처럼 작은 잡이 빈틈을 채운다).
 
 **클래스 안에서는 순서를 바꾸지 못한다.** GitHub 은 scale set(클래스) 안의 잡을 온 순서대로 러너에게 주고, 어느 러너가 어느 잡을 받을지는 정할 수 없다([잰 것](verified.md#github-쪽에서-잰-것)).
@@ -104,6 +104,61 @@ nightly  1     2                                                                
 ```
 
 배포처럼 꼭 먼저 가야 하는 잡은 자기 클래스(`runs-on`)를 따로 주는 것이 가장 분명하다. 자리를 아예 남겨 두려면 `reserve`.
+
+### 한 잡을 맨 앞으로: `pumasi expedite`
+
+자리가 모자란 날 기다리는 잡 하나를 당장 내보내야 할 때 쓴다(핫픽스, 데모 전 배포). 규칙을 만들 것 없이 그 잡 하나만 앞으로 보낸다.
+
+```
+pumasi expedite https://github.com/OWNER/REPO/actions/runs/123/job/456    # 잡의 URL
+pumasi expedite 456                                                       # GitHub 의 잡 id
+pumasi expedite https://github.com/OWNER/REPO/actions/runs/123 --name "deploy (prod)"
+pumasi expedite 9f1c…                                                     # pumasi 의 잡 id (status --json 의 waitingJobs[].id)
+pumasi expedite                                                           # 지금 세운 잡들
+pumasi expedite --clear <위의 어느 것이든>
+```
+
+```
+$ pumasi expedite https://github.com/OWNER/REPO/actions/runs/123/job/456
+hold (2) of run 123 is expedited (class prio-b, position 2 in line)
+1 older job of class prio-b goes first, with it: GitHub gives a class its oldest job first
+```
+
+- **줄의 맨 앞에 선다** — high 잡보다도 앞이다. 여럿을 세우면 세운 순서대로 선다.
+- **그 잡이 갈 수 있는 호스트를 비워 둔다.** 그 호스트에는 다른 잡을 새로 놓지 않고, 도는 잡이 끝나 자리가 나면 그 잡이 들어간다.
+- **도는 잡은 건드리지 않고, 추정 크기를 무시하고 억지로 놓지도 않는다.** 러너가 모두 빠져도 그 잡이 들어가지 않는 호스트는 비워 두지 않는다 — 그런 호스트뿐이면 아무것도 막지 않고 기다린다(사유가 그렇게 말한다).
+- **같은 클래스에서 그 잡보다 먼저 온 잡은 함께 간다.** GitHub 은 클래스(scale set) 안의 잡을 온 순서대로 러너에게 주므로, 그 잡이 나가려면 앞의 잡이 먼저 나가야 한다. 세울 때 몇 개가 함께 가는지 말한다(위의 둘째 줄). 하나만 내보내고 싶은 잡이 자주 생기면 그 잡에 클래스를 따로 준다.
+- **GitHub 이 아직 쥐고 있는 잡도 세울 수 있다.** [`overflow`](#받을-수-있는-만큼만-받기-overflow) 클래스가 아직 받지 않은 잡은 pumasi 의 줄에 없다. URL 이나 GitHub 잡 id 로 세우면 pumasi 가 GitHub 에 그 잡의 라벨을 물어 클래스를 찾고, 그 클래스가 다음 잡을 받을 자리를 비워 두고 받는 수를 연다. 이때도 GitHub 은 그 라벨로 **먼저 온** 잡부터 주므로, 그런 잡이 있으면 그것들이 먼저 온다.
+- **저절로 풀린다**: 그 잡이 시작하면, run 이 끝나거나 취소되면, 다른 러너(고정 러너 등)가 받아 갔으면. 손으로 풀려면 `--clear`.
+- 누가(`cli 사용자@주소` / `api 주소`) 언제 세웠는지, 어떻게 풀렸는지(받은 러너, 세운 뒤 시작까지 걸린 시간)가 장부에 남는다. `pumasi expedite` 가 지금 것과 최근 것을 보인다.
+- URL 이나 GitHub 잡 id 로 세우려면 자격에 **Actions: Read** 가 있어야 한다([GitHub 자격](#github-자격)). pumasi 의 잡 id 로 세우는 데는 필요 없다.
+
+### 잠시 high 잡만: `pumasi mode`
+
+```
+pumasi mode high-only --for 30m     # --for 없으면 1시간, 길어도 24시간
+pumasi mode normal                  # 끝내기
+pumasi mode                         # 지금 모드
+```
+
+- `high-only` 동안에는 **세운 잡과 high 잡만** 새 러너를 받는다. normal · low 잡은 줄에 남아 기다린다(사유 `mode high-only until 15:04 (by cli alice@127.0.0.1): …`).
+- 도는 잡과 이미 뜬 러너는 그대로다.
+- **시간이 되면 저절로 normal 로 돌아온다.** 끄는 것을 잊어도 잡이 끝없이 멈춰 있지 않다. 장부에 남으므로 `up` 을 다시 띄워도 이어진다.
+- `overflow` 클래스는 high 가 될 수 있는 잡(규칙)도 세운 잡도 없으면 그동안 받지 않는다 — 넘치는 잡은 같은 라벨의 다른 러너로 간다.
+
+### 지금만 쓰는 규칙: `pumasi priority add|rm`
+
+```
+pumasi priority add workflow='deploy-*.yml' --level high --for 2h
+pumasi priority add class=e2e branch='release/*' --level high
+pumasi priority rm r-1
+```
+
+- `match` 키와 `level` 은 파일 규칙과 같다. **파일 규칙보다 먼저** 본다. `--for` 가 있으면 그 시간 뒤에 사라진다.
+- 장부에 남는다(`up` 을 다시 띄워도 남는다). 사유는 `high by runtime rule r-1 (workflow: deploy-*.yml)`.
+- `pumasi priority` 는 지금 규칙(`r-N`)과 파일의 규칙(`file-N`)을 같이 보이고, 지금 규칙마다 파일에 옮겨 적을 한 줄을 붙인다. 파일의 규칙은 여기서 지우지 못한다 — 파일을 고친다.
+
+expedite · mode · priority add|rm 은 돌고 있는 `up` 에 묻는다(대시보드 주소, [쓰기](#대시보드)). `up` 이 없으면 하지 못한다고 말한다.
 
 ## 기존 고정 러너에서 옮기기
 
@@ -243,12 +298,23 @@ rerun: 1                              # 우리 쪽 잘못으로 실패한 run �
 주소는 기본으로 비어 있는 loopback 포트이고, 다른 도구가 읽게 하려면 설정의 `dashboard: 127.0.0.1:7420` 으로 고정한다.
 **읽는 사람을 묻지 않으므로** loopback 에 두고, 밖에서 볼 때는 ssh 터널이나 인증하는 프록시를 앞에 둔다.
 
+**쓰기**(잡 세우기, 모드, 지금 규칙 — 아래 표의 POST · PUT · DELETE)는 더 좁다.
+
+- 이 머신(loopback)에서 온 것만 받는다. 주소가 아닌 이름으로 온 요청(`Host:` 가 `127.0.0.1`·`localhost` 가 아닌 것)은 거절한다 — 다른 사이트가 자기 이름을 이 머신으로 돌려 브라우저로 보내는 길(DNS rebinding)을 막는다.
+- 본문은 JSON 만 받는다(`Content-Type: application/json`). 다른 사이트의 폼은 이것을 보낼 수 없다.
+- `dashboard: 0.0.0.0:7420` 처럼 밖에 열면 설정의 `dashboardToken:`(16자 이상)을 `Authorization: Bearer <토큰>` 으로 보내야 쓸 수 있다(이 머신에서도). 토큰을 두지 않으면 밖에서 온 쓰기는 403 이다. 읽기는 그대로 누구나 한다.
+- CLI(`pumasi expedite` 등)는 상태 디렉터리의 `controller.addr` 로 같은 머신의 `up` 에 묻고, 토큰이 있으면 같이 보낸다.
+
 | 경로 | 내용 |
 |---|---|
 | `/api/state` | 호스트 · 러너 · 대기 · overflow · 잰 잡 크기 · 사건 · 경고 |
 | `/api/jobs` | 최근 잡 50개 |
 | `/api/job?runner=` | 러너 하나의 결정 이력과 로그 끝 |
 | `/api/series` | 24시간 추이 |
+| `/api/priority` | 모드 · 세운 잡(지금 것과 최근 것) · 규칙(지금 것과 파일의 것) · 줄 |
+| `POST /api/expedite` `{"job": "…", "name": "…"}` · `DELETE /api/expedite?job=…` | [잡 세우기](#한-잡을-맨-앞으로-pumasi-expedite) / 풀기. 못 찾으면 404 와 이유 |
+| `POST /api/mode` `{"name": "high-only", "for": "30m"}` · `{"name": "normal"}` | [모드](#잠시-high-잡만-pumasi-mode) |
+| `POST /api/priority/rules` `{"match": {…}, "level": "high", "for": "2h"}` · `PUT`·`DELETE /api/priority/rules/{id}` | [지금 규칙](#지금만-쓰는-규칙-pumasi-priority-addrm) |
 | `/metrics` | OpenMetrics(Prometheus). 호스트·러너 수치(`pumasi_host_*`, `pumasi_runner_*`)와 controller 의 것: `pumasi_host_reachable`, `pumasi_runners{class,host,state}`, `pumasi_jobs_waiting{class}`, `pumasi_jobs_waiting_oldest_seconds`, `pumasi_overflow_take`/`_held`, `pumasi_incidents_open`, `pumasi_jobs_total{class,result}`, `pumasi_job_seconds_total{class,result}`(장부가 남아 있는 동안 늘기만 한다) |
 
 ## controller 를 계속 켜 두기
@@ -277,14 +343,14 @@ PUMASI_GITHUB_TOKEN=$(gh auth token) ./dist/pumasi service install    # -config 
 
 ## GitHub 자격
 
-pumasi 가 GitHub 에 하는 일은 셋이다: scale set 과 러너 등록을 만들고 지운다, 기다리는 잡의 run 이 끝났는지 본다, (`rerun` 을 켰으면) 실패한 잡을 다시 돌린다. 그만큼의 권한만 주면 된다.
+pumasi 가 GitHub 에 하는 일은 넷이다: scale set 과 러너 등록을 만들고 지운다, 기다리는 잡의 run 이 끝났는지 본다, (`rerun` 을 켰으면) 실패한 잡을 다시 돌린다, (`pumasi expedite` 에 URL 이나 GitHub 잡 id 를 주면) 그 잡을 찾는다. 그만큼의 권한만 주면 된다.
 
 | | 레포 단위 (`url:` 이 레포) | 조직 단위 (`url:` 이 조직) |
 |---|---|---|
 | GitHub App | Repository → **Administration: Read and write**, Metadata: Read-only | Organization → **Self-hosted runners: Read and write**, Repository → Metadata: Read-only |
 | fine-grained PAT | Repository → **Administration: Read and write** | Organization → **Self-hosted runners: Read and write**, Repository → Administration: Read |
 | classic PAT | `repo` | `admin:org` |
-| 덧붙일 것 | Repository → **Actions: Read-only** (run 이 끝났는지 보기). `rerun: 1` 이상이면 **Actions: Read and write** | 같음 |
+| 덧붙일 것 | Repository → **Actions: Read-only** (run 이 끝났는지 보기, URL 로 잡 세우기). `rerun: 1` 이상이면 **Actions: Read and write** | 같음 |
 
 - 러너 등록 권한의 표는 GitHub 문서 「Authenticating ARC to the GitHub API」와 같다(같은 scale set API 다). Actions 권한이 없으면 pumasi 는 돌지만, 취소된 run 의 잡을 기다리는 줄에서 바로 못 지우고(`run status` 경고) 다시 돌리기가 실패한다. classic PAT 의 `repo` 에는 다 들어 있다.
 - **토큰**: `PUMASI_GITHUB_TOKEN`. 서비스로 띄우면 `<상태 디렉터리>/github-token`(600).
@@ -311,6 +377,7 @@ pumasi 가 GitHub 에 하는 일은 셋이다: scale set 과 러너 등록을 �
 | GitHub 토큰 또는 App 의 개인 키 | controller 프로세스(환경 변수 / 키 파일을 읽은 메모리), 서비스로 띄웠으면 `<상태 디렉터리>/github-token`(600), App 이면 설정이 가리키는 키 파일(600) | controller 를 띄운 사용자 |
 | controller 의 TLS 키 `join.key`, 초대 토큰, 가입한 호스트의 비밀값 해시 | 상태 디렉터리(700, 파일 600) | 〃 |
 | 호스트의 가입 자격(`join.json`: controller 주소·지문, 호스트 id·비밀값) | 그 호스트의 `~/.cache/pumasi/`(700) | 에이전트의 사용자 |
+| `dashboardToken`(대시보드 [쓰기](#대시보드)를 밖에서 받을 때) | controller 설정 | 설정 파일을 읽는 사람 |
 | 알림 웹훅 주소 | controller 설정, 그리고 [부재를 알릴 호스트 둘](#사건과-알림)의 `away.json`(600) | 〃 |
 | 러너의 일회용 등록(JIT 설정) | 그 러너의 환경. 잡 하나를 받으면 끝난다 | 그 러너와 그 잡 |
 
