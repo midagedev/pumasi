@@ -166,6 +166,17 @@ func TestExpeditedJobIsFirstAndItsStartIsKept(t *testing.T) {
 			t.Errorf("waitingJobs: %+v", j)
 		}
 	}
+	// Before a round has drawn the line (or while a runner is up for it), a
+	// job stands at 0 and keeps its level.
+	pv, err := CollectPriority(r.cfg, r.ledger, Status{}, true, *r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range pv.Line {
+		if want := map[string]string{"s1": "expedite", "s2": "expedite", "o1": "normal"}[j.Job]; j.Position != 0 || j.Level != want {
+			t.Errorf("not in the last round's line: %+v, want level %s", j, want)
+		}
+	}
 
 	// GitHub's JobStarted closes its demand on a runner: the expedite is over,
 	// and the ledger keeps how long after it was expedited it started.

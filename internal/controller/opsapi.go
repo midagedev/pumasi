@@ -451,10 +451,17 @@ func lineJobs(cfg *config.Config, l *ledger.Ledger, rules []config.Rule, live St
 	for i, l := range lined {
 		add(l, i+1)
 	}
-	// Jobs that runners already up will take, and jobs that came after that round.
+	// Jobs that runners already up will take, and jobs that came after that
+	// round, with the level the rules and expedites give them now.
+	ranked := map[string]decide.Demand{}
+	for _, d := range decide.Line(lineup(open, active, rules), nil, cfg.PriorityHeadStart) {
+		ranked[d.ID] = d
+	}
 	for _, d := range open {
 		if !seen[d.JobID] {
-			add(decide.Lined{ID: d.JobID, Class: d.Class, Name: d.Job, Reason: "a runner of its class that is up takes it next, or it came after the last round"}, 0)
+			r := ranked[d.JobID]
+			add(decide.Lined{ID: d.JobID, Class: d.Class, Name: d.Job, Level: r.Level, Expedite: r.Expedite, Ranked: r.Ranked,
+				Reason: "a runner of its class that is up takes it next, or it came after the last round"}, 0)
 		}
 	}
 	return out, active, nil
