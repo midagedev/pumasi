@@ -81,6 +81,13 @@ func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 	for _, d := range p.Defer {
 		unplaced[d.Class] += d.Count
 	}
+	// An expedited job the class holds is kept, with the jobs ahead of it, even
+	// without a place: room is being kept for it here.
+	for _, l := range p.Line {
+		if l.Expedite > 0 && !l.Pending && l.Host == "" {
+			unplaced[l.Class]--
+		}
+	}
 	for _, cl := range c.classes {
 		if !cl.cfg.Overflow {
 			continue
@@ -92,7 +99,7 @@ func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 		// A job the class holds and cannot place is not asked for: GitHub takes
 		// back one above the number when its assignment comes round (every five
 		// minutes) and gives it to another runner of its labels that is free.
-		keep := max(0, held[cl.cfg.Name]-unplaced[cl.cfg.Name])
+		keep := max(0, held[cl.cfg.Name]-max(0, unplaced[cl.cfg.Name]))
 		take := int32(keep + room)
 		cl.held.Store(int32(held[cl.cfg.Name]))
 		if old := cl.take.Swap(take); old != take {

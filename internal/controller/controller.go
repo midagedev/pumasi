@@ -84,6 +84,9 @@ type Controller struct {
 	rerunWanted map[string]string
 	// LedgerMoved names the damaged ledger that was set aside at startup ("" = none).
 	LedgerMoved string
+	// expChecked: when GitHub was last asked after an expedited job that no
+	// class holds, by its id (ops.go). Evaluate's goroutine only.
+	expChecked map[int64]time.Time
 }
 
 // github is what the controller asks of GitHub's scale set service.
@@ -571,6 +574,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	}
 	_ = os.WriteFile(c.aliveFile(), nil, 0o600)
 	c.hostIncidents(now, live)
+	c.settleExpedites(ctx, now)
 	snap := c.decideSnapshot(now, runners)
 	plan := decide.Decide(snap)
 
@@ -586,7 +590,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	c.setTakes(snap, plan)
 	c.recordDefers(plan.Defer, now)
 	c.waitIncidents(plan.Defer, now)
-	c.setStatus(plan.Defer)
+	c.setStatus(snap, plan)
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
 	c.probeQuarantined(ctx, now)
@@ -836,28 +840,36 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	if err != nil {
 		c.log.Error("ledger demand", "err", err)
 	}
+	active, err := c.ledger.ActiveExpedites()
+	if err != nil {
+		c.log.Error("ledger expedites", "err", err)
+	}
+	rules := c.rulesNow(now)
+	s.HighOnly = modeReason(c.modeNow(now))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	perClass := map[string]int{}
 	c.sized = map[string]size.Estimate{}
-	for _, d := range open {
-		dd := decide.Demand{ID: d.JobID, Class: d.Class, FirstSeen: d.FirstSeen, Name: d.Job}
-		dd.Level, dd.Ranked = c.cfg.LevelOf(config.WaitingJob{Class: d.Class, Repo: d.Repo, WorkflowRef: d.Workflow, Name: d.Job, Event: d.Event})
-		if cl := c.classByName(d.Class); cl != nil {
-			est := c.estimateLocked(cl.cfg, ledger.KeyOf(d.Repo, d.Workflow, d.Job))
-			c.sized[d.JobID] = est
+	for _, w := range waitingJobs(open, active, rules) {
+		dd := w.d
+		if cl := c.classByName(dd.Class); cl != nil {
+			est := c.estimateLocked(cl.cfg, w.key)
+			c.sized[dd.ID] = est
 			dd.CPUs, dd.MemBytes, dd.Blind, dd.Sized = est.CPUs, est.MemBytes, est.Blind, "("+est.Source()+")"
-			if d.Job != "" {
-				dd.Sized = "for " + d.Job + " " + dd.Sized
+			if dd.Name != "" {
+				dd.Sized = "for " + dd.Name + " " + dd.Sized
 			}
 		}
 		s.Demand = append(s.Demand, dd)
-		perClass[d.Class]++
+		if !dd.Pending {
+			perClass[dd.Class]++
+		}
 	}
 	for _, cl := range c.classes {
 		dc := decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
-			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve}
+			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve,
+			MayBeHigh: config.MayBeHigh(rules, cl.cfg.Name)}
 		if cl.cfg.Overflow {
 			next := c.nextSize(cl.cfg)
 			dc.Overflow, dc.NextCPUs, dc.NextMem = true, next.CPUs, next.MemBytes
@@ -1340,29 +1352,11 @@ func (c *Controller) checkStaleDemand(ctx context.Context, now time.Time) {
 var githubREST = &http.Client{Timeout: 30 * time.Second}
 
 func (c *Controller) runStatus(ctx context.Context, repo string, runID int64) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/actions/runs/%d", repo, runID), nil)
-	if err != nil {
-		return "", "", err
-	}
-	bearer, err := c.auth.Bearer(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := githubREST.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("GET run: %s", resp.Status)
-	}
 	var run struct {
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
 	}
-	err = json.NewDecoder(resp.Body).Decode(&run)
+	err := c.githubGet(ctx, fmt.Sprintf("/repos/%s/actions/runs/%d", repo, runID), &run)
 	return run.Status, run.Conclusion, err
 }
 

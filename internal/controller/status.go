@@ -27,6 +27,11 @@ type Status struct {
 	Overflow []Overflow `json:"overflow,omitempty"`
 	// Warnings: what is not a problem of the moment but of the setup (exposure.go).
 	Warnings []string `json:"warnings,omitempty"`
+	// Line: each job that waited for room in the last round, in the order of
+	// the line, with what came of it. Covering: per class, how many of its
+	// oldest jobs runners that are up without a job will take (not in Line).
+	Line     []decide.Lined `json:"line,omitempty"`
+	Covering map[string]int `json:"covering,omitempty"`
 }
 
 // Link is the connection to one host, whichever side opened it.
@@ -46,8 +51,19 @@ type Waiting struct {
 	Priority string `json:"priority,omitempty"`
 }
 
-func (c *Controller) setStatus(defers []decide.Defer) {
-	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{}}
+func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan) {
+	defers := plan.Defer
+	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{},
+		Line: plan.Line, Covering: map[string]int{}}
+	stopped := map[string]bool{}
+	for _, s := range plan.Stop {
+		stopped[s.Runner] = true
+	}
+	for _, r := range snap.Runners {
+		if !r.JobKnown && !stopped[r.Name] && r.Container != "exited" && r.State != "done" {
+			st.Covering[r.Class]++
+		}
+	}
 	for _, h := range c.hosts {
 		st.Hosts[h.cfg.Name] = h.snap
 		st.Links[h.cfg.Name] = Link{SeenAt: h.seenAt, RTTMs: float64(h.rtt.Microseconds()) / 1000, Agent: h.version, LastDrop: h.why()}
@@ -83,6 +99,12 @@ func (c *Controller) serveStatus() (func(), error) {
 	}
 	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: c.webHandler()}
 	c.log.Info("dashboard http://" + l.Addr().String() + "/  (`pumasi open`)")
+	switch {
+	case !onLoopback(c.cfg.Dashboard) && c.cfg.DashboardToken == "":
+		c.log.Info("the dashboard is open to other machines for reading; its writes (expedite, mode, priority rules) come only from this machine: dashboardToken takes them from elsewhere")
+	case !onLoopback(c.cfg.Dashboard):
+		c.log.Info("the dashboard is open to other machines; its writes (expedite, mode, priority rules) need Authorization: Bearer <dashboardToken>, from this machine too")
+	}
 	go func() { _ = srv.Serve(l) }()
 	return func() {
 		_ = srv.Close()

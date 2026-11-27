@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
 )
@@ -24,7 +25,7 @@ func TestMetricsHaveTheControllersFamilies(t *testing.T) {
 	r.runner("small-h1-live")
 	r.ag.Sample(context.Background())
 	r.refreshHosts(context.Background(), *r.now)
-	r.setStatus(nil)
+	r.setStatus(decide.Snapshot{}, decide.Plan{})
 	var b strings.Builder
 	if err := r.writeMetrics(&b); err != nil {
 		t.Fatal(err)

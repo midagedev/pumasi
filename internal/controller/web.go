@@ -22,6 +22,7 @@ func (c *Controller) webHandler() http.Handler {
 	static, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /api/live", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, c.liveStatus()) })
+	c.priorityRoutes(mux) // expedite, mode, runtime rules (opsapi.go)
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, _ *http.Request) {
 		st, err := CollectState(c.cfg, c.ledger, c.liveStatus(), true, c.now())
 		reply(w, struct {

@@ -22,6 +22,10 @@ type State struct {
 	Waiting    []WaitingState    `json:"waiting"`
 	// WaitingJobs: each job that waits here, the oldest first, with its class's reason.
 	WaitingJobs []JobWait `json:"waitingJobs"`
+	// Mode: the operating switch (normal | high-only); Expedited: the jobs
+	// put before every other one.
+	Mode      Mode        `json:"mode"`
+	Expedited []Expedited `json:"expedited"`
 	// TakenBack: jobs GitHub took back before a runner had them, in the last
 	// hour: given back for want of room (they run elsewhere) or cancelled.
 	TakenBack []JobWait `json:"takenBack"`
@@ -103,6 +107,8 @@ type RunnerState struct {
 
 // JobWait is one job that waits for a runner, or that waited and left.
 type JobWait struct {
+	// ID: pumasi's id of the job, what POST /api/expedite takes.
+	ID       string `json:"id,omitempty"`
 	Class    string `json:"class"`
 	Repo     string `json:"repo"`
 	Workflow string `json:"workflow"` // the workflow file's name
@@ -114,6 +120,18 @@ type JobWait struct {
 	Reason string `json:"reason,omitempty"`
 	// LeftAt: when GitHub took it back (zero = it still waits).
 	LeftAt time.Time `json:"leftAt,omitzero"`
+	// Waiting jobs only: the priority level ("high", "low"; "" = normal;
+	// "expedite" for a job expedited by hand or pulled along by one behind it
+	// in its class), the rule that gave it or the job it moves up with, and
+	// the job's place in the whole line (1 = next; 0 = a runner of its class
+	// that is up takes it), as `pumasi priority` works it out.
+	Level    string `json:"level,omitempty"`
+	Ranked   string `json:"ranked,omitempty"`
+	Position int    `json:"position,omitempty"`
+	// Expedited by hand (`pumasi expedite`), and GitHub's id of the job when
+	// it was named by it or by its URL.
+	Expedited   bool  `json:"expedited,omitempty"`
+	GithubJobID int64 `json:"githubJobId,omitempty"`
 }
 
 type WaitingState struct {
@@ -132,7 +150,7 @@ type WaitingState struct {
 // Without a controller it is the ledger alone.
 func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, now time.Time) (State, error) {
 	out := State{Hosts: []HostState{}, Runners: []RunnerState{}, Waiting: []WaitingState{}, Sizes: []JobSize{},
-		WaitingJobs: []JobWait{}, TakenBack: []JobWait{}, RecentIncidents: []ledger.Incident{}}
+		WaitingJobs: []JobWait{}, TakenBack: []JobWait{}, RecentIncidents: []ledger.Incident{}, Expedited: []Expedited{}}
 	out.Controller = ok
 	out.Warnings = append([]string{}, live.Warnings...)
 	out.Overflow = append([]Overflow{}, live.Overflow...)
@@ -241,15 +259,33 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		return 0
 	}
 	wait := func(d ledger.Demand) JobWait {
-		return JobWait{Class: d.Class, Repo: d.Repo, Workflow: path.Base(ledger.KeyOf(d.Repo, d.Workflow, "").Workflow), Job: d.Job, RunID: d.RunID}
+		return JobWait{ID: d.JobID, Class: d.Class, Repo: d.Repo, Workflow: path.Base(ledger.KeyOf(d.Repo, d.Workflow, "").Workflow), Job: d.Job, RunID: d.RunID}
 	}
 	reason := map[string]string{}
 	for _, w := range live.Waiting {
 		reason[w.Class] = w.Reason
 	}
+	pv, err := CollectPriority(cfg, l, live, ok, now)
+	if err != nil {
+		return out, err
+	}
+	out.Mode, out.Expedited = pv.Mode, pv.Expedited
+	placed := map[string]LineJob{}
+	for _, j := range pv.Line {
+		placed[j.Job] = j
+	}
 	for _, d := range open {
 		j := wait(d)
 		j.WaitedSeconds, j.Reason = int64(now.Sub(d.FirstSeen).Seconds()), reason[d.Class]
+		if lj, ok := placed[d.JobID]; ok {
+			j.Level, j.Ranked, j.Position, j.GithubJobID, j.Expedited = lj.Level, lj.ranked, lj.Position, lj.GitHubJobID, lj.expedited
+			if j.Level == "normal" {
+				j.Level = ""
+			}
+			if lj.WaitingFor != "" && lj.Position > 0 {
+				j.Reason = lj.WaitingFor
+			}
+		}
 		out.WaitingJobs = append(out.WaitingJobs, j)
 	}
 	back, err := l.TakenBack(now.Add(-time.Hour))
