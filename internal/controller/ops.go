@@ -373,7 +373,11 @@ func (c *Controller) resolve(ctx context.Context, ref, name string) (jobRef, err
 			break
 		}
 		if lastErr != nil {
-			if j.Name == "" {
+			var ge ghError
+			switch {
+			case j.Name == "" && errors.As(lastErr, &ge) && ge.code == http.StatusNotFound:
+				return j, opsErr(http.StatusNotFound, "GitHub has no job %d in %s (or these credentials cannot read its Actions)", j.GHJobID, strings.Join(repos, ", "))
+			case j.Name == "":
 				return j, opsErr(http.StatusBadGateway, "GitHub does not say which job %d is: %v", j.GHJobID, lastErr)
 			}
 			c.log.Warn("expedite: GitHub does not say what job it is", "job", j.GHJobID, "err", lastErr)
@@ -499,7 +503,7 @@ func (c *Controller) expedite(ctx context.Context, ref, name, by string, now tim
 	if held == nil {
 		where = "GitHub holds it for class " + e.Class
 	}
-	c.log.Info(fmt.Sprintf("expedite %s of run %d by %s: %s; %d of its class go first", e.Job, e.RunID, by, where, res.Ahead))
+	c.log.Info(fmt.Sprintf("expedite %s of run %d by %s: %s; %d of its class %s first", e.Job, e.RunID, by, where, res.Ahead, plural(res.Ahead, "goes", "go")))
 	c.decision(now, e.Class, "", "expedite", "", fmt.Sprintf("%s of %s run %d expedited by %s (%s)", e.Job, e.Repo, e.RunID, by, where))
 	c.kickRound()
 	return ExpediteResult{OK: true, Expedited: res, Note: aheadNote(res)}, nil
@@ -851,10 +855,18 @@ func (c *Controller) githubGet(ctx context.Context, path string, out any) error 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", path, resp.Status)
+		return ghError{resp.StatusCode, fmt.Sprintf("GET %s: %s", path, resp.Status)}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
+
+// ghError is an answer of GitHub's REST API other than 200.
+type ghError struct {
+	code int
+	msg  string
+}
+
+func (e ghError) Error() string { return e.msg }
 
 func (c *Controller) githubJob(ctx context.Context, repo string, id int64) (ghJob, error) {
 	var j ghJob

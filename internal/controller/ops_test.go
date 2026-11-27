@@ -255,6 +255,7 @@ func TestExpediteRefusals(t *testing.T) {
 		{`{"job":"nope"}`, 404, "no job \"nope\""},
 		{`{"job":""}`, 400, "job:"},
 		{`{"job":"https://github.com/o/r/actions/runs/1234"}`, 404, "no job of run 1234 waits here"},
+		{`{"job":"https://github.com/o/r/actions/runs/1/job/2"}`, 404, "GitHub has no job 2 in o/r"},
 	} {
 		code, out := r.call("POST", "/api/expedite", tt.body)
 		if msg, _ := out["error"].(string); code != tt.code || !strings.Contains(msg, tt.says) {
