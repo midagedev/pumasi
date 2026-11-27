@@ -198,3 +198,36 @@ func TestNothingPlacementDoesStopsARunningJob(t *testing.T) {
 		t.Fatalf("%d combinations", n)
 	}
 }
+
+// GitHub gives a class's jobs to its runners oldest first, whichever job a
+// runner was started for. While an older job waits for room, no runner is
+// started for a later, smaller job of its class: it would be handed the big
+// one. A job of another class is not held up.
+func TestNoJobPassesAnOlderJobOfItsClassThatWaitsForRoom(t *testing.T) {
+	host := Host{Name: "h1", Kind: "server", Up: true, CPUs: 16, MemBytes: 32 * gb, KeepMem: 3 * gb} // 29G to lend
+	ds := []Demand{
+		{ID: "big", Class: "build", FirstSeen: t0, CPUs: 4, MemBytes: 40 * gb},
+		{ID: "small", Class: "build", FirstSeen: t0.Add(time.Second), CPUs: 1, MemBytes: gb},
+		{ID: "other", Class: "other", FirstSeen: t0.Add(2 * time.Second)},
+	}
+	s := snap([]Host{host}, ds, nil)
+	s.Classes = []Class{{Name: "build", CPUs: 2, MemBytes: 4 * gb}, {Name: "other", CPUs: 1, MemBytes: gb}}
+	p := Decide(s)
+	if got := starts(p); len(got) != 1 || got[0] != "other@h1" {
+		t.Fatalf("started %v, want only other@h1", got)
+	}
+	waits := 0
+	for _, d := range p.Defer {
+		if d.Class == "build" {
+			waits += d.Count
+		}
+	}
+	if waits != 2 {
+		t.Errorf("%d jobs of build wait, want 2", waits)
+	}
+	// With the big job first in line gone, the small one starts.
+	s.Demand = ds[1:]
+	if got := starts(Decide(s)); len(got) != 2 {
+		t.Errorf("without the big job: started %v, want 2", got)
+	}
+}

@@ -238,10 +238,19 @@ func Decide(s Snapshot) Plan {
 		class string
 	}
 	kept := map[string]keep{}
+	// behind: classes with a job that waits for room. GitHub gives a class's
+	// jobs to its runners oldest first, whichever job a runner was started
+	// for: a runner started for a later, smaller job would be handed the one
+	// that waits, on a host that has no room for it.
+	behind := map[string]bool{}
 	for _, d = range open {
 		c, ok := classes[d.Class]
 		if !ok {
 			deferred(d.Class, "unknown class")
+			continue
+		}
+		if behind[d.Class] {
+			deferred(d.Class, "behind an older job of its class that waits for room")
 			continue
 		}
 		if c.MaxRunners > 0 && live[c.Name] >= c.MaxRunners {
@@ -316,6 +325,7 @@ func Decide(s Snapshot) Plan {
 				why = append(why, "no allowed host")
 			}
 			deferred(c.Name, fmt.Sprintf("no host with %.1fcpu/%s free (%s)", needCPU, gib(needMem), strings.Join(why, ", ")))
+			behind[c.Name] = true
 			for _, hn := range short {
 				if k, ok := kept[hn]; !ok || d.Level > k.level {
 					kept[hn] = keep{d.Level, c.Name}
