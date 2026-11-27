@@ -258,3 +258,29 @@ func TestEstimateKeepsPlatformsApart(t *testing.T) {
 		t.Fatalf("after: %+v", e)
 	}
 }
+
+// A run measured above its host's memory (a macOS sum that counted shared
+// memory once per process) does not size the job once the host's memory is
+// known: one such run would otherwise make it larger than any host.
+func TestEstimateLeavesOutARunAboveItsHostsMemory(t *testing.T) {
+	r := newRig(t)
+	cl := r.cfg.Classes[0]
+	k := ledger.KeyOf("o/r", "o/r/.github/workflows/ci.yml@refs/heads/main", "diag")
+	for i, work := range []int64{10 * gbs, 113 * gbs} {
+		name := "small-h1-" + string(rune('a'+i))
+		if err := r.ledger.InsertRunner(name, "small", "linux/docker", "h1", *r.now, r.estimate(cl, k)); err != nil {
+			t.Fatal(err)
+		}
+		r.finished(name, k, 0.5, work, 0)
+	}
+	if e := r.estimate(cl, k); e.MemBytes < 113*gbs {
+		t.Fatalf("host memory not known yet: the run counts as it is: %+v", e)
+	}
+	r.mu.Lock()
+	r.hostMem = map[string]int64{"h1": 32 * gbs}
+	r.mu.Unlock()
+	e := r.estimate(cl, k)
+	if e.MemBytes != 12*gbs || e.Runs != 1 || e.Ignored != 1 || !strings.Contains(e.Source(), "left out") {
+		t.Fatalf("h1 has 32G: %+v (%s)", e, e.Source())
+	}
+}

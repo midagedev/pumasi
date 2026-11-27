@@ -18,6 +18,12 @@ type Sample struct {
 	// OOM: the run was cut short at a memory limit. What it needed is more
 	// than what was seen.
 	OOM bool
+	// Host is where it ran ("" = not known), for the caller to fill HostMem.
+	Host string
+	// HostMem: the physical memory of that host (0 = not known). No run holds
+	// more than its machine has: a sample above it is a measurement that
+	// counted something twice, and Learn leaves it out.
+	HostMem int64
 }
 
 // Estimate is what the next run of a job is expected to use.
@@ -36,6 +42,9 @@ type Estimate struct {
 	// Blind: nothing is measured of the job nor of its workflow. The size is
 	// the class's first estimate, which is a guess: see BlindHold.
 	Blind bool
+	// Ignored: runs left out because they held more memory than their host
+	// has (see Sample.HostMem).
+	Ignored int
 }
 
 const (
@@ -75,12 +84,31 @@ func (e Estimate) Watched(started, now time.Time) bool {
 
 // Learn is the estimate from a job's newest runs (any order; at most Window
 // are passed). With no runs it is first.
+//
+// A run that held more memory than its host has (HostMem known) is left out:
+// that is not what the job used but a sum that counted shared memory once per
+// process (macOS), and one such run would size the job larger than any host
+// for a whole window. A run cut short at its limit is kept, at most at the
+// host's memory: it did run out of something.
 func Learn(runs []Sample, first Estimate) Estimate {
+	ignored := 0
+	kept := make([]Sample, 0, len(runs))
+	for _, r := range runs {
+		if r.HostMem > 0 && r.MemBytes > r.HostMem {
+			if !r.OOM {
+				ignored++
+				continue
+			}
+			r.MemBytes = r.HostMem
+		}
+		kept = append(kept, r)
+	}
+	runs = kept
 	if len(runs) == 0 {
-		first.Runs = 0
+		first.Runs, first.Ignored = 0, ignored
 		return first
 	}
-	var e Estimate
+	e := Estimate{Ignored: ignored}
 	var cpu, mem float64
 	for _, r := range runs {
 		m := float64(r.MemBytes)
@@ -113,6 +141,17 @@ func Charge(est Estimate, cpuNow float64, memNow int64, watched bool) (cpus floa
 
 // Source says where the estimate comes from, for the reason of a start.
 func (e Estimate) Source() string {
+	s := e.source()
+	switch {
+	case e.Ignored == 1:
+		s += "; 1 run that held more than its host's memory left out"
+	case e.Ignored > 1:
+		s += fmt.Sprintf("; %d runs that held more than their host's memory left out", e.Ignored)
+	}
+	return s
+}
+
+func (e Estimate) source() string {
 	switch {
 	case e.Borrowed:
 		return fmt.Sprintf("no measured run of this job yet; sized like the largest known of its workflow's other jobs, %.1fcpu/%s", e.TopCPUs, gib(e.TopMem))

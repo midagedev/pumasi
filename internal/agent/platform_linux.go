@@ -79,6 +79,15 @@ func (l *linux) LogTail(ctx context.Context, name string, lines int) string {
 
 func (l *linux) DataDir(ctx context.Context) string { return l.docker.DataDir(ctx) }
 
+// DiskDirs: besides docker's data (DataDir), the agent's directory, and the
+// native runners' where this host can run them.
+func (l *linux) DiskDirs() []string {
+	if nativeProblem() != "" {
+		return []string{l.native.Root}
+	}
+	return l.native.DiskDirs()
+}
+
 func (l *linux) Check(ctx context.Context, image string) error { return l.docker.Check(ctx, image) }
 
 func (l *linux) NativeProblem() string { return nativeProblem() }

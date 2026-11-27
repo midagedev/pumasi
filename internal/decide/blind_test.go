@@ -105,7 +105,10 @@ func TestRoomOfAnOverflowClass(t *testing.T) {
 	}
 	// One job waits that is larger than the class's jobs are taken to be: the
 	// class takes no more, though seven of the usual size would fit.
-	held := snap([]Host{host}, []Demand{{ID: "big", Class: "build", FirstSeen: t0, CPUs: 4, MemBytes: 40 * gb}}, nil)
+	// (A larger host of the class is closed now, so the job is not one that
+	// no host could ever take.)
+	closedBig := Host{Name: "h9", Kind: "server", Up: true, Closed: "in use", CPUs: 16, MemBytes: 64 * gb, KeepMem: 4 * gb}
+	held := snap([]Host{host, closedBig}, []Demand{{ID: "big", Class: "build", FirstSeen: t0, CPUs: 4, MemBytes: 40 * gb}}, nil)
 	held.Classes = []Class{c}
 	if p := Decide(held); len(p.Start) != 0 || p.Room["build"] != 0 {
 		t.Errorf("a job waits for room: %d started, room %d, want 0 and 0", len(p.Start), p.Room["build"])
@@ -217,7 +220,9 @@ func TestNoJobPassesAnOlderJobOfItsClassThatWaitsForRoom(t *testing.T) {
 		{ID: "small", Class: "build", FirstSeen: t0.Add(time.Second), CPUs: 1, MemBytes: gb},
 		{ID: "other", Class: "other", FirstSeen: t0.Add(2 * time.Second)},
 	}
-	s := snap([]Host{host}, ds, nil)
+	// A larger host of the class is closed now: big waits for it.
+	closedBig := Host{Name: "h9", Kind: "server", Up: true, Closed: "in use", CPUs: 16, MemBytes: 64 * gb, KeepMem: 4 * gb}
+	s := snap([]Host{host, closedBig}, ds, nil)
 	s.Classes = []Class{{Name: "build", CPUs: 2, MemBytes: 4 * gb}, {Name: "other", CPUs: 1, MemBytes: gb}}
 	p := Decide(s)
 	if got := starts(p); len(got) != 1 || got[0] != "other@h1" {

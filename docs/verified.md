@@ -25,6 +25,7 @@
 | 알림 | 부재 알림: 호스트의 네트워크만 끊긴 경우, 자다 깬 노트북 호스트, 기본값 5분 그대로 |
 | 사람 우선 | Linux 화면 세션, Windows 입력 시각 |
 | 설정 조합 | `image` 가 `:latest` 일 때 native 러너 · 서비스에서 `hosts: - ssh:` 로 대신 붙이기 |
+| 측정 (11-27) | 러너 메모리를 머신 크기에서 자르는 것을 실제 Mac 에서 · 장부의 큰 표본을 빼고 어느 호스트에도 안 들어가는 잡을 혼자 놓는 것을 실제 호스트에서 · 러너가 사는 파일시스템 중 가장 찬 것으로 디스크를 재는 것을 디스크가 둘인 실제 Linux 호스트에서 · Windows 의 볼륨 구분 — 모두 유닛만 |
 | 원인을 못 가린 것 | WSL 호스트에서 `down` 뒤 파일이 다시 생기던 것(막은 뒤로는 안 생겼으나 고치기 전 판으로 재현하지 않았다) · Mac 을 `after` 뒤 클래스로 뒀을 때의 31초(압박 때문인지) · 서로 다른 워크플로우가 같은 잡 이름으로 같은 reusable 파일을 부를 때 열쇠가 뭉치는 것(이름 규칙에서 따라 나올 뿐) |
 
 ## 배치와 장부
@@ -63,6 +64,9 @@
 | 호스트를 지키는 한도(머신의 80%)에 실제로 걸리는 것 | 미확인 | 걸리게 하려면 VM 메모리의 80%(25G)를 쥐어야 해서 하지 않았다. 한도 값의 계산은 유닛, 한도가 걸렸을 때의 동작은 위 `limit` 과 같은 경로 |
 | 추정 계산, 러너가 쥔 것 = max(추정, 실측), 자리 계산, 메모리 압박 닫힘 | 유닛 | `internal/size`, `internal/decide` 의 표 테스트 |
 | 크기를 이유로 멈추는 러너가 없다 | 유닛 | 추정의 1 ~ 1000배, 압박 0·99, 상태 셋의 조합 전부에서 Stop 0 |
+| 러너 하나의 메모리는 머신의 물리 메모리에서 잘린다(첫 샘플부터, 치울 때의 마지막 샘플도) (11-27) | 유닛 | `internal/agent/measure_test.go`. 계기는 실물: 32G Mac 에서 한 잡의 트리가 113.8G 로 재어져 추정이 12.8G → 127.2G. 고친 판을 Mac 에서 다시 돌려 보지는 않았다 |
+| 장부에 있는, 호스트 메모리보다 큰 표본은 추정에서 빠진다(출처에 `left out`), 한도에서 끊긴 표본은 호스트 메모리로 잘려 남는다 (11-27) | 유닛 | `internal/size` `TestLearnLeavesOutARunAboveItsHostsMemory`, `internal/controller` `TestEstimateLeavesOutARunAboveItsHostsMemory` |
+| 어느 호스트도 빌려줄 수 없는 크기는 빈 호스트에 그 호스트가 빌려줄 만큼으로 혼자 놓인다, 가장 큰 호스트 먼저, 더 큰 호스트가 닫혀 있을 뿐이면 기다린다, `overflow` 의 자리도 같이 (11-27) | 유닛 | `internal/decide/alone_test.go`, `explain` 의 대기 문구는 `TestExplainJobLargerThanAnyHost`. 대시보드 말풍선(`util.js`)은 node 로 사유 한 줄을 읽혀 본 것뿐 |
 | 숫자 없는 설정이 통한다, `limit` 파싱 | 유닛 + 실물 | 실물은 위 설정 |
 | `status` 의 EST·NOW·JOB SIZE, 로그의 `estimate` 줄 | 실물 | `EST 2.0cpu/4.0G (first)  NOW 0.0cpu/0.4G`, `hold (1)  labels.yml  0.4cpu/3.2G  0.3cpu/2.7G  0.3cpu/2.7G  4` |
 | 대시보드의 Job sizes 표와 러너의 now/est 칸 | 미확인 | 코드만. 화면을 열어 보지 않았다 |
@@ -188,6 +192,7 @@
 | 메모리 한도 사건, 다시 돌리지 않음 | 실물 | |
 | `maxDuration` | 실물 | 넘는 순간 사건, 러너 정지, 다시 돌리지 않음 |
 | 디스크 부족 | 실물 | 임계를 올려서: 사건, 새 배치 중단 |
+| 디스크를 러너가 사는 파일시스템 중 가장 찬 것으로 잰다(데이터 디렉터리, native 러너 루트, 띄웠거나 이어받은 러너의 `work`·`{slot}` 디렉터리 — 없으면 부모), 장치 번호로 한 번씩, 닫힘 사유·사건·`explain` 에 경로 (11-27) | 유닛 | `internal/agent/disk_test.go`(가짜 statfs 로 HDD 81% 와 NVMe 2%, 이 머신의 실제 statfs 로 한 파일시스템의 두 디렉터리), `native_dirs_test.go`(재시작한 에이전트가 `pumasi.json` 에서 디렉터리를 이어받음), `internal/controller` `TestDiskLowNamesThePath`. 계기는 실물(Linux 호스트, 데이터 HDD 81% 여유 · 작업 NVMe 98% 참)이지만 고친 판을 실제 호스트에서 돌려 보지 않았다. 도커 드라이버의 데이터 루트는 전과 같은 길(`docker info`). Windows 의 볼륨 구분(`GetVolumePathName`)과 없는 경로의 오류 판정은 빌드와 vet 만 |
 | 장부가 깨짐 | 실물 | 옆으로 치우고 빈 장부로 시작 |
 | 틀린 GitHub 토큰 | 실물 | `up` 이 그 이름으로 끝남 |
 | **45분 잡** | 실물 | Linux(컨테이너)와 Mac 각각: 도는 동안 controller kill -9, 판 교체 재시작, 에이전트 60초 멈춤, controller 머신 load 120 — 잡 성공 |

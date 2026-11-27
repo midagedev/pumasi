@@ -142,6 +142,9 @@ type Container struct {
 	OOMKilled  bool // docker saw the container's main process killed at the memory limit
 	StartedAt  time.Time
 	FinishedAt time.Time
+	// Dirs: where the runner writes outside the driver's own directories (its work
+	// and slot directories). The host's free disk is measured there too.
+	Dirs []string
 }
 
 // Driver starts and removes runner containers. M1 has one: docker.
@@ -563,6 +566,9 @@ func (i inspected) container() Container {
 	c.MemBytes, _ = strconv.ParseInt(i.labels[labelMem], 10, 64)
 	c.StartedAt = dockerTime(i.State.StartedAt)
 	c.FinishedAt = dockerTime(i.State.FinishedAt)
+	if w := i.labels[labelWork]; w != "" {
+		c.Dirs = []string{w}
+	}
 	return c
 }
 

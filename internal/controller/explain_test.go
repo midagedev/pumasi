@@ -317,3 +317,25 @@ func TestExplainEndpoint(t *testing.T) {
 		t.Errorf("controller apis %q", got)
 	}
 }
+
+// A job larger than any host of its class could ever lend waits only for a
+// host to be empty: the report says its size, what it will run with, and
+// that the size may be a measurement that counted memory twice.
+func TestExplainJobLargerThanAnyHost(t *testing.T) {
+	s := State{Controller: true,
+		Hosts: []HostState{{Name: "mac-a", Kind: "server", OS: "macos", Reachable: ptr(true), CPUs: 10, MemBytes: 32 << 30, FreeCPUs: 7, FreeMem: 20 * gb}},
+		Waiting: []WaitingState{{Class: "mac-diag", Jobs: 1, Order: 1, OldestSeconds: 600,
+			Reason: "no host with 6.2cpu/29.0G free (mac-a 7.0cpu/20.0G); its size 6.2cpu/127.2G is more than any host of mac-diag can ever lend (10.0cpu/29.0G at most): it runs alone on one once one is empty"}},
+		Classes: []ClassState{{Name: "mac-diag"}}}
+	f, ok := findOf(Explain(s, nil, explainNow), "waiting")
+	if !ok {
+		t.Fatal("no waiting finding")
+	}
+	for _, want := range []string{"needs 6.2cpu/29.0G", "mac-a has 7.0cpu/20.0G free, 9.0G memory short",
+		"Its size 6.2cpu/127.2G is more than any host of mac-diag can ever lend (10.0cpu/29.0G at most): it is placed at what a host lends with no runner on it",
+		"counted shared memory twice"} {
+		if !strings.Contains(f.Text, want) {
+			t.Errorf("text %q lacks %q", f.Text, want)
+		}
+	}
+}

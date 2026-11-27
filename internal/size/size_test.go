@@ -1,6 +1,7 @@
 package size
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,5 +96,35 @@ func TestBorrowIsNeverUnderTheFirstEstimate(t *testing.T) {
 	small := Borrow(first, Learn([]Sample{{CPUs: 0.1, MemBytes: gb / 4}}, Estimate{}))
 	if small.MemBytes != 4*gb || small.CPUs != 2 {
 		t.Errorf("borrowed from a smaller workflow: %+v", small)
+	}
+}
+
+// A run that held more memory than its host has is a measurement that counted
+// shared memory once per process; it is left out, and the estimate says so.
+// A run cut short at its limit counts, at most at the host's memory.
+func TestLearnLeavesOutARunAboveItsHostsMemory(t *testing.T) {
+	first := Estimate{CPUs: 2, MemBytes: 4 * gb}
+	runs := []Sample{
+		{CPUs: 6, MemBytes: 113 * gb, Host: "mac-a", HostMem: 32 * gb},
+		{CPUs: 5, MemBytes: 10 * gb, Host: "mac-a", HostMem: 32 * gb},
+	}
+	e := Learn(runs, first)
+	if e.MemBytes != 12*gb || e.CPUs != 6 || e.Runs != 1 || e.Ignored != 1 || e.TopMem != 10*gb {
+		t.Fatalf("with a run of 113G on a 32G host: %+v", e)
+	}
+	if src := e.Source(); !strings.Contains(src, "1 run that held more than its host's memory left out") {
+		t.Fatalf("source %q", src)
+	}
+	// Where the host's memory is not known, the run counts as it is.
+	if e := Learn([]Sample{{CPUs: 1, MemBytes: 113 * gb}}, first); e.MemBytes < 113*gb {
+		t.Fatalf("host memory unknown: %+v", e)
+	}
+	// Only such runs: the class's first estimate.
+	if e := Learn(runs[:1], first); e.MemBytes != first.MemBytes || e.Runs != 0 || e.Ignored != 1 {
+		t.Fatalf("only a run above its host: %+v", e)
+	}
+	// Cut short at a limit wider than the host: what the host has, with the OOM margin.
+	if e := Learn([]Sample{{CPUs: 1, MemBytes: 40 * gb, OOM: true, HostMem: 32 * gb}}, first); e.MemBytes != 48*gb || e.Ignored != 0 {
+		t.Fatalf("oom above the host: %+v", e)
 	}
 }

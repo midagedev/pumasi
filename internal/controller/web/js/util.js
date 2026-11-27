@@ -72,9 +72,13 @@ export function el(tag, props = {}, ...kids) {
 }
 
 // Reason strings from the placement ("no host with 7.5cpu/30.8G free (h1 20.3cpu/1.4G, h2 in use)").
+// A job larger than any host of its class can lend has "; its size … at most): it runs alone …" after it.
 const NEEDS = /^no host with ([\d.]+)cpu\/([\d.]+)G free \((.*)\)$/;
 export function parseReason(reason) {
-  const m = NEEDS.exec(reason || "");
+  let r = reason || "";
+  const i = r.indexOf("); its size ");
+  if (i >= 0) r = r.slice(0, i + 1);
+  const m = NEEDS.exec(r);
   if (!m) return null;
   const needCpu = +m[1], needMem = +m[2];
   const hosts = [];

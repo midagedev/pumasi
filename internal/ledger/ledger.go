@@ -810,7 +810,7 @@ func (l *Ledger) WorkflowRuns(repo, workflow, platform string, limit int) ([]siz
 func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, error) {
 	rows, err := l.db.Query(`SELECT COALESCE(cpu_sec,0),
 	    MAX(mem_work_peak, CASE WHEN COALESCE(oom_kills,0) > 0 THEN COALESCE(limit_mem,0) ELSE 0 END), COALESCE(oom_kills,0),
-	    COALESCE((julianday(COALESCE(finished_at, removed_at))-julianday(started_at))*86400, 0)
+	    COALESCE((julianday(COALESCE(finished_at, removed_at))-julianday(started_at))*86400, 0), host
 	  FROM runners WHERE repo=? AND `+workflowFile+`=? AND COALESCE(platform,'')=? `+andJob+` AND started_at IS NOT NULL
 	    AND mem_work_peak > 0 AND (removed_at IS NOT NULL OR state IN ('failed','lost'))
 	  ORDER BY started_at DESC LIMIT ?`, append(args, limit)...)
@@ -823,7 +823,7 @@ func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, err
 		var cpuSec, sec float64
 		var oom int
 		var s size.Sample
-		if err := rows.Scan(&cpuSec, &s.MemBytes, &oom, &sec); err != nil {
+		if err := rows.Scan(&cpuSec, &s.MemBytes, &oom, &sec, &s.Host); err != nil {
 			return nil, err
 		}
 		if sec >= 1 {

@@ -213,7 +213,7 @@ function build(sel, actions) {
         facts([["kind", h.kind], ["os", h.os || "-"], ["agent", h.agent || "-"], ["seen", h.seenSeconds === null || h.seenSeconds === undefined ? "-" : dur(h.seenSeconds) + " ago · " + Math.round(h.rttMs) + "ms"], ["last drop", h.lastDrop || "-"],
           ["lends", h.budgetCpus || h.budgetMem ? `${h.budgetCpus || "any"}cpu / ${h.budgetMem ? gib(h.budgetMem) : "any"}` : "what it has free"],
           ["pressure", ["cpu", "mem", "io"].map((k) => { const v = h[{ cpu: "cpuPressure", mem: "memPressure", io: "ioPressure" }[k]]; return v === null || v === undefined ? null : `${k} ${v.toFixed(1)}%`; }).filter(Boolean).join(" · ") || "-"],
-          ["disk free", h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%"]]),
+          ["disk free", h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%" + (h.diskPath ? " on " + h.diskPath : "")]]),
         mem ? section("Memory: the floor", memBar([["held", h.usedMem, ZC.held], ["free", h.freeMem, ZC.free], ["kept free", keep, ZC.keep], ["others", others, ZC.others], ["not lent", unlent, ZC.unlent]]),
           el("div", { class: "note", text: `${gib(mem)} in the machine. Each runner's floor is what placement counts it as holding: its estimate, or its use when that is more.` })) : null,
         h.cpus ? section("CPU", memBar([["held", h.usedCpus, ZC.held, h.usedCpus.toFixed(1)], ["free", h.freeCpus, ZC.free, h.freeCpus.toFixed(1)], ["others", h.otherCpus || 0, ZC.others, (h.otherCpus || 0).toFixed(1)], ["rest", Math.max(0, h.cpus - h.usedCpus - h.freeCpus - (h.otherCpus || 0)), ZC.unlent, ""]])) : null,

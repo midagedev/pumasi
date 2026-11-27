@@ -117,8 +117,10 @@ type HostState struct {
 	Reachable *bool   `json:"reachable"` // nil = unknown, no controller running
 	// Closed: why the host, though reachable, gets no new runners ("quarantined", "disk 4% free").
 	Closed string `json:"closed"`
-	// Free share of the disk that holds the runners, in percent; nil when unknown.
+	// Free share of the fullest disk runners live on, in percent; nil when unknown.
 	DiskFreePct *float64 `json:"diskFreePct"`
+	// DiskPath: a path on that disk, as the agent names it ("" = not said).
+	DiskPath string `json:"diskPath,omitempty"`
 	// The connection: seconds since the last answer (nil = none yet), how long
 	// that answer took, the agent's build and why the host was last cut off.
 	// Empty without a running controller.
@@ -247,6 +249,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 				if snap.DiskTotal > 0 {
 					d := 100 * float64(snap.DiskFree) / float64(snap.DiskTotal)
 					hs.DiskFreePct = &d
+					hs.DiskPath = snap.DiskPath
 				}
 			}
 		}
@@ -289,6 +292,12 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			h.FreeCPUs, h.FreeMem = cpu, int64(mem)
 		}
 	}
+	hostMem := map[string]int64{}
+	for name, snap := range live.Hosts {
+		if snap != nil {
+			hostMem[name] = snap.MemBytes
+		}
+	}
 	keys, err := l.MeasuredJobs(50)
 	if err != nil {
 		return out, err
@@ -298,6 +307,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		if err != nil || len(runs) == 0 {
 			continue
 		}
+		withHostMem(runs, hostMem)
 		e := size.Learn(runs, size.Estimate{})
 		out.Sizes = append(out.Sizes, JobSize{Repo: k.Repo, Workflow: path.Base(k.Workflow), Job: k.Job, Platform: k.Platform, EstCPUs: e.CPUs, EstMem: e.MemBytes,
 			LastCPUs: runs[0].CPUs, LastMem: runs[0].MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs})

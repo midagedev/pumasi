@@ -138,6 +138,7 @@ func (c *Controller) nextSize(cl config.Class) size.Estimate {
 		if err != nil {
 			continue
 		}
+		withHostMem(runs, c.hostMem)
 		var e size.Estimate
 		if len(runs) > 0 {
 			e = size.Learn(runs, size.Estimate{})
@@ -146,6 +147,7 @@ func (c *Controller) nextSize(cl config.Class) size.Estimate {
 			known, ok := byWorkflow[w]
 			if !ok {
 				if wr, err := c.ledger.WorkflowRuns(k.Repo, k.Workflow, platform, size.Window); err == nil && len(wr) > 0 {
+					withHostMem(wr, c.hostMem)
 					known = size.Learn(wr, size.Estimate{})
 				}
 				byWorkflow[w] = known

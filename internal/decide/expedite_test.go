@@ -126,10 +126,14 @@ func TestExpeditedJobKeepsItsHostUntilARunningJobEnds(t *testing.T) {
 }
 
 // An expedited job that would not fit a host even with every runner gone does
-// not keep that host: nobody would gain from the wait.
+// not keep that host: nobody would gain from the wait. (It waits for a larger
+// host of its class, closed now; were there none, it would run alone, see
+// TestJobLargerThanAnyHostRunsAlone.)
 func TestExpeditedJobThatNeverFitsKeepsNothing(t *testing.T) {
 	ds := []Demand{expedite(Demand{ID: "huge", Name: "huge", Class: "build", FirstSeen: t0, CPUs: 2, MemBytes: 40 * gb}, 1), waiting("d", "docs", 0)}
-	p := Decide(expediteSnap(ds, nil))
+	s := expediteSnap(ds, nil)
+	s.Hosts = append(s.Hosts, Host{Name: "h9", Kind: "server", Up: true, Closed: "in use", CPUs: 16, MemBytes: 64 * gb, KeepMem: 4 * gb})
+	p := Decide(s)
 	if len(p.Start) != 1 || p.Start[0].Job != "d" {
 		t.Fatalf("started %+v, want d", p.Start)
 	}

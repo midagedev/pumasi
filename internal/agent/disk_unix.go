@@ -2,13 +2,22 @@
 
 package agent
 
-import "syscall"
+import (
+	"strconv"
+	"syscall"
+)
 
-// diskSpace is the free and total bytes of the filesystem holding dir (0, 0 = unknown).
-func diskSpace(dir string) (free, total int64) {
+// diskStat is the free and total bytes of the filesystem holding p, named by
+// its device number.
+func diskStat(p string) (diskFree, error) {
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, 0
+	if err := syscall.Statfs(p, &st); err != nil {
+		return diskFree{}, err
 	}
-	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
+	var s syscall.Stat_t
+	if err := syscall.Stat(p, &s); err != nil {
+		return diskFree{}, err
+	}
+	return diskFree{free: int64(st.Bavail) * int64(st.Bsize), total: int64(st.Blocks) * int64(st.Bsize),
+		id: strconv.FormatUint(uint64(s.Dev), 10)}, nil
 }

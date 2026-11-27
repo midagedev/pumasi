@@ -167,6 +167,11 @@ func (t *tree) refresh(ps map[int]process, children map[int][]int) {
 	// for, so a compiler that came and went between two looks is still counted.
 	// Parents are read first: a child reaped in between is then missed for one
 	// look rather than counted twice.
+	// Memory: each member's footprint (what Activity Monitor shows), summed.
+	// libproc has nothing better per tree, but the sum counts memory the
+	// members share (copy-on-write pages after fork, shared mappings, GPU
+	// buffers) once for each, and compressed memory at its full size: it can
+	// come out above the machine. The agent caps it there (Usage.capMem).
 	pids := make([]int, 0, len(members))
 	for pid := range members {
 		pids = append(pids, pid)

@@ -183,3 +183,29 @@ func TestDiskBelowThresholdClosesHost(t *testing.T) {
 		t.Fatalf("notices %q", got)
 	}
 }
+
+// The agent names the fullest of the disks its runners live on: the close
+// reason and the incident say which, and explain's host line too.
+func TestDiskLowNamesThePath(t *testing.T) {
+	c, _, sent := testBook(t)
+	c.cfg.DiskMinFree = 10
+	h := &host{cfg: config.Host{Name: "server1"}, snap: &api.Snapshot{DiskFree: 6500 << 20, DiskTotal: 400 << 30, DiskPath: "/nvme/ci/work/1"}}
+	if got := c.closedReason(h); got != "disk 2% free on /nvme/ci/work/1" {
+		t.Fatalf("closed %q", got)
+	}
+	got := sent()
+	if len(got) != 1 || !strings.Contains(got[0], "server1 has 6.3G free on the disk of /nvme/ci/work/1 (2%, below 10%)") {
+		t.Fatalf("notices %q", got)
+	}
+	s := State{Controller: true, Limits: StateLimits{DiskMinFree: 10},
+		Hosts: []HostState{{Name: "server1", Kind: "server", Reachable: ptr(true), Closed: "disk 2% free on /nvme/ci/work/1", DiskFreePct: ptr(1.6), DiskPath: "/nvme/ci/work/1"}}}
+	f, ok := findOf(Explain(s, nil, explainNow), "host")
+	if !ok || f.Text != "server1 has disk 2% free on /nvme/ci/work/1: under 10% it takes no new runners" {
+		t.Fatalf("finding %+v", f)
+	}
+	var b strings.Builder
+	WriteExplain(&b, s, nil, nil, "", false, explainNow)
+	if !strings.Contains(b.String(), "disk 2% free on /nvme/ci/work/1") {
+		t.Fatalf("report:\n%s", b.String())
+	}
+}
