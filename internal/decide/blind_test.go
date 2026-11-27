@@ -103,6 +103,13 @@ func TestRoomOfAnOverflowClass(t *testing.T) {
 	if p := mk(c, []Host{host}, demand("build", 9)); len(p.Start) != 7 || p.Room["build"] != 0 {
 		t.Errorf("more waiting than fits: %d started, room %d", len(p.Start), p.Room["build"])
 	}
+	// One job waits that is larger than the class's jobs are taken to be: the
+	// class takes no more, though seven of the usual size would fit.
+	held := snap([]Host{host}, []Demand{{ID: "big", Class: "build", FirstSeen: t0, CPUs: 4, MemBytes: 40 * gb}}, nil)
+	held.Classes = []Class{c}
+	if p := Decide(held); len(p.Start) != 0 || p.Room["build"] != 0 {
+		t.Errorf("a job waits for room: %d started, room %d, want 0 and 0", len(p.Start), p.Room["build"])
+	}
 	// A class that has measured nothing takes what it would place of jobs that
 	// are a guess: one on the guess, the next with three times that free.
 	guess := func(hosts []Host, rs []Runner) int {

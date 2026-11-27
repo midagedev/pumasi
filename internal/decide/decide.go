@@ -400,7 +400,13 @@ func Decide(s Snapshot) Plan {
 		if c.MaxRunners > 0 {
 			n = min(n, c.MaxRunners-live[c.Name])
 		}
-		p.Room[c.Name] = max(0, n-waiting[c.Name])
+		// A job the class takes now goes behind the ones it already holds, so
+		// while one of those waits for room there is none for another, however
+		// small the next one is taken to be.
+		if waiting[c.Name] > 0 {
+			n = 0
+		}
+		p.Room[c.Name] = max(0, n)
 	}
 	return p
 }
