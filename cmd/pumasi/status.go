@@ -143,11 +143,14 @@ func printStatus(w io.Writer, s controller.State) {
 		fmt.Fprintln(w, "MODE"+strings.TrimPrefix(modeLine(s.Mode, time.Now()), "mode"))
 	}
 	for _, x := range s.Expedited {
-		where := fmt.Sprintf("line %d", x.Position)
-		if x.Pending {
+		where := fmt.Sprintf("line %d, %d of its class ahead", x.Position, x.Ahead)
+		switch {
+		case x.Pending:
 			where = "GitHub still holds it"
+		case x.Position == 0:
+			where = "a runner of its class is up for it"
 		}
-		fmt.Fprintf(w, "EXPEDITED %s (run %d) of %s, by %s: %s, %d of its class ahead\n", x.Name, x.RunID, x.Class, x.By, where, x.Ahead)
+		fmt.Fprintf(w, "EXPEDITED %s (run %d) of %s, by %s: %s\n", x.Name, x.RunID, x.Class, x.By, where)
 	}
 	if len(s.Waiting) == 0 {
 		fmt.Fprintln(w, "no jobs waiting")
