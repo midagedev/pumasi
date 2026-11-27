@@ -59,6 +59,8 @@ type Agent struct {
 	dataDir      string // the driver's data directory, asked once
 	// memTotal: the machine's physical memory, from the last host sample (opMu).
 	memTotal int64
+	// statDisk measures the filesystem holding a path (diskStat; tests replace it).
+	statDisk func(string) (diskFree, error)
 }
 
 type rec struct {
@@ -80,6 +82,7 @@ type hostState struct {
 	sampledAt    time.Time
 	diskFree     int64
 	diskTotal    int64
+	diskPath     string
 	closed       string
 	noNative     string
 	inputIdle    *time.Duration
@@ -89,7 +92,7 @@ func New(cfg Config, drv Driver, met Meter, log *slog.Logger) *Agent {
 	if cfg.Interval == 0 {
 		cfg.Interval = 5 * time.Second
 	}
-	a := &Agent{cfg: cfg, drv: drv, met: met, log: log, now: time.Now, recs: map[string]*rec{}}
+	a := &Agent{cfg: cfg, drv: drv, met: met, log: log, now: time.Now, recs: map[string]*rec{}, statDisk: diskStat}
 	a.machine, a.uid = Identity()
 	a.load()
 	return a
@@ -132,8 +135,10 @@ func (a *Agent) Sample(ctx context.Context) {
 	seen := map[string]bool{}
 	var runnerUsecDelta uint64
 	var runnerMem int64
+	var dirs []string // where runners write outside the driver's directories
 	for _, c := range cs {
 		seen[c.Name] = true
+		dirs = append(dirs, c.Dirs...)
 		a.dataMu.Lock()
 		r, ok := a.recs[c.Name]
 		if !ok {
@@ -225,7 +230,7 @@ func (a *Agent) Sample(ctx context.Context) {
 	a.dataMu.Unlock()
 	a.save()
 
-	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem)
+	a.sampleHost(ctx, now, runnerUsecDelta, runnerMem, dirs)
 }
 
 // capMem holds a runner's memory to what the machine has (total; 0 = not
@@ -264,14 +269,25 @@ func applyStats(r *rec, u Usage, now time.Time) {
 	}
 }
 
-func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta uint64, runnerMem int64) {
+// diskPaths are where runners and their files live: the driver's data
+// (docker's data root, or the agent's directory), the driver's other
+// directories (the native runners' root), and the work and slot directories
+// of the runners there are (dirs). Each may be its own filesystem: a host is
+// closed by the fullest of them, not by the one the agent happens to sit on.
+func (a *Agent) diskPaths(dirs []string) []string {
+	paths := []string{a.dataDir}
+	if d, ok := a.drv.(interface{ DiskDirs() []string }); ok {
+		paths = append(paths, d.DiskDirs()...)
+	}
+	return append(paths, dirs...)
+}
+
+func (a *Agent) sampleHost(ctx context.Context, now time.Time, runnerUsecDelta uint64, runnerMem int64, dirs []string) {
 	h := hostState{cpus: float64(runtime.NumCPU()), sampledAt: now}
 	if a.dataDir == "" {
 		a.dataDir = a.drv.DataDir(ctx)
 	}
-	if a.dataDir != "" {
-		h.diskFree, h.diskTotal = diskSpace(a.dataDir)
-	}
+	h.diskPath, h.diskFree, h.diskTotal = fullest(a.diskPaths(dirs), a.statDisk)
 	hu, err := a.met.Host()
 	if err != nil {
 		a.log.Warn("host usage", "err", err)
@@ -326,7 +342,7 @@ func (a *Agent) Snapshot() api.Snapshot {
 		Host: a.cfg.Host, Kind: a.cfg.Kind, Version: a.cfg.Version, OS: hostOS(), Machine: a.machine, UID: a.uid, Closed: a.host.closed, NoNative: a.host.noNative, CPUs: a.host.cpus, MemBytes: a.host.memBytes,
 		BudgetCPUs: a.cfg.BudgetCPUs, BudgetMem: a.cfg.BudgetMem,
 		PSI: a.host.psi, NonRunnerCPU: a.host.nonRunnerCPU, NonRunnerMem: a.host.nonRunnerMem,
-		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, Runners: []api.Runner{},
+		SampledAt: a.host.sampledAt, DiskFree: a.host.diskFree, DiskTotal: a.host.diskTotal, DiskPath: a.host.diskPath, Runners: []api.Runner{},
 	}
 	if a.host.inputIdle != nil {
 		s.InputIdleSec = ptr(int64(a.host.inputIdle.Seconds()))

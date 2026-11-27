@@ -88,10 +88,17 @@ func (c *Controller) closedReason(h *host) string {
 	if s := h.snap; s != nil {
 		key := "disk-low/" + h.cfg.Name
 		if pct := 100 * float64(s.DiskFree) / float64(max(s.DiskTotal, 1)); s.DiskTotal > 0 && pct < c.cfg.DiskMinFree {
+			// The agent measures the fullest of the filesystems its runners live
+			// on and names a path there; an older agent names none.
+			where := "the disk that holds its runners"
 			disk = fmt.Sprintf("disk %.0f%% free", pct)
+			if s.DiskPath != "" {
+				disk += " on " + s.DiskPath
+				where = "the disk of " + s.DiskPath
+			}
 			c.book.open(key, "disk-low", h.cfg.Name, fmt.Sprintf(
-				"%s has %s free on the disk that holds its runners (%.0f%%, below %.0f%%); no new runners placed there",
-				h.cfg.Name, gib(s.DiskFree), pct, c.cfg.DiskMinFree))
+				"%s has %s free on %s (%.0f%%, below %.0f%%); no new runners placed there",
+				h.cfg.Name, gib(s.DiskFree), where, pct, c.cfg.DiskMinFree))
 		} else if s.DiskTotal > 0 {
 			c.book.resolve(key)
 		}

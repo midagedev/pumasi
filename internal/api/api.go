@@ -46,10 +46,15 @@ type Snapshot struct {
 	NonRunnerCPU float64            `json:"nonRunnerCpu"` // cores used by everything but runners
 	NonRunnerMem int64              `json:"nonRunnerMem"` // MemTotal - MemAvailable - runner memory.current
 	SampledAt    time.Time          `json:"sampledAt"`
-	// Free and total bytes of the filesystem holding docker's data (0 = unknown).
-	DiskFree  int64    `json:"diskFree"`
-	DiskTotal int64    `json:"diskTotal"`
-	Runners   []Runner `json:"runners"`
+	// Free and total bytes of the fullest filesystem runners live on (0 =
+	// unknown): of docker's data, the agent's and native runners' directories,
+	// and the work and slot directories of the runners there are. An older
+	// agent measured docker's data (or its own directory) alone.
+	DiskFree  int64 `json:"diskFree"`
+	DiskTotal int64 `json:"diskTotal"`
+	// DiskPath: a path on that filesystem, as the agent knows it ("" = not said).
+	DiskPath string   `json:"diskPath,omitempty"`
+	Runners  []Runner `json:"runners"`
 }
 
 // Runner is one runner as the agent last sampled it. Resource values survive

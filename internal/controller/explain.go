@@ -666,6 +666,9 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 		}
 		if h.DiskFreePct != nil {
 			line += fmt.Sprintf("  disk %.0f%% free", *h.DiskFreePct)
+			if h.DiskPath != "" {
+				line += " on " + h.DiskPath
+			}
 		}
 		line += fmt.Sprintf("  %d runners", h.Runners)
 		p("%s", line)

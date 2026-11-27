@@ -968,7 +968,7 @@ export class Scene {
       tags.push({ x: sx, y: sy, title: hall.name, sub, dot: col, big: true, kind: "host", id: hall.name, sel: isSel("host", hall.name), prio: isSel("host", hall.name) ? 0 : 1 });
       if (hall.siloAt && h.diskFreePct !== null && h.diskFreePct !== undefined && h.diskFreePct < (((w.state || {}).limits || {}).diskMinFree || 10) + 5) {
         const [dx, dy] = v.P(...hall.siloAt);
-        tags.push({ x: dx, y: dy - 4, title: `${hall.name}: disk ${h.diskFreePct.toFixed(0)}% free`, dot: th.bad, small: true, kind: "host", id: hall.name, prio: 2 });
+        tags.push({ x: dx, y: dy - 4, title: `${hall.name}: disk ${h.diskFreePct.toFixed(0)}% free${h.diskPath ? " on " + h.diskPath : ""}`, dot: th.bad, small: true, kind: "host", id: hall.name, prio: 2 });
       }
     }
     for (const l of w.lines) {

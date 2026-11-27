@@ -59,6 +59,8 @@ type meta struct {
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	ExitCode   *int      `json:"exitCode,omitempty"`
+	// Dirs: the work and slot directories it writes to outside its own (Spec.diskDirs).
+	Dirs []string `json:"dirs,omitempty"`
 }
 
 var runnerNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -175,7 +177,7 @@ func (n *Native) Start(ctx context.Context, s Spec) error {
 	if err != nil {
 		return fail(fmt.Errorf("start runner: %w", err))
 	}
-	m := meta{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, Pid: t.pid, Born: t.born, StartedAt: time.Now()}
+	m := meta{Name: s.Name, Class: s.Class, CPUs: s.CPUs, MemBytes: s.MemBytes, Pid: t.pid, Born: t.born, StartedAt: time.Now(), Dirs: s.diskDirs()}
 	if err := writeMeta(dir, m); err != nil {
 		t.kill()
 		return fail(err)
@@ -217,7 +219,7 @@ func (n *Native) List(context.Context) ([]Container, error) {
 	for _, m := range metas {
 		t := n.trees[m.Name]
 		c := Container{ID: m.Name, Name: m.Name, Class: m.Class, CPUs: m.CPUs, MemBytes: m.MemBytes,
-			State: "running", Pid: m.Pid, StartedAt: m.StartedAt}
+			State: "running", Pid: m.Pid, StartedAt: m.StartedAt, Dirs: m.Dirs}
 		if !t.alive() {
 			if m.FinishedAt.IsZero() {
 				m.FinishedAt = time.Now()
@@ -398,6 +400,10 @@ func (n *Native) Host() (HostUsage, error) {
 func NativeProblem() string { return nativeProblem() }
 
 func (n *Native) DataDir(context.Context) string { return n.Root }
+
+// DiskDirs: the agent's directory and the runners' (often another filesystem:
+// RunnerRoot). The host's free disk is the fullest of these and the runners' Dirs.
+func (n *Native) DiskDirs() []string { return []string{n.Root, n.runners()} }
 
 func (n *Native) Check(ctx context.Context, image string) error {
 	_, err := n.dist(ctx, image)
