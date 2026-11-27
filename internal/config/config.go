@@ -54,6 +54,10 @@ type Config struct {
 	// elsewhere through a tunnel or an authenticating proxy. Default
 	// DefaultDashboard: a free loopback port, written to the state directory.
 	Dashboard string `yaml:"dashboard"`
+	// DashboardToken lets the dashboard's writes (expedite a job, the mode,
+	// runtime priority rules) come from other machines, with this token as
+	// "Authorization: Bearer". Without it only this machine may write.
+	DashboardToken string `yaml:"dashboardToken"`
 
 	Classes []Class `yaml:"classes"`
 	Hosts   []Host  `yaml:"hosts"`
@@ -423,6 +427,9 @@ func (c *Config) validate() error {
 	if _, _, err := net.SplitHostPort(c.Dashboard); err != nil {
 		return fmt.Errorf("dashboard: %w (an address like 127.0.0.1:7420)", err)
 	}
+	if t := c.DashboardToken; t != "" && (len(t) < 16 || strings.ContainsAny(t, " \t\r\n")) {
+		return fmt.Errorf("dashboardToken: at least 16 characters without spaces (openssl rand -hex 16)")
+	}
 	if l := c.Notify.Level; l != "problem" && l != "recovered" && l != "all" {
 		return fmt.Errorf("notify.level must be problem, recovered or all")
 	}
@@ -436,7 +443,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("at least one class is required")
 	}
 	for i, r := range c.Priority {
-		if err := r.validate(); err != nil {
+		if err := r.Validate(); err != nil {
 			return fmt.Errorf("priority rule %d: %w", i+1, err)
 		}
 	}

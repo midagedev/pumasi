@@ -290,3 +290,42 @@ func TestClassOverflow(t *testing.T) {
 		}
 	}
 }
+
+// A runtime rule goes before the file's; the line `pumasi priority` prints
+// for it loads back as the same rule.
+func TestRuntimeRules(t *testing.T) {
+	load := func(body string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: [{name: a}, {name: e2e}]\n"+body), 0o600)
+		return Load(p)
+	}
+	c, err := load("priority:\n  - {match: {event: schedule}, level: low}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := Rule{ID: "r-1", Runtime: true, PriorityRule: PriorityRule{Match: RuleMatch{Workflow: "deploy-*.yml", Branch: "release/*"}, Level: "high"}}
+	rules := c.Rules([]Rule{rt})
+	if len(rules) != 2 || rules[0].ID != "r-1" || rules[1].ID != "file-1" {
+		t.Fatalf("rules %+v", rules)
+	}
+	j := WaitingJob{Class: "a", WorkflowRef: "o/r/.github/workflows/deploy-x.yml@refs/heads/release/1", Event: "schedule"}
+	if level, why := LevelIn(rules, j); level != 1 || why != "high by runtime rule r-1 (workflow: deploy-*.yml, branch: release/*)" {
+		t.Errorf("%d %q", level, why)
+	}
+	if level, why := c.LevelOf(j); level != -1 || why != "low by rule 1 (event: schedule)" {
+		t.Errorf("file rules alone: %d %q", level, why)
+	}
+	if !MayBeHigh(rules, "e2e") || MayBeHigh(c.Rules(nil), "a") {
+		t.Error("MayBeHigh")
+	}
+	back, err := load("priority:\n  " + rt.YAML() + "\n")
+	if err != nil || len(back.Priority) != 1 || back.Priority[0] != rt.PriorityRule {
+		t.Errorf("%s loads as %+v (%v)", rt.YAML(), back, err)
+	}
+
+	for token, ok := range map[string]bool{"0123456789abcdef": true, "short": false, "0123456789 abcdef": false} {
+		if _, err := load("dashboardToken: \"" + token + "\"\n"); (err == nil) != ok {
+			t.Errorf("dashboardToken %q: %v", token, err)
+		}
+	}
+}
