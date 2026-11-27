@@ -9,6 +9,7 @@ import (
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
+	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
 )
 
@@ -64,7 +65,7 @@ func (p *measuredPoll) GetMessage(ctx context.Context, lastMessageID, _ int) (*s
 }
 
 // setTakes works out each overflow class's take from the plan just made: the
-// jobs it holds, plus the room the hosts have left for more of them. A class
+// jobs it holds and has a place for, plus the room the hosts have left for more. A class
 // that comes after another offers room only while that one has none.
 func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 	held := map[string]int{}
@@ -76,6 +77,10 @@ func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 			held[r.Class]++
 		}
 	}
+	unplaced := map[string]int{}
+	for _, d := range p.Defer {
+		unplaced[d.Class] += d.Count
+	}
 	for _, cl := range c.classes {
 		if !cl.cfg.Overflow {
 			continue
@@ -84,7 +89,11 @@ func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 		if a := cl.cfg.After; a != "" && p.Room[a] > 0 {
 			room = 0
 		}
-		take := int32(held[cl.cfg.Name] + room)
+		// A job the class holds and cannot place is not asked for: GitHub takes
+		// back one above the number when its assignment comes round (every five
+		// minutes) and gives it to another runner of its labels that is free.
+		keep := max(0, held[cl.cfg.Name]-unplaced[cl.cfg.Name])
+		take := int32(keep + room)
 		cl.held.Store(int32(held[cl.cfg.Name]))
 		if old := cl.take.Swap(take); old != take {
 			c.log.Debug(fmt.Sprintf("class %s takes %d jobs at once (was %d): holds %d, room for %d more", cl.cfg.Name, take, old, held[cl.cfg.Name], room))
@@ -100,23 +109,46 @@ func (c *Controller) setTakes(s decide.Snapshot, p decide.Plan) {
 }
 
 // nextSize is what the next job of a class is taken to need while nobody
-// knows which job it will be: the largest of the sizes the class's recent
-// jobs have learned. The largest, because taking a job too many makes it wait
-// here while a runner elsewhere could have had it. Zero when the class has
-// measured no job: its next one is then counted as the guess it is.
+// knows which job it will be: the largest of the sizes of the jobs GitHub has
+// lately given the class. The largest, because taking a job too many makes it
+// wait here while a runner elsewhere could have had it. A job counts by what
+// is known of it anywhere, as it would be sized if it came: its own runs
+// under another class, or its workflow's other jobs when it has none — the
+// class need not have run it, and a job it gave back is still counted. Zero
+// when nothing of the class's jobs is measured: its next one is then counted
+// as the guess it is.
 func (c *Controller) nextSize(cl config.Class) size.Estimate {
 	var next size.Estimate
-	keys, err := c.ledger.ClassJobs(cl.Name, 20)
+	keys, err := c.ledger.AssignedJobs(cl.Name, nextJobs)
 	if err != nil {
 		return next
 	}
+	platform := cl.Platform()
+	byWorkflow := map[ledger.JobKey]size.Estimate{}
 	for _, k := range keys {
+		k.Platform = platform
 		runs, err := c.ledger.JobRuns(k, size.Window)
-		if err != nil || len(runs) == 0 {
+		if err != nil {
 			continue
 		}
-		e := size.Learn(runs, size.Estimate{})
+		var e size.Estimate
+		if len(runs) > 0 {
+			e = size.Learn(runs, size.Estimate{})
+		} else {
+			w := ledger.JobKey{Repo: k.Repo, Workflow: k.Workflow, Platform: platform}
+			known, ok := byWorkflow[w]
+			if !ok {
+				if wr, err := c.ledger.WorkflowRuns(k.Repo, k.Workflow, platform, size.Window); err == nil && len(wr) > 0 {
+					known = size.Learn(wr, size.Estimate{})
+				}
+				byWorkflow[w] = known
+			}
+			e = known
+		}
 		next.CPUs, next.MemBytes = max(next.CPUs, e.CPUs), max(next.MemBytes, e.MemBytes)
 	}
 	return next
 }
+
+// nextJobs: how many of a class's latest jobs its next one is sized by.
+const nextJobs = 50

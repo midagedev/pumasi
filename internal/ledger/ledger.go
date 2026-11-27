@@ -821,9 +821,25 @@ func (l *Ledger) MeasuredJobs(limit int) ([]JobKey, error) {
 	return l.measuredJobs(``, limit)
 }
 
-// ClassJobs are the jobs a class ran and measured, the most recent first.
-func (l *Ledger) ClassJobs(class string, limit int) ([]JobKey, error) {
-	return l.measuredJobs(`AND class=?`, class, limit)
+// AssignedJobs are the jobs GitHub gave a class, whether it ran them or not,
+// the most recently given first (their platform is the class's, not set here).
+func (l *Ledger) AssignedJobs(class string, limit int) ([]JobKey, error) {
+	rows, err := l.db.Query(`SELECT repo, `+workflowFile+`, job FROM demand
+	  WHERE class=? AND job IS NOT NULL AND job<>'' AND repo IS NOT NULL
+	  GROUP BY 1,2,3 ORDER BY MAX(first_seen) DESC LIMIT ?`, class, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobKey
+	for rows.Next() {
+		var k JobKey
+		if err := rows.Scan(&k.Repo, &k.Workflow, &k.Job); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
 }
 
 func (l *Ledger) measuredJobs(andClass string, args ...any) ([]JobKey, error) {

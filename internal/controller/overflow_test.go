@@ -12,6 +12,9 @@ import (
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
+	"github.com/midagedev/pumasi/internal/ledger"
+	"github.com/midagedev/pumasi/internal/size"
+	"path/filepath"
 )
 
 func overflowController(classes ...config.Class) *Controller {
@@ -52,6 +55,11 @@ func TestTakeIsHeldPlusRoom(t *testing.T) {
 	case <-c.classes[0].retaken:
 		t.Error("an unchanged take gives up the poll")
 	default:
+	}
+	// linux cannot place the job it holds: it asks only for the one that runs.
+	c.setTakes(s, decide.Plan{Room: map[string]int{"linux": 0, "mac": 0}, Defer: []decide.Defer{{Class: "linux", Count: 1}}})
+	if got := takes(); got != [3]int32{1, 1, 0} {
+		t.Fatalf("takes %v, want linux 1 (the running job; the one without a place is given back)", got)
 	}
 	// linux is full: mac opens.
 	c.setTakes(s, decide.Plan{Room: map[string]int{"linux": 0, "mac": 2}})
@@ -111,5 +119,60 @@ func TestPollIsSentAgainWhenTheTakeChanges(t *testing.T) {
 	go func() { <-f2.out; cancel2() }()
 	if _, err := (&measuredPoll{Client: f2, cl: cl}).GetMessage(ctx2, 0, 0); err == nil {
 		t.Fatal("a poll ended by the controller returned no error")
+	}
+}
+
+// The class's next job is as large as the largest job GitHub has given it,
+// by what is known of that job anywhere: a class that ran only small jobs
+// still counts the large one another class measured, and the one of an
+// unmeasured job's workflow.
+func TestNextSizeCountsJobsTheClassWasGivenButNeverRan(t *testing.T) {
+	l, err := ledger.Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	c := overflowController()
+	c.ledger = l
+	t0 := time.Date(2026, 11, 26, 1, 0, 0, 0, time.UTC)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	wf := func(f string) string { return "o/r/.github/workflows/" + f + "@refs/heads/main" }
+	cl := config.Class{Name: "over", Overflow: true}
+	ran := func(name, class, workflow, job string, work int64) {
+		must(l.InsertRunner(name, class, cl.Platform(), "h1", t0, size.Estimate{CPUs: 2, MemBytes: 4 << 30}))
+		_, err := l.JobStarted(name, ledger.Job{ID: name, Class: class, Repo: "o/r", Workflow: workflow, Name: job}, t0)
+		must(err)
+		must(l.SetUsage(name, ledger.Usage{CPUSec: 100, MemPeak: work, MemWorkPeak: work}))
+		must(l.JobCompleted(name, ledger.Job{ID: name}, "succeeded", t0.Add(100*time.Second)))
+		must(l.MarkRemoved(name, t0.Add(101*time.Second)))
+	}
+	given := func(id, workflow, job string) {
+		must(l.UpsertDemand(ledger.Job{ID: id, Class: "over", Repo: "o/r", Workflow: workflow, Name: job}, t0))
+	}
+	if n := c.nextSize(cl); n.MemBytes != 0 {
+		t.Fatalf("nothing given yet: %+v", n)
+	}
+	ran("r1", "over", wf("ci.yml"), "lint", 1<<30)
+	given("d1", wf("ci.yml"), "lint")
+	small := c.nextSize(cl).MemBytes
+	if small == 0 || small > 2<<30 {
+		t.Fatalf("only the small job known: %d", small)
+	}
+	// Another class measured "gate" at 20G; this class is given it and cannot place it.
+	ran("r2", "other", wf("ci.yml"), "gate", 20<<30)
+	given("d2", wf("ci.yml"), "gate")
+	if n := c.nextSize(cl).MemBytes; n < 20<<30 {
+		t.Errorf("a job measured under another class: next is %d, want at least 20G", n)
+	}
+	// A job nobody ran, of a workflow whose only measured job is 30G.
+	ran("r3", "other", wf("big.yml"), "build", 30<<30)
+	given("d3", wf("big.yml"), "never-ran")
+	if n := c.nextSize(cl).MemBytes; n < 30<<30 {
+		t.Errorf("an unmeasured job of a measured workflow: next is %d, want at least 30G", n)
 	}
 }
