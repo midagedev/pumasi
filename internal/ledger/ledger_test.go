@@ -226,9 +226,10 @@ func TestJobRuns(t *testing.T) {
 	k.Platform = "linux/docker"
 	runs, err := l.JobRuns(k, 10)
 	must(err)
-	want := []size.Sample{{CPUs: 3, MemBytes: 6 << 30, OOM: true, Host: "h1"}, {CPUs: 3, MemBytes: 2 << 30, Host: "h1"}, {CPUs: 3, MemBytes: 1 << 30, Host: "h1"}}
+	want := []size.Sample{{CPUs: 3, MemBytes: 6 << 30, OOM: true, Host: "h1", Secs: 100}, {CPUs: 3, MemBytes: 2 << 30, Host: "h1", Secs: 100}, {CPUs: 3, MemBytes: 1 << 30, Host: "h1", Secs: 100}}
 	for i := range runs {
 		runs[i].CPUs = math.Round(runs[i].CPUs*1000) / 1000 // julianday is a float of days
+		runs[i].Secs = math.Round(runs[i].Secs*1000) / 1000
 	}
 	if fmt.Sprint(runs) != fmt.Sprint(want) {
 		t.Fatalf("runs %+v, want %+v", runs, want)

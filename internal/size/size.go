@@ -6,6 +6,7 @@ package size
 import (
 	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -24,6 +25,8 @@ type Sample struct {
 	// more than its machine has: a sample above it is a measurement that
 	// counted something twice, and Learn leaves it out.
 	HostMem int64
+	// Secs: how long it ran, seconds (0 = not known).
+	Secs float64
 }
 
 // Estimate is what the next run of a job is expected to use.
@@ -122,6 +125,28 @@ func Learn(runs []Sample, first Estimate) Estimate {
 	e.CPUs = math.Max(MinCPUs, math.Ceil(cpu*Margin*10)/10)             // to a tenth of a core
 	e.MemBytes = max(MinMem, int64(math.Ceil(mem*Margin/(64<<20)))<<26) // to 64M
 	return e
+}
+
+// Runtime is how long the next run of a job is expected to take: the median
+// of its newest runs' times (any order). ok = false: no run has a time.
+// Not the largest, as for its size: a wait told from it should be as often
+// early as late.
+func Runtime(runs []Sample) (d time.Duration, ok bool) {
+	var secs []float64
+	for _, r := range runs {
+		if r.Secs > 0 {
+			secs = append(secs, r.Secs)
+		}
+	}
+	if len(secs) == 0 {
+		return 0, false
+	}
+	slices.Sort(secs)
+	m := secs[len(secs)/2]
+	if len(secs)%2 == 0 {
+		m = (secs[len(secs)/2-1] + m) / 2
+	}
+	return time.Duration(m * float64(time.Second)), true
 }
 
 // Charge is what a runner holds of its host's room: what it is expected to

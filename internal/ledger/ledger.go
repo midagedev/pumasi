@@ -827,7 +827,7 @@ func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, err
 			return nil, err
 		}
 		if sec >= 1 {
-			s.CPUs = cpuSec / sec
+			s.CPUs, s.Secs = cpuSec/sec, sec
 		}
 		s.OOM = oom > 0
 		out = append(out, s)

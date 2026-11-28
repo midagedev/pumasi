@@ -128,3 +128,16 @@ func TestLearnLeavesOutARunAboveItsHostsMemory(t *testing.T) {
 		t.Fatalf("oom above the host: %+v", e)
 	}
 }
+
+func TestRuntimeIsTheMedian(t *testing.T) {
+	if _, ok := Runtime([]Sample{{CPUs: 1}}); ok {
+		t.Fatal("a run without a time gave a runtime")
+	}
+	d, ok := Runtime([]Sample{{Secs: 300}, {Secs: 60}, {Secs: 90}, {}})
+	if !ok || d != 90*time.Second {
+		t.Fatalf("got %v %v, want 1m30s", d, ok)
+	}
+	if d, _ := Runtime([]Sample{{Secs: 60}, {Secs: 120}}); d != 90*time.Second {
+		t.Fatalf("even count: %v", d)
+	}
+}
