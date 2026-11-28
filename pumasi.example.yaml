@@ -26,7 +26,7 @@ classes:
 #   - {match: {workflow: "deploy-*.yml"}, level: high}                    # counts as having come 30m earlier
 #   - {match: {event: schedule}, level: low}                              # as having come 30m later
 # githubApp: {id: Iv23li…, installationId: 12345678, privateKeyFile: ~/.config/pumasi/app.pem}   # instead of PUMASI_GITHUB_TOKEN
-# jobsMayReadCredentials: true             # ends the warning about hosts on this machine whose jobs can read the controller's token (docs/guide.md: 보안 모델)
+# jobsMayReadCredentials: true             # ends the warning about hosts on this machine whose jobs can read the controller's token (docs/guide.md: Security model)
 # rerun: 1                                 # rerun a run's failed jobs once after a failure on pumasi's side
 # warm: 8                                  # the most runners a class keeps up without a job, learned from how its jobs came (0 = off)
 # ahead: false                             # do not start a runner for a job that needs another as that one is about to end
