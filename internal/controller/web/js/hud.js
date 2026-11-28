@@ -234,7 +234,9 @@ export function subjectOf(i) {
 export function renderStale(lastOK) {
   const age = (Date.now() - lastOK) / 1000;
   const fresh = lastOK && age < 10;
-  $("updated").textContent = !lastOK ? "controller not answering" : fresh ? "live · " + clock(new Date(lastOK)) : "not answering for " + dur(age);
+  // a demo pinned with ?at= is not live: it plays on from that second
+  const at = window.__pumasiAt && window.__pumasiAt();
+  $("updated").textContent = !lastOK ? "controller not answering" : fresh ? (at !== null && at !== undefined ? `replay · demo at ${Math.floor(at)}s` : "live · " + clock(new Date(lastOK))) : "not answering for " + dur(age);
   $("updated").className = "updated" + (fresh ? "" : " stale");
   $("offline").hidden = fresh || !lastOK;
 }
