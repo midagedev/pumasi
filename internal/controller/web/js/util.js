@@ -134,6 +134,20 @@ export function aheadOf(r) {
   return m ? { job: m[1], in: +m[2], after: m[3] } : { job: r.ahead, after: "" };
 }
 
+// aheadJobs: the job a ready runner started ahead is for. GitHub hands the
+// class's jobs to whichever runner listens: several up together are for any
+// (one still starting does not listen yet, and is not counted).
+export function aheadJobs(runners, r) {
+  const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after && (x === r || isReady(x)); }).length;
+  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
+}
+// aheadWarm: the host's other ready runners, kept warm, as the ahead tag says
+// them, so that the tags there add up to the READY on the host's card.
+export function aheadWarm(runners, r) {
+  const warm = runners.filter((x) => x.host === r.host && isReady(x) && !aheadOf(x)).length;
+  return warm ? `plus ${warm} kept warm` : ""; // short: the tag sits between two cards
+}
+
 // hostLoad: how full a host is, as a waiting job sees it. Of what the host
 // lends runners (its budget, else the machine; cores counted cpuShare times
 // where runners share them), each part is one of:

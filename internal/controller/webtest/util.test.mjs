@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords, aheadJobs, aheadWarm } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -103,4 +103,19 @@ test("a problem is a problem finding, and the List counts waits and notes apart"
   assert.equal(attentionWords(fs), "3 problems · 1 class waiting · 1 note");
   assert.equal(attentionWords(fs.slice(0, 1)), "1 problem");
   assert.equal(attentionWords([]), "");
+});
+
+// Two release runners started ahead and a pr-checks one kept warm make the
+// host's 3 READY: the ahead tag says all three.
+test("an ahead tag counts the host's runners kept warm", () => {
+  const ah = (name) => ({ name, host: "a", class: "release", state: "idle", ahead: "package expected in ~5s, when release-check ends" });
+  const rs = [ah("r1"), ah("r2"), { name: "w", host: "a", class: "pr-checks", state: "idle" }, { name: "x", host: "b", class: "pr-checks", state: "idle" }];
+  assert.equal(aheadJobs(rs, rs[0]), "a release job (one of 2 runners)");
+  assert.equal(aheadJobs(rs.slice(1), rs[1]), "package");
+  assert.equal(aheadWarm(rs, rs[0]), "plus 1 kept warm");
+  assert.equal(aheadWarm(rs.slice(0, 2), rs[0]), "");
+  // one of the two still starting: the tag says the one that listens, so 1 + 3 warm make 4 READY
+  const st = [{ ...ah("r1"), state: "starting" }, ah("r2"), ...["p", "d1", "d2"].map((name) => ({ name, host: "a", class: "deploy", state: "idle" }))];
+  assert.equal(aheadJobs(st, st[1]), "package");
+  assert.equal(aheadWarm(st, st[1]), "plus 3 kept warm");
 });

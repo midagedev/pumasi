@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB, aheadJobs, aheadWarm } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -1042,11 +1042,13 @@ export class Scene {
       const lamp = r.state === "starting" ? th.warn : m.hall.status === "down" ? th.off : ready ? th.ready : th.ok;
       const held = r.heldMem || r.estMem;
       let sub = "";
-      if (A) sub = A.after ? `for a job that comes when ${A.after} ends` : "for a job expected soon";
+      const warm = A && ready ? aheadWarm(w.state.runners, r) : "";
+      if (A && warm) sub = `${A.after ? `when ${A.after} ends` : "expected soon"}; ${warm}`;
+      else if (A) sub = A.after ? `for a job that comes when ${A.after} ends` : "for a job expected soon";
       else if (m.was) sub = `held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while watched"} → ${gb(held)}, its job's size`;
       else if (ready && (detail || r.givesWay)) sub = `holds ${gb(held)}${r.givesWay ? " · gives way" : " · kept"}`;
       else if (detail && r.state !== "starting") sub = `uses ${gb(r.memBytes || 0)} · holds ${gb(held)}`;
-      tags.push({ x: sx, y: sy - 6, title: r.job || (A ? "ahead: " + aheadJobs(w.state.runners, r) : r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
+      tags.push({ x: sx, y: sy - 6, title: r.job || (A && ready ? "ahead: " + aheadJobs(w.state.runners, r) : r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : A ? 3 : 4 }); // ahead: moves up rather than drop
     }
     // zoomed in, a waiting crate says which job it is
     if (z > 1.3) {
@@ -1427,13 +1429,6 @@ function runningSummary(runners) {
   if (ready) out.push({ t: `${ready} ready`, jobs: 0, ready, starting: 0 });
   if (starting) out.push({ t: `${starting} ${starting === 1 ? "runner" : "runners"} starting`, jobs: 0, ready: 0, starting });
   return out;
-}
-
-// aheadJobs: the job a runner started ahead is for. GitHub hands the class's
-// jobs to whichever runner listens: several started together are for any.
-function aheadJobs(runners, r) {
-  const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after; }).length;
-  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
 }
 
 const short = (v) => (v >= 9.95 || v < 0.05 ? String(Math.round(v)) : v.toFixed(1));
