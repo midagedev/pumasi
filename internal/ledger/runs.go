@@ -209,6 +209,15 @@ func (r JobRun) Contended() bool {
 // FinishedRuns are the jobs that finished in [from, to), the oldest first, with
 // their steps. A zero to means up to now.
 func (l *Ledger) FinishedRuns(from, to time.Time) ([]JobRun, error) {
+	return l.finishedRuns(from, to, true)
+}
+
+// FinishedRunsBare are FinishedRuns without their steps.
+func (l *Ledger) FinishedRunsBare(from, to time.Time) ([]JobRun, error) {
+	return l.finishedRuns(from, to, false)
+}
+
+func (l *Ledger) finishedRuns(from, to time.Time, withSteps bool) ([]JobRun, error) {
 	if to.IsZero() {
 		to = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 	}
@@ -248,7 +257,7 @@ func (l *Ledger) FinishedRuns(from, to time.Time) ([]JobRun, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(out) == 0 {
+	if len(out) == 0 || !withSteps {
 		return out, nil
 	}
 	steps, err := l.db.Query(`SELECT s.runner, s.number, s.name, s.started_at, s.completed_at, COALESCE(s.conclusion,'')

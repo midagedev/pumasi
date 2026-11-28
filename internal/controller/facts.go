@@ -43,13 +43,15 @@ type ghRunJob struct {
 	Steps      []ghStep `json:"steps"`
 }
 
-// factsLoop asks for the facts of finished jobs until ctx ends.
+// factsLoop asks for the facts of finished jobs, and checks what watch: says,
+// until ctx ends.
 func (c *Controller) factsLoop(ctx context.Context) {
 	t := time.NewTicker(factsEvery)
 	defer t.Stop()
 	for {
 		c.askFacts(ctx)
 		c.pruneSteps()
+		c.watchTick(c.now())
 		select {
 		case <-ctx.Done():
 			return

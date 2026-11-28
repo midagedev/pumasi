@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/watch"
 )
@@ -261,3 +262,118 @@ func cmpMerges(m float64) float64 {
 }
 
 func pct(f float64) string { return fmt.Sprintf("%.0f%%", 100*f) }
+
+// SlopeResult is how the growth alarm (watch.slope) did: checked every day
+// at noon, on each scenario's histories and on histories with nothing in.
+type SlopeResult struct {
+	Scenario    string
+	Histories   int
+	Caught      int           // an alarm on the injected job within 7 days of the change
+	Delays      time.Duration // their sum, from the change to the first alarm
+	FalseAlarms int           // alarm episodes on other jobs (or on any job, nothing injected)
+	Weeks       float64
+}
+
+func (r SlopeResult) MeanDelay() time.Duration {
+	if r.Caught == 0 {
+		return 0
+	}
+	return r.Delays / time.Duration(r.Caught)
+}
+
+// EvalSlope scores the growth alarm at a limit (0.10 = 10% a week).
+func EvalSlope(ec EvalConfig, limit float64) []SlopeResult {
+	if ec.Days == 0 {
+		ec.Days = 28
+	}
+	w := config.Watch{Slope: config.Percent(limit)}
+	check := func(h History, injected string, at time.Time) (caught bool, delay time.Duration, false_ int) {
+		open := map[string]bool{}
+		for d := 7; d < ec.Days; d++ {
+			now := EvalStart.AddDate(0, 0, d).Add(12 * time.Hour)
+			as := watch.Alarms(watch.AlarmInput{Now: now, Loc: time.UTC, Runs: until(h.Runs, now), Open: open}, w)
+			next := map[string]bool{}
+			for _, a := range as {
+				next[a.Key] = true
+				if open[a.Key] {
+					continue
+				}
+				if injected != "" && strings.HasSuffix(a.Key, "/"+injected) && !now.Before(at) && now.Sub(at) <= 7*24*time.Hour {
+					if !caught {
+						caught, delay = true, now.Sub(at)
+					}
+					continue
+				}
+				if injected != "" && strings.HasSuffix(a.Key, "/"+injected) {
+					continue // the injected job, later on: true, not counted
+				}
+				false_++
+			}
+			open = next
+		}
+		return
+	}
+	var out []SlopeResult
+	noise := SlopeResult{Scenario: "nothing injected", Histories: ec.Histories}
+	for i := range ec.Histories {
+		h := Generate(Config{Seed: uint64(1_000_000 + i), Start: EvalStart, Days: ec.Days, Merges: ec.Merges})
+		_, _, f := check(h, "", time.Time{})
+		noise.FalseAlarms += f
+		noise.Weeks += float64(ec.Days-7) / 7
+	}
+	for si, sc := range Scenarios {
+		res := SlopeResult{Scenario: sc.Name, Histories: ec.Histories}
+		for i := range ec.Histories {
+			seed := uint64(si*100_000 + i + 1)
+			rng := rand.New(rand.NewPCG(seed, 7))
+			var jobs []Job
+			for _, j := range Shop {
+				if !j.Nightly {
+					jobs = append(jobs, j)
+				}
+			}
+			job := jobs[rng.IntN(len(jobs))]
+			if sc.Metric != "duration" {
+				continue // the growth alarm watches time
+			}
+			ch := Change{Job: job.Name, Metric: sc.Metric, Factor: sc.Factor, Creep: sc.Creep}
+			if sc.Step {
+				ch.Step = slices.MaxFunc(job.Steps, func(a, b Step) int { return int(1000*a.Share) - int(1000*b.Share) }).Name
+			}
+			after := time.Duration(14*24+rng.IntN(7*24)) * time.Hour
+			h := Generate(Config{Seed: seed, Start: EvalStart, Days: ec.Days, Merges: ec.Merges, Inject: []Planned{{Change: ch, After: after}}})
+			if len(h.Injected) == 0 {
+				continue
+			}
+			c, d, f := check(h, job.Name, h.Injected[0].At)
+			if c {
+				res.Caught++
+				res.Delays += d
+			}
+			res.FalseAlarms += f
+			res.Weeks += float64(ec.Days-7) / 7
+		}
+		if res.Weeks > 0 {
+			out = append(out, res)
+		}
+	}
+	return append(out, noise)
+}
+
+// WriteSlopeReport prints EvalSlope's results.
+func WriteSlopeReport(w io.Writer, limit float64, rs []SlopeResult) {
+	fmt.Fprintf(w, "growth alarm at %.0f%% a week, checked daily at noon\n", 100*limit)
+	fmt.Fprintf(w, "%-28s %12s %12s %10s\n", "scenario", "caught (7d)", "mean delay", "false/wk")
+	for _, r := range rs {
+		caught, delay := "-", "-"
+		if r.Scenario != "nothing injected" {
+			caught = pct(frac(r.Caught, r.Histories))
+			delay = fmt.Sprintf("%.1fd", r.MeanDelay().Hours()/24)
+		}
+		fp := 0.0
+		if r.Weeks > 0 {
+			fp = float64(r.FalseAlarms) / r.Weeks
+		}
+		fmt.Fprintf(w, "%-28s %12s %12s %10.2f\n", r.Scenario, caught, delay, fp)
+	}
+}

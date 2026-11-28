@@ -94,6 +94,10 @@ type Controller struct {
 	// old step timings were last deleted (facts.go).
 	contendedAt time.Time
 	prunedAt    time.Time
+	// alarmedAt, announcedAt: when watch limits were last checked and
+	// regressions last looked for (watch.go); the facts loop's goroutine only.
+	alarmedAt   time.Time
+	announcedAt time.Time
 }
 
 // github is what the controller asks of GitHub's scale set service.

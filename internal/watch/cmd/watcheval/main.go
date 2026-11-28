@@ -18,8 +18,13 @@ func main() {
 	after := flag.Duration("after", 0, "look only this long after the injected change (0 = to the end)")
 	z := flag.Float64("z", 0, "rank test z threshold (0 = default)")
 	minRuns := flag.Int("minruns", 0, "runs on each side (0 = default)")
+	slope := flag.Float64("slope", 0, "score the growth alarm at this limit instead (0.10 = 10% a week)")
 	flag.Parse()
 	ec := synth.EvalConfig{Histories: *n, Days: *days, Merges: *merges, After: *after, Options: watch.Options{Z: *z, MinRuns: *minRuns}}
+	if *slope > 0 {
+		synth.WriteSlopeReport(os.Stdout, *slope, synth.EvalSlope(ec, *slope))
+		return
+	}
 	noise, per := synth.Eval(ec)
 	synth.WriteReport(os.Stdout, ec, noise, per)
 }

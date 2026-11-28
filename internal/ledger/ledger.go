@@ -258,6 +258,7 @@ type Runner struct {
 	EstBlind                 bool      // placed on the class's first estimate with nothing measured of the job or its workflow
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
+	Event                    string // what triggered the job's run, from JobStarted
 }
 
 // InsertRunner records a runner as placed. platform is what it runs as (see
@@ -421,7 +422,7 @@ func (l *Ledger) demand(where string, args ...any) ([]Demand, error) {
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
   COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0),
-  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0), COALESCE(est_blind,0)`
+  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0), COALESCE(est_blind,0), COALESCE(event,'')`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -435,7 +436,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
 			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak,
-			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns, &r.EstBlind); err != nil {
+			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns, &r.EstBlind, &r.Event); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -546,6 +547,13 @@ func (l *Ledger) ResolveIncident(key string, at time.Time) (Incident, bool, erro
 }
 
 func (l *Ledger) OpenIncidents() ([]Incident, error) { return l.incidents(`resolved_at IS NULL`) }
+
+// HasIncident says whether an incident with this key was ever recorded.
+func (l *Ledger) HasIncident(key string) (bool, error) {
+	var n int
+	err := l.db.QueryRow(`SELECT COUNT(*) FROM incidents WHERE key=?`, key).Scan(&n)
+	return n > 0, err
+}
 
 // ClosedIncidents are the incidents resolved since a moment, the oldest first.
 func (l *Ledger) ClosedIncidents(since time.Time) ([]Incident, error) {

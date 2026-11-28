@@ -451,6 +451,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("priority rule %d: %w", i+1, err)
 		}
 	}
+	if err := c.Watch.validate(); err != nil {
+		return err
+	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {
 		if h.SSH == "" {
