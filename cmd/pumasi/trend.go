@@ -186,7 +186,7 @@ func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool, width
 	}
 	for _, c := range rep.Creeping {
 		fmt.Fprintf(w, "  %s / %s: slowly growing, time %s over %s along its trend (%s -> %s, at least %s), no single commit\n",
-			path.Base(c.Workflow), c.Job, pctSigned(c.Ratio), fmt.Sprintf("%.0fd", c.Span.Hours()/24), secs(c.From), secs(c.To), pctSigned(c.Low))
+			path.Base(c.Workflow), c.Job, pctSigned(watch.ShownRatio("time", c.From, c.To)), fmt.Sprintf("%.0fd", c.Span.Hours()/24), secs(c.From), secs(c.To), pctSigned(c.Low))
 	}
 	fmt.Fprintln(w)
 	if days {

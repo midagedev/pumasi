@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords, aheadJobs, aheadWarm, restOf } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -64,4 +64,66 @@ test("a host whose room is held by runners with no job is held, not busy", () =>
   assert.equal(hostLoad(h, [idle, starting]).word, "held");
   // with a job running, the same room is busy
   assert.equal(hostLoad(h, [{ ...idle, job: "e2e", state: "busy" }, starting]).word, "busy");
+});
+
+// The CI panel's percent is what the two values beside it make as written.
+test("shownRatio uses the values as the panel writes them", () => {
+  assert.equal(Math.round(shownRatio("time", 86.4, 121.6) * 100), 42);
+  assert.equal(Math.round(shownRatio("memory", 8.48 * GiB, 11.53 * GiB) * 100), 35);
+  assert.ok(isNaN(shownRatio("time", 0, 10)));
+});
+
+// A job that got faster names the step that shrank most, not the first one.
+test("stepOf names the step that moved most the way the job did", () => {
+  const steps = [{ name: "Set up job", before: 3, after: 2 }, { name: "Install", before: 25, after: 20 }, { name: "Typecheck", before: 47.5, after: 37 }, { name: "Lint", before: 5, after: 6 }];
+  assert.equal(stepOf({ ratio: -0.22, steps }).name, "Typecheck");
+  assert.equal(stepOf({ ratio: 0.1, steps }).name, "Lint");
+  assert.equal(stepOf({ ratio: 0.1, steps: [] }), null);
+});
+
+// held + machine + free on a host's card add up to its memory as written:
+// 128 GB, held 105.7 (reads 106), free 3.62 (reads 3.6): machine 18.4; and
+// 32 GB, held 25.7, free 6.3: no machine share, and the two read 25.7 + 6.3.
+test("a host card's machine share makes held + machine + free its memory", () => {
+  const M = { lend: 128 * GiB, held: 80 * GiB, kept: 12.7 * GiB, give: 13 * GiB, free: 3.62 * GiB };
+  assert.equal(machineShare(M), 18.4);
+  assert.equal(machineShare({ lend: 24 * GiB, held: 16 * GiB, kept: 0, give: 0, free: 8 * GiB }), 0);
+  assert.equal(machineShare({ lend: 32 * GiB, held: 25.7 * GiB, kept: 0, give: 0, free: 6.3 * GiB }), 0);
+  assert.deepEqual([cardGB(25.7), cardGB(26), cardGB(0.66), cardGB(105.7), cardGB(99.96)], ["25.7", "26", "0.7", "106", "100"]);
+});
+
+// One meaning for "problem": the header's count, the alarm board and the List's
+// problem cards are the same findings; the List's other cards are classes
+// waiting and notes, as /api/explain's levels.
+test("a problem is a problem finding, and the List counts waits and notes apart", () => {
+  const incidents = [{ kind: "ci-too-slow", subject: "unit-tests" }];
+  const fs = [{ level: "problem", kind: "ci-too-slow", subject: "unit-tests" }, { level: "problem", kind: "host", subject: "linux-spare" },
+    { level: "problem", kind: "warning", subject: "credentials" }, { level: "wait", kind: "waiting", subject: "e2e" }, { level: "note", kind: "overflow", subject: "light" }];
+  assert.deepEqual(moreProblems(incidents, fs).map((f) => f.subject), ["linux-spare"]);
+  assert.equal(attentionWords(fs), "3 problems · 1 class waiting · 1 note");
+  assert.equal(attentionWords(fs.slice(0, 1)), "1 problem");
+  assert.equal(attentionWords([]), "");
+});
+
+// Two release runners started ahead and a pr-checks one kept warm make the
+// host's 3 READY: the ahead tag says all three.
+test("an ahead tag counts the host's runners kept warm", () => {
+  const ah = (name) => ({ name, host: "a", class: "release", state: "idle", ahead: "package expected in ~5s, when release-check ends" });
+  const rs = [ah("r1"), ah("r2"), { name: "w", host: "a", class: "pr-checks", state: "idle" }, { name: "x", host: "b", class: "pr-checks", state: "idle" }];
+  assert.equal(aheadJobs(rs, rs[0]), "a release job (one of 2 runners)");
+  assert.equal(aheadJobs(rs.slice(1), rs[1]), "package");
+  assert.equal(aheadWarm(rs, rs[0]), "plus 1 kept warm");
+  assert.equal(aheadWarm(rs.slice(0, 2), rs[0]), "");
+  // one of the two still starting: the tag says the one that listens, so 1 + 3 warm make 4 READY
+  const st = [{ ...ah("r1"), state: "starting" }, ah("r2"), ...["p", "d1", "d2"].map((name) => ({ name, host: "a", class: "deploy", state: "idle" }))];
+  assert.equal(aheadJobs(st, st[1]), "package");
+  assert.equal(aheadWarm(st, st[1]), "plus 3 kept warm");
+});
+
+// The CPU line on the List and the wall: held + other use + free make the whole
+// as written (48 - 27 - 20 = 1).
+test("restOf is the whole less its parts as written", () => {
+  assert.equal(restOf("48", "27", "0", "20"), 1);
+  assert.equal(restOf(32, 25.7, 6.3), 0);
+  assert.equal(restOf("24", "18.6", "4.4"), 1);
 });

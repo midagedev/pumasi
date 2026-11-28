@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB, aheadJobs, aheadWarm, restOf } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -451,7 +451,8 @@ export class Scene {
       ctx.textBaseline = "middle";
       ctx.fillStyle = th.dim;
       const sh = L.share > 1 ? ` (cores shared ×${L.share})` : "";
-      ctx.fillText(`CPU ${(held + give).toFixed(1)} held of ${num1(cap)}${sh} · ${free.toFixed(1)} free · ${cores} cores`, 0, 0);
+      const rest = restOf(num1(cap), (held + give).toFixed(1), free.toFixed(1)); // so held + other use + free read as the whole
+      ctx.fillText(`CPU ${(held + give).toFixed(1)} held of ${num1(cap)}${sh} · ${rest ? rest + " other use · " : ""}${free.toFixed(1)} free · ${cores} cores`, 0, 0);
       ctx.restore();
     }
     // the left wall: what the floor is
@@ -1042,11 +1043,13 @@ export class Scene {
       const lamp = r.state === "starting" ? th.warn : m.hall.status === "down" ? th.off : ready ? th.ready : th.ok;
       const held = r.heldMem || r.estMem;
       let sub = "";
-      if (A) sub = A.after ? `for a job that comes when ${A.after} ends` : "for a job expected soon";
+      const warm = A && ready ? aheadWarm(w.state.runners, r) : "";
+      if (A && warm) sub = `${A.after ? `when ${A.after} ends` : "expected soon"}; ${warm}`;
+      else if (A) sub = A.after ? `for a job that comes when ${A.after} ends` : "for a job expected soon";
       else if (m.was) sub = `held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while watched"} → ${gb(held)}, its job's size`;
       else if (ready && (detail || r.givesWay)) sub = `holds ${gb(held)}${r.givesWay ? " · gives way" : " · kept"}`;
       else if (detail && r.state !== "starting") sub = `uses ${gb(r.memBytes || 0)} · holds ${gb(held)}`;
-      tags.push({ x: sx, y: sy - 6, title: r.job || (A ? "ahead: " + aheadJobs(w.state.runners, r) : r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
+      tags.push({ x: sx, y: sy - 6, title: r.job || (A && ready ? "ahead: " + aheadJobs(w.state.runners, r) : r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : A ? 3 : 4 }); // ahead: moves up rather than drop
     }
     // zoomed in, a waiting crate says which job it is
     if (z > 1.3) {
@@ -1174,8 +1177,12 @@ export class Scene {
     if (!off && M && !tg.L.why) {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
       const mine = M.held + M.kept;
-      // held is all runners hold; gives way is the part of it ready runners hand over
-      const keys = (long) => [["held", `held ${short((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${short(M.give / GiB)} of it gives way`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
+      // held is all runners hold; gives way is the part of it ready runners hand over;
+      // other use is the rest of what the host has (or lends): other programs and the
+      // memory kept free for it, so that held + other use + free reads as its memory
+      const mach = machineShare(M);
+      const keys = (long) => [["held", `held ${cardGB((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${cardGB(M.give / GiB)} of it gives way`]] : []),
+        ...(mach > 0 ? [["other", `other use ${mach}${long ? " GB" : ""}`]] : []), ["used", `used ${cardGB(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
       // the keys packed into as few lines as fit, the long words first
@@ -1280,7 +1287,7 @@ export class Scene {
         const low = k === "mem" ? GiB : 0.5;
         ctx.fillStyle = p && p.free < low ? rgb(p.room < low ? th.bad : th.ready) : th.text;
         ctx.textAlign = "right";
-        ctx.fillText(p ? (k === "mem" ? short(p.free / GiB) + "G" : short(p.free)) + " free" : "-", x + w - pad, yy + 0.5);
+        ctx.fillText(p ? (k === "mem" ? cardGB(p.free / GiB) + "G" : short(p.free)) + " free" : "-", x + w - pad, yy + 0.5);
         ctx.textAlign = "left";
       };
       bar(cpuLabel, L.cpu, cy + 7, "cpu");
@@ -1293,7 +1300,7 @@ export class Scene {
         // the line (or two) that says the bar's parts: held, gives way, used
         const sq = (style) => (kx, ky) => { ctx.fillStyle = style; ctx.fillRect(kx, ky - 4, 8, 8); };
         const ln = (kx, ky) => { ctx.fillStyle = th.night ? "rgba(255,255,255,0.92)" : "rgba(0,0,0,0.78)"; ctx.fillRect(kx, ky + 1, 8, 3); };
-        const look = { held: [sq(rgb(busyCol)), null], give: [sq(this.giveBar), rgb(th.ready)], used: [ln, null] };
+        const look = { held: [sq(rgb(busyCol)), null], give: [sq(this.giveBar), rgb(th.ready)], other: [sq(rgb(th.off, 0.7)), null], used: [ln, null] };
         ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
         (tg.leg || []).forEach((row, i) => {
           let lx = x + pad;
@@ -1423,13 +1430,6 @@ function runningSummary(runners) {
   if (ready) out.push({ t: `${ready} ready`, jobs: 0, ready, starting: 0 });
   if (starting) out.push({ t: `${starting} ${starting === 1 ? "runner" : "runners"} starting`, jobs: 0, ready: 0, starting });
   return out;
-}
-
-// aheadJobs: the job a runner started ahead is for. GitHub hands the class's
-// jobs to whichever runner listens: several started together are for any.
-function aheadJobs(runners, r) {
-  const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after; }).length;
-  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
 }
 
 const short = (v) => (v >= 9.95 || v < 0.05 ? String(Math.round(v)) : v.toFixed(1));

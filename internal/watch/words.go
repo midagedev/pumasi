@@ -63,7 +63,7 @@ func changeText(m Change) string {
 	if m.Parts > 1 {
 		in = fmt.Sprintf(", in %d steps", m.Parts)
 	}
-	return fmt.Sprintf("%s %s (%s -> %s%s)", m.Metric, PctSigned(m.Ratio), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After), in)
+	return fmt.Sprintf("%s %s (%s -> %s%s)", m.Metric, PctSigned(ShownRatio(m.Metric, m.Before, m.After)), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After), in)
 }
 
 func MetricText(metric string, v float64) string {
@@ -71,6 +71,29 @@ func MetricText(metric string, v float64) string {
 		return GiB(v)
 	}
 	return Secs(v)
+}
+
+// Shown is a value as MetricText writes it: memory to a tenth of a GiB, a
+// time to the second (to the minute past an hour).
+func Shown(metric string, v float64) float64 {
+	if metric == "memory" {
+		return math.Round(math.Max(0, v)/(1<<30)*10) / 10
+	}
+	n := math.Round(v)
+	if n >= 3600 {
+		n = math.Floor(n/60) * 60
+	}
+	return n
+}
+
+// ShownRatio is after against before as the two read once written, so that
+// a percent next to them is what they make (NaN when before reads 0).
+func ShownRatio(metric string, before, after float64) float64 {
+	b, a := Shown(metric, before), Shown(metric, after)
+	if b <= 0 {
+		return math.NaN()
+	}
+	return a/b - 1
 }
 
 // RunName: "commit 9f8e7d6 on main, Thu Nov 19 11:40" or "pull request #12 (9f8e7d6), …".

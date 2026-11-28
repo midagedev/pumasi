@@ -80,7 +80,7 @@ func runForecast(args []string) error {
 }
 
 // local: the forecast from the ledger (or the demo), against the cores
-// asked (--cores), else the demo's hosts' physical cores.
+// asked (--cores), else the cores the demo's hosts lend.
 func local(src *source, asked float64, weeks int) (watch.ForecastReport, error) {
 	runs, now, err := src.runs(time.Now().Add(-time.Duration(weeks) * 7 * 24 * time.Hour))
 	if err != nil {
@@ -114,8 +114,8 @@ func printForecast(w io.Writer, rep watch.ForecastReport) {
 	}
 	tw.Flush()
 	if rep.Cores > 0 {
-		if rep.Physical {
-			fmt.Fprintf(w, "\ncores: %.0f physical (%s: each its budget, else its cores; none counted twice where runners share them)\n", rep.Cores, rep.CoresFrom)
+		if rep.Lent {
+			fmt.Fprintf(w, "\ncores: %.0f the hosts lend (%s: each its budget, else its cores; none counted twice where runners share them)\n", rep.Cores, rep.CoresFrom)
 		} else {
 			fmt.Fprintf(w, "\ncores: %.0f (%s)\n", rep.Cores, rep.CoresFrom)
 		}

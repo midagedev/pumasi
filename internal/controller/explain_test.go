@@ -339,3 +339,57 @@ func TestExplainJobLargerThanAnyHost(t *testing.T) {
 		}
 	}
 }
+
+// Two e2e jobs are open and placement defers one: a runner is starting for the
+// first in line, so the class's oldest and the finding's job are the other's.
+func TestWaitingCountsOnlyJobsNoRunnerIsStartingFor(t *testing.T) {
+	s := State{Controller: true,
+		Waiting: []WaitingState{{Class: "e2e", Jobs: 1, Reason: "behind release", Order: 1, OldestSeconds: 84}},
+		WaitingJobs: []JobWait{
+			{Class: "e2e", Job: "e2e (webkit)", WaitedSeconds: 31, Position: 2},
+			{Class: "e2e", Job: "e2e (chromium)", WaitedSeconds: 84, Position: 1},
+		}}
+	oldestWaiting(&s)
+	if got := s.Waiting[0].OldestSeconds; got != 31 {
+		t.Fatalf("oldest = %d, want 31 (the job that waits)", got)
+	}
+	// a job with no place has a runner of its class up for it: it is the one starting
+	if js := stillWaiting([]JobWait{{Job: "b", Position: 1}, {Job: "a"}}, 1); len(js) != 1 || js[0].Job != "b" {
+		t.Errorf("still waiting = %+v, want b", js)
+	}
+	f, ok := findOf(Explain(s, nil, explainNow), "waiting")
+	if !ok || f.Job != "e2e (webkit)" || !strings.Contains(f.Text, "1 job waits, the oldest 31s") {
+		t.Fatalf("finding = %+v", f)
+	}
+	var b bytes.Buffer
+	WriteExplain(&b, s, Explain(s, nil, explainNow), nil, "", false, explainNow)
+	for _, want := range []string{"1 job waits (and 1 job's runner is starting)", "e2e (chromium) 1m24s (a runner is starting for it)"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("explain lacks %q:\n%s", want, b.String())
+		}
+	}
+}
+
+// Placement's reason is a round old: what each host has free is said as the
+// hosts beside it have it now, so the two do not read 16.6G and 16.7G.
+func TestExplainSaysWhatHostsHaveFreeNow(t *testing.T) {
+	s := State{Controller: true,
+		Hosts:   []HostState{{Name: "h1", Reachable: ptr(true), FreeCPUs: 19.5, FreeMem: 167 << 30 / 10}},
+		Waiting: []WaitingState{{Class: "e2e", Jobs: 1, Reason: "no host with 3.9cpu/18.2G free (h1 19.5cpu/16.6G)", Order: 1}}}
+	f, _ := findOf(Explain(s, nil, explainNow), "waiting")
+	if !strings.Contains(f.Text, "h1 has 19.5cpu/16.7G free, 1.5G memory short") {
+		t.Fatalf("finding = %s", f.Text)
+	}
+	// room that came since placement looked: its numbers stay, so the host is short
+	s.Hosts[0].FreeMem = 19 << 30
+	f, _ = findOf(Explain(s, nil, explainNow), "waiting")
+	if !strings.Contains(f.Text, "h1 has 19.5cpu/16.6G free, 1.6G memory short") {
+		t.Fatalf("finding = %s", f.Text)
+	}
+	// placement's need and free that read the same to a tenth
+	s.Waiting[0].Reason = "no host with 2.2cpu/5.5G free (h1 19.9cpu/5.5G)"
+	f, _ = findOf(Explain(s, nil, explainNow), "waiting")
+	if !strings.Contains(f.Text, "h1 has 19.9cpu/5.5G free, just short of it") {
+		t.Fatalf("finding = %s", f.Text)
+	}
+}

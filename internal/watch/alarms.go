@@ -382,7 +382,7 @@ func growth(in AlarmInput, limit float64) []Alarm {
 		}
 		name := JobName(g.Workflow, g.Job)
 		out = append(out, Alarm{Key: k, Kind: "ci-growing", Subject: name,
-			Detail: fmt.Sprintf("%s grew %.0f%% in a week (%s -> %s, median), more than the %.0f%% a week watch.slope allows", name, 100*g.Ratio, Secs(g.Before), Secs(g.After), 100*limit)})
+			Detail: fmt.Sprintf("%s grew %.0f%% in a week (%s -> %s, median), more than the %.0f%% a week watch.slope allows", name, 100*ShownRatio("time", g.Before, g.After), Secs(g.Before), Secs(g.After), 100*limit)})
 	}
 	return out
 }

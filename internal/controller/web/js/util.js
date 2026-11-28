@@ -134,6 +134,20 @@ export function aheadOf(r) {
   return m ? { job: m[1], in: +m[2], after: m[3] } : { job: r.ahead, after: "" };
 }
 
+// aheadJobs: the job a ready runner started ahead is for. GitHub hands the
+// class's jobs to whichever runner listens: several up together are for any
+// (one still starting does not listen yet, and is not counted).
+export function aheadJobs(runners, r) {
+  const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after && (x === r || isReady(x)); }).length;
+  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
+}
+// aheadWarm: the host's other ready runners, kept warm, as the ahead tag says
+// them, so that the tags there add up to the READY on the host's card.
+export function aheadWarm(runners, r) {
+  const warm = runners.filter((x) => x.host === r.host && isReady(x) && !aheadOf(x)).length;
+  return warm ? `plus ${warm} kept warm` : ""; // short: the tag sits between two cards
+}
+
 // hostLoad: how full a host is, as a waiting job sees it. Of what the host
 // lends runners (its budget, else the machine; cores counted cpuShare times
 // where runners share them), each part is one of:
@@ -200,7 +214,7 @@ export function hostLoad(h, runners = []) {
 // the part of them that gives way to another class's waiting job.
 export function readyLine(L) {
   if (!L.ready) return "";
-  const give = `${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
+  const give = `${cardGB((L.mem ? L.mem.give : 0) / GiB)} GB${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
   if (L.giving === L.ready) return `${L.ready} ready ${L.ready === 1 ? "runner gives" : "runners give"} way: ${give}`;
   if (L.giving) return `${L.ready} ready; ${L.giving} ${L.giving === 1 ? "gives" : "give"} way: ${give}`;
   return `${L.ready} ready ${L.ready === 1 ? "runner keeps its" : "runners keep their"} room`;
@@ -216,6 +230,42 @@ export function expressRow(p) {
     if (row) return row;
   }
   return null;
+}
+// shown: a CI value as the panel writes it (memory to a tenth of a GB, time
+// to the second, to the minute past an hour); shownRatio: after against
+// before as the two read, so that the percent beside them is what they make.
+// The CLI does the same (watch.Shown).
+export function shown(metric, v) {
+  if (metric === "memory") return Math.round((Math.max(0, v || 0) / GiB) * 10) / 10;
+  const n = Math.round(v || 0);
+  return n >= 3600 ? Math.floor(n / 60) * 60 : n;
+}
+export const shownRatio = (metric, before, after) => (shown(metric, before) > 0 ? shown(metric, after) / shown(metric, before) - 1 : NaN);
+// stepOf: the step that moved most the way the job did (slower: the one that
+// grew most; faster: the one that shrank most), or none.
+export function stepOf(c) {
+  const way = c.ratio >= 0 ? 1 : -1;
+  const moved = (c.steps || []).map((x) => ({ x, d: way * (x.after - x.before) })).filter((m) => m.d > 0).sort((a, b) => b.d - a.d);
+  return moved.length ? moved[0].x : null;
+}
+// cardGB: memory on a host's card, in GB: to a tenth below 100 (a ".0" left
+// off), whole above, so that the card's numbers add up as written.
+export function cardGB(v) {
+  return v >= 99.95 ? String(Math.round(v)) : String(parseFloat(Math.max(0, v).toFixed(1)));
+}
+// machineShare: what of a host's memory is neither held by runners nor free
+// (other programs, and memory kept free for the machine: "other use"), in GB
+// as the card writes it: its memory (as the hall's sign has it) less held and
+// free as the card shows them, so the three add up on screen.
+export function machineShare(M) {
+  const n = (b) => parseFloat(cardGB(b / GiB));
+  return restOf(n(M.lend), n(M.held + M.kept + (M.give || 0)), n(M.free));
+}
+// restOf: a total less its parts, as written (numbers or the strings shown), to
+// a tenth; 0 below one.
+export function restOf(total, ...parts) {
+  const m = Math.round((parseFloat(total) - parts.reduce((a, p) => a + parseFloat(p), 0)) * 10) / 10;
+  return m >= 0.1 ? m : 0;
 }
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
@@ -312,3 +362,20 @@ export const levelWord = (j) => (j.expedited ? "expedited" : j.level === "expedi
 
 // Problem kinds as headings.
 export const kindWord = (k) => ({ "host-unreachable": "host offline", "job-waiting": "waiting too long", "out-of-memory": "out of memory", "runner-died": "runner died", "disk-low": "disk almost full", "agent-restarted": "agent restarted" })[k] || String(k || "").replace(/-/g, " ");
+
+// The words of the List and the header, one meaning each, as /api/explain's
+// levels have them. A problem is something wrong now that needs someone (an
+// open incident, a warning, a host that does not answer, a runner near its
+// memory limit): the header counts them and the alarm board lists them. A
+// class waiting says why its jobs wait (the CLI's LINE). A note is worth
+// knowing but needs no one now (the CLI's NOTES).
+// moreProblems: the problem findings no open incident or warning speaks for.
+export function moreProblems(incidents, findings) {
+  const has = new Set((incidents || []).map((i) => i.kind + "/" + i.subject));
+  return (findings || []).filter((f) => f.level === "problem" && f.kind !== "warning" && !has.has(f.kind + "/" + f.subject));
+}
+export const problemLabel = (f) => (f.kind === "host" ? "host offline" : f.kind === "runner" ? "near memory limit" : f.kind === "controller" ? "no controller" : kindWord(f.kind));
+export function attentionWords(findings) {
+  const k = (l) => (findings || []).filter((f) => f.level === l).length, p = k("problem"), w = k("wait"), n = k("note");
+  return [p ? `${p} ${p === 1 ? "problem" : "problems"}` : "", w ? `${w} ${w === 1 ? "class" : "classes"} waiting` : "", n ? `${n} ${n === 1 ? "note" : "notes"}` : ""].filter(Boolean).join(" · ");
+}
