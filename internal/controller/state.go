@@ -3,6 +3,7 @@ package controller
 import (
 	"cmp"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -180,6 +181,10 @@ type RunnerState struct {
 	// GivesWay: up without a job, it steps aside for a waiting job of another
 	// class that needs its room (one of its own class it simply takes).
 	GivesWay bool `json:"givesWay,omitempty"`
+	// Ahead: a runner with no job started for a job expected to come, and
+	// after what ("package (amd64) expected in ~4s, when release-check ends"):
+	// the runner it holds is for that job.
+	Ahead string `json:"ahead,omitempty"`
 }
 
 // JobWait is one job that waits for a runner, or that waited and left.
@@ -305,6 +310,16 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			EstCPUs: cmp.Or(r.EstCPUs, classes[r.Class].CPUs), EstMem: cmp.Or(r.EstMem, int64(classes[r.Class].Memory)), EstRuns: r.EstRuns}
 		if a, ok := sampled[r.Name]; ok {
 			rs.CPUSec, rs.CPUNow, rs.MemBytes, rs.MemLimit, rs.Slot = a.CPUSec, a.CPUNow, cmp.Or(a.MemWork, a.MemCurrent), a.LimitMem, a.Slot
+		}
+		if r.Job == "" {
+			if ds, _, err := l.RunnerHistory(r.Name); err == nil {
+				for _, d := range ds {
+					if d.Action == "start" {
+						rs.Ahead = aheadOf(d.Reason)
+						break
+					}
+				}
+			}
 		}
 		rs.Watched = size.Estimate{Blind: r.EstBlind}.Watched(r.StartedAt, now)
 		rs.HeldCPUs, rs.HeldMem = size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched)
@@ -450,4 +465,18 @@ func classStates(cfg *config.Config) []ClassState {
 			LimitCPUs: cl.Limit.CPUs, LimitMem: int64(cl.Limit.Memory), MaxDurationSeconds: int64(cl.MaxDuration.Seconds()), WarmMin: cl.WarmMin})
 	}
 	return out
+}
+
+// aheadRe reads a start decision's reason for a runner started ahead of a
+// job (decide's warmStarts): "ahead: <job> expected in ~Ns, when <job> ends
+// (1 of 2 expected), holds …".
+var aheadRe = regexp.MustCompile(`^ahead: (.*) \(\d+ of \d+ expected\)`)
+
+// aheadOf is the job a runner was started ahead of, and after what, from
+// its start decision's reason ("" = it was not).
+func aheadOf(reason string) string {
+	if m := aheadRe.FindStringSubmatch(reason); m != nil {
+		return m[1]
+	}
+	return ""
 }

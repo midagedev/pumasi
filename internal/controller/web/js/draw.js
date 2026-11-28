@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -639,7 +639,7 @@ export class Scene {
         ctx.font = "800 32px ui-monospace, SFMono-Regular, Menlo, monospace";
         ctx.textBaseline = "middle";
         ctx.fillStyle = ready ? rgb(th.ready) : rgb(shade(cls, 1.35));
-        ctx.fillText(ready ? "READY" : (r.job || r.class).slice(0, 14), 0, 0);
+        ctx.fillText(ready ? (r.ahead ? "AHEAD" : "READY") : (r.job || r.class).slice(0, 14), 0, 0);
         ctx.restore();
       }
       // the right face: vents
@@ -1010,7 +1010,7 @@ export class Scene {
       const ww = l.w;
       if (narrow && !ww && !l.ov && !isSel("class", l.name)) continue;
       let sub = ww ? `${ww.jobs} waiting · oldest ${ago(ww.oldestSeconds)}` : "nothing waiting";
-      if (l.ov) sub = `overflow · room for ${l.ov.take}, has ${l.ov.held}` + (ww ? ` · ${ww.jobs} waiting` : "");
+      if (l.ov) sub = `overflow · ${overflowWords(l.ov)}` + (ww ? ` · ${ww.jobs} waiting` : "");
       // on the dock roof, past the belt's end: a long queue is not covered by its name
       const [sx, sy] = v.P(l.x0 + 0.5, l.y1 + 0.9, 1.0);
       tags.push({ x: sx, y: sy, title: l.name, sub, dot: l.cls.color, kind: "class", id: l.name, sel: isSel("class", l.name), prio: isSel("class", l.name) ? 0 : 3 });
@@ -1029,19 +1029,22 @@ export class Scene {
     }
     for (const m of w.machines.values()) {
       if (!m.top || m.dying) continue;
-      if (!close && !isSel("runner", m.name)) continue;
+      // a runner started ahead is rare and short: said at any zoom
+      if (!close && !isSel("runner", m.name) && !aheadOf(m.r)) continue;
       const [sx, sy] = v.P(...m.top);
       if (sx < -80 || sy < -40 || sx > v.w + 80 || sy > v.h + 40) continue;
       const r = m.r;
       const detail = z > 1.35 || isSel("runner", m.name);
       const ready = isReady(r);
+      const A = aheadOf(r);
       const lamp = r.state === "starting" ? th.warn : m.hall.status === "down" ? th.off : ready ? th.ready : th.ok;
       const held = r.heldMem || r.estMem;
       let sub = "";
-      if (m.was) sub = `held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while watched"} → ${gb(held)}, its job's size`;
+      if (A) sub = A.after ? `for a job that comes when ${A.after} ends` : "for a job expected soon";
+      else if (m.was) sub = `held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while watched"} → ${gb(held)}, its job's size`;
       else if (ready && (detail || r.givesWay)) sub = `holds ${gb(held)}${r.givesWay ? " · gives way" : " · kept"}`;
       else if (detail && r.state !== "starting") sub = `uses ${gb(r.memBytes || 0)} · holds ${gb(held)}`;
-      tags.push({ x: sx, y: sy - 6, title: r.job || (r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
+      tags.push({ x: sx, y: sy - 6, title: r.job || (A ? "ahead: " + aheadJobs(w.state.runners, r) : r.state === "starting" ? "starting…" : ready ? "ready: " + r.class : "waiting for its job"), sub, dot: lamp, mid: true, kind: "runner", id: m.name, sel: isSel("runner", m.name), prio: isSel("runner", m.name) ? 0 : 4 });
     }
     // zoomed in, a waiting crate says which job it is
     if (z > 1.3) {
@@ -1159,14 +1162,20 @@ export class Scene {
     if (!off && M && !tg.L.why) {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
       const mine = M.held + M.kept;
-      const keys = (long) => [...(mine > 0 || !(M.give > 0) ? [["held", `held ${short(mine / GiB)}${long ? " GB" : ""}`]] : []), ...(M.give > 0 ? [["give", `${long ? "gives way" : "ready"} ${short(M.give / GiB)}${long ? " GB" : ""}`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
+      // held is all runners hold; gives way is the part of it ready runners hand over
+      const keys = (long) => [["held", `held ${short((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${short(M.give / GiB)} of it gives way`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
-      const one = [keys(true), keys(false)].find((ks) => wide(ks) <= room);
-      if (one) tg.leg = [one];
-      else { const ks = keys(true); tg.leg = [ks.slice(0, ks.length - 1), ks.slice(-1)]; }
+      // the keys packed into as few lines as fit, the long words first
+      const pack = (ks) => ks.reduce((rows, k) => {
+        const last = rows[rows.length - 1];
+        if (last && wide([...last, k]) <= room) last.push(k); else rows.push([k]);
+        return rows;
+      }, []);
+      const long = pack(keys(true)), brief = pack(keys(false));
+      tg.leg = brief.length < long.length ? brief : long;
     }
-    const h = 30 + (off ? 50 : 46) + (tg.leg && tg.leg.length > 1 ? 15 : 0) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
+    const h = 30 + (off ? 50 : 46) + (tg.leg ? 15 * (tg.leg.length - 1) : 0) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
     tg.lines = lines;
     // a hall near the screen's edge keeps its whole card in view (a narrow screen)
     const vw = this.v.w;
@@ -1279,7 +1288,7 @@ export class Scene {
           const ly = cy + 39 + i * 15;
           for (const [k, text] of row) { const [draw, col] = look[k]; draw(lx, ly); lx += 11; ctx.fillStyle = col || th.dim; ctx.fillText(text, lx, ly); lx += ctx.measureText(text).width + 8; }
         });
-        if (tg.leg && tg.leg.length > 1) cy += 15;
+        if (tg.leg) cy += 15 * (tg.leg.length - 1);
       }
       cy += 46;
     }
@@ -1400,8 +1409,15 @@ function runningSummary(runners) {
   }
   const out = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, c]) => (c > 1 ? `${k} ×${c}` : k));
   if (ready) out.push(`${ready} ready`);
-  if (starting) out.push(`${starting} starting`);
+  if (starting) out.push(`${starting} ${starting === 1 ? "runner" : "runners"} starting`);
   return out;
+}
+
+// aheadJobs: the job a runner started ahead is for. GitHub hands the class's
+// jobs to whichever runner listens: several started together are for any.
+function aheadJobs(runners, r) {
+  const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after; }).length;
+  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
 }
 
 const short = (v) => (v >= 9.95 || v < 0.05 ? String(Math.round(v)) : v.toFixed(1));

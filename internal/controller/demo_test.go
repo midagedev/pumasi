@@ -308,3 +308,49 @@ func TestDemoKeepsRunnersWarm(t *testing.T) {
 		t.Fatalf("no runner up without a job: %+v", st.Runners)
 	}
 }
+
+// A release's packages need its check: the placement learns that from the
+// jobs before, and starts their runners as the check ends.
+func TestDemoStartsRunnersAhead(t *testing.T) {
+	d := NewDemo(1)
+	now := time.Now()
+	ahead, soon := 0, false
+	for at := 1700.0; at < 1800; at += 2 {
+		s := d.view(at, now).state()
+		for _, r := range s.Runners {
+			if r.Ahead != "" && r.Job == "" {
+				ahead++
+				if r.Class != "release" || !strings.HasSuffix(r.Ahead, "when release-check ends") {
+					t.Errorf("at %v a runner ahead of %q: %+v", at, r.Ahead, r)
+				}
+			}
+		}
+		for _, c := range s.Classes {
+			soon = soon || c.Name == "release" && c.Soon > 0 && c.Warm == 0
+		}
+	}
+	if ahead == 0 || !soon {
+		t.Errorf("no runner started ahead (%d) or no job of release expected (%v)", ahead, soon)
+	}
+}
+
+// A watch limit the demo's history crosses is a problem like any other.
+func TestDemoWatchAlarm(t *testing.T) {
+	s := NewDemo(1).view(300, time.Now()).state()
+	for _, in := range s.Incidents {
+		if in.Kind == "ci-too-slow" && strings.Contains(in.Detail, "unit-tests") && strings.Contains(in.Detail, "over its 5m00s limit") {
+			return
+		}
+	}
+	t.Errorf("no ci-too-slow for unit-tests: %+v", s.Incidents)
+}
+
+func TestAheadOf(t *testing.T) {
+	r := "ahead: package (amd64) expected in ~4s, when release-check ends (1 of 2 expected), holds 1.8cpu/3.8G of the free 2.4cpu/9.9G"
+	if got := aheadOf(r); got != "package (amd64) expected in ~4s, when release-check ends" {
+		t.Errorf("aheadOf: %q", got)
+	}
+	if aheadOf("warm: kept up for the class's next job (1 of 1)") != "" {
+		t.Error("a warm runner is not ahead")
+	}
+}
