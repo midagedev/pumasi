@@ -193,8 +193,8 @@ func Forecast(runs []ledger.JobRun, cores float64, now time.Time, weeks int) For
 	full := rp.grow(func(r replayed) bool { return r.peak >= cores })
 	if math.IsInf(full, 1) {
 		// Past the replay's reach the hours are smooth and the busiest grow
-		// with the runs: scale them up from there (on the demo, within 3%
-		// of a replay run on to the full cores).
+		// with the runs: scale them up from there (on a made-up week at 11% of
+		// its cores, within 3% of a replay run on to the full cores).
 		if p := rp.at(growMax).peak; p > 0 {
 			full = growMax * cores / p
 		}

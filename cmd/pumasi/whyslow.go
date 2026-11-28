@@ -63,11 +63,11 @@ func runWhySlow(args []string) error {
 		fs.Usage()
 		return flag.ErrHelp
 	}
-	runs, _, err := src.runs(time.Now().Add(-60 * 24 * time.Hour))
+	runs, now, err := src.runs(time.Now().Add(-60 * 24 * time.Hour))
 	if err != nil {
 		return err
 	}
-	rep, err := watch.WhySlow(runs, t)
+	rep, err := watch.WhySlowAt(runs, t, now)
 	if err != nil {
 		return err
 	}

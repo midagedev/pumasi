@@ -69,7 +69,7 @@ func (d *Demo) history() *synth.History {
 	if d.hist == nil {
 		h := synth.Demo(d.started)
 		d.hist = &h
-		d.alarms = watch.Alarms(watch.AlarmInput{Now: d.started, Loc: time.UTC, Runs: h.Runs}, d.cfg.Watch)
+		d.alarms = watch.Alarms(watch.AlarmInput{Now: synth.DemoEnd(d.started), Loc: time.UTC, Runs: h.Runs}, d.cfg.Watch)
 	}
 	return d.hist
 }
