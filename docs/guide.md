@@ -342,9 +342,9 @@ The address is a free loopback port by default; to let other tools read it, fix 
 
 To look without a controller, `pumasi open --demo` — runs a made-up shop (4 hosts · 8 classes) on the real placement code. The same `-seed` shows the same scenes, and `?at=<seconds>` after the address freezes one moment.
 
-![The dashboard in motion: crates move along the lines, and the view goes inside a host building](img/demo.gif)
+![The dashboard in motion: a waiting job says why it waits and when it starts, and it does; ready runners step aside; runners start ahead for the jobs that come next](img/demo.gif)
 
-The full video (53 seconds, in close-ups: how full each host is, why each job waits, a host dropping off, expediting a job, high-only, Explain): [img/demo.mp4](img/demo.mp4)
+The full video (59 seconds, in close-ups: why each job waits and when it starts, the forecast coming true, ready runners stepping aside, runners started ahead, job sizes nobody wrote, CI watch, a desktop someone sits at, deploys first): [img/demo.mp4](img/demo.mp4)
 
 **Reading the picture.** The picture is not decoration; it is the values of `/api/state`.
 
