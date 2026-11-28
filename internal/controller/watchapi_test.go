@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -96,5 +97,40 @@ func TestTrendFromTheLedger(t *testing.T) {
 	}
 	if len(rep.Series) != 2 || rep.Series[1].All.Runs == 0 || rep.From.After(now.Add(-7*24*time.Hour)) {
 		t.Fatalf("%+v", rep)
+	}
+}
+
+// The demo answers why-slow about the pull request behind its slower test
+// step with that change and its commit.
+func TestDemoWhySlow(t *testing.T) {
+	d := NewDemo(1)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	var in synth.Injected
+	for _, i := range d.history().Injected {
+		if i.Step != "" {
+			in = i
+		}
+	}
+	var rep watch.WhyReport
+	if code := getJSON(t, srv.URL+"/api/why-slow?pr="+strconv.Itoa(in.PR), &rep); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	if len(rep.Own) == 0 || rep.Own[0].Job != in.Job || rep.Own[0].First.SHA != in.SHA || !rep.OwnSure[0] {
+		t.Fatalf("own %+v, want %s at %s", rep.Own, in.Job, in.SHA)
+	}
+	var steps []string
+	for _, c := range rep.Own {
+		for _, s := range c.Steps {
+			steps = append(steps, s.Name)
+		}
+	}
+	if len(steps) == 0 || steps[0] != in.Step {
+		t.Fatalf("steps %v, want %q first", steps, in.Step)
+	}
+	for q, want := range map[string]int{"": 400, "pr=x": 400, "run=999999999": 404, "commit=" + in.SHA[:8]: 200} {
+		if code := getJSON(t, srv.URL+"/api/why-slow?"+q, &rep); code != want {
+			t.Errorf("%q: %d, want %d", q, code, want)
+		}
 	}
 }

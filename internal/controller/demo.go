@@ -113,7 +113,7 @@ func (s demoSource) url() string             { return s.d.cfg.URL }
 func (s demoSource) demo() bool              { return true }
 func (s demoSource) apis() []string {
 	// priority covers /api/priority, /api/expedite, /api/mode and /api/priority/rules.
-	return []string{"state", "jobs", "job", "series", "explain", "priority", "trend"}
+	return []string{"state", "jobs", "job", "series", "explain", "priority", "trend", "why-slow"}
 }
 func (s demoSource) runs(from time.Time) ([]ledger.JobRun, error) {
 	var out []ledger.JobRun

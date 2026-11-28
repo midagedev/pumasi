@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/config"
@@ -10,9 +13,42 @@ import (
 )
 
 // watchRoutes: the trend of every job and where it changed (GET /api/trend),
-// for the dashboard and for agents. The query takes what `pumasi trend`
-// takes: since (14d), week (1), job, workflow, repo, branch.
+// and one run, pull request or commit against the usual (GET /api/why-slow),
+// for the dashboard and for agents. /api/trend takes what `pumasi trend`
+// takes: since (14d), week (1), job, workflow, repo, branch; /api/why-slow
+// one of run (a number or URL), pr, commit.
 func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
+	mux.HandleFunc("GET /api/why-slow", func(w http.ResponseWriter, r *http.Request) {
+		s := src(r)
+		q := r.URL.Query()
+		var t watch.Target
+		var err error
+		switch {
+		case q.Get("run") != "":
+			t, err = watch.ParseTarget(q.Get("run"))
+		case q.Get("pr") != "":
+			t.PR, err = strconv.Atoi(strings.TrimPrefix(q.Get("pr"), "#"))
+		case q.Get("commit") != "":
+			t, err = watch.ParseTarget(q.Get("commit"))
+		default:
+			err = errors.New("give one of run, pr, commit")
+		}
+		if err != nil || t == (watch.Target{}) {
+			http.Error(w, fmt.Sprint("why-slow: ", err), http.StatusBadRequest)
+			return
+		}
+		runs, err := s.runs(s.now().Add(-60 * 24 * time.Hour))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rep, err := watch.WhySlow(runs, t)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, rep)
+	})
 	mux.HandleFunc("GET /api/trend", func(w http.ResponseWriter, r *http.Request) {
 		s := src(r)
 		q := r.URL.Query()

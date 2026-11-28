@@ -121,7 +121,10 @@ type Change struct {
 	Between []RunRef `json:"between,omitempty"`
 	// PR: a pull request whose own runs were already at the new level before
 	// First (0 = none stood out).
-	PR         int         `json:"pr,omitempty"`
+	PR int `json:"pr,omitempty"`
+	// Suspects: every pull request whose runs (one or more) before First were
+	// all at the new level, the last within two days of it.
+	Suspects   []int       `json:"suspects,omitempty"`
 	RunsBefore int         `json:"runsBefore"`
 	RunsAfter  int         `json:"runsAfter"`
 	Z          float64     `json:"z"`
@@ -301,7 +304,7 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 		if lastBefore >= 0 {
 			c.LastBefore = refOf(rs[lastBefore])
 		}
-		c.PR = culpritPR(rs, x, first, level[i], level[i+1])
+		c.PR, c.Suspects = culpritPR(rs, x, first, level[i], level[i+1])
 		if m == "time" {
 			c.Steps = stepDeltas(rs[lo:k], rs[k:hi])
 		}
@@ -382,8 +385,9 @@ func attribute(rs []ledger.JobRun, x []float64, k int, before, after float64, lo
 // culpritPR: a pull request whose runs before the first slower run on main
 // were already at the new level — all of them, at least two, and its last
 // within two days of it — is the change's likely source. When more than one
-// pull request fits, none is named.
-func culpritPR(rs []ledger.JobRun, x []float64, first int, before, after float64) int {
+// pull request fits, none is named. suspects: every pull request that fits
+// with one run or more (one run can be at the new level by chance).
+func culpritPR(rs []ledger.JobRun, x []float64, first int, before, after float64) (int, []int) {
 	at := codeTime(rs[first])
 	type tally struct {
 		n, near int
@@ -406,16 +410,23 @@ func culpritPR(rs []ledger.JobRun, x []float64, first int, before, after float64
 		}
 		t.last = codeTime(r)
 	}
-	found := 0
+	found, many := 0, false
+	var suspects []int
 	for pr, t := range prs {
-		if t.n >= 2 && t.near == t.n && at.Sub(t.last) <= 48*time.Hour {
-			if found != 0 {
-				return 0
-			}
+		if t.near != t.n || at.Sub(t.last) > 48*time.Hour {
+			continue
+		}
+		suspects = append(suspects, pr)
+		if t.n >= 2 {
+			many = many || found != 0
 			found = pr
 		}
 	}
-	return found
+	slices.Sort(suspects)
+	if many {
+		found = 0
+	}
+	return found, suspects
 }
 
 // stepDeltas compares each step's median time on the two sides; the steps

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -23,6 +24,11 @@ func GroupChanges(cs []Change) [][]Change {
 		}
 		idx[k] = len(out)
 		out = append(out, []Change{c})
+	}
+	// Time first: its steps are the detail a group shows.
+	rank := map[string]int{"time": 0, "memory": 1, "cpu": 2}
+	for _, g := range out {
+		slices.SortStableFunc(g, func(a, b Change) int { return rank[a.Metric] - rank[b.Metric] })
 	}
 	return out
 }

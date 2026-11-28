@@ -29,3 +29,25 @@ func TestRegressionSearchHolds(t *testing.T) {
 		}
 	}
 }
+
+// why-slow keeps what it was measured to do (`watcheval -why` for the full
+// numbers): the pull request behind a change is answered, an unrelated one
+// is rarely called slower and never shown as a change's cause.
+func TestWhySlowHolds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluation")
+	}
+	ec := EvalConfig{Histories: 10}
+	noise, per := EvalWhy(ec)
+	var b strings.Builder
+	WriteWhyReport(&b, ec, noise, per)
+	t.Log("\n" + b.String())
+	if frac(noise.Slower, noise.PRs) > 0.03 || frac(noise.Maybe, noise.PRs) > 0.2 || noise.Own > 0 {
+		t.Errorf("nothing injected: slower %d, maybe %d, own %d of %d", noise.Slower, noise.Maybe, noise.Own, noise.PRs)
+	}
+	for _, r := range per {
+		if frac(r.Answered, r.Histories) < 0.6 || frac(r.NeighbourSure, r.Neighbours) > 0.02 {
+			t.Errorf("%s: answered %d of %d, neighbours named %d of %d", r.Scenario, r.Answered, r.Histories, r.NeighbourSure, r.Neighbours)
+		}
+	}
+}

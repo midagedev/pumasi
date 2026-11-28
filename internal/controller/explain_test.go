@@ -310,10 +310,10 @@ func TestExplainEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if strings.Join(w.API, ",") != "state,jobs,job,series,explain,priority,trend" || !w.Demo || w.URL != "https://github.com/example/app" {
+	if strings.Join(w.API, ",") != "state,jobs,job,series,explain,priority,trend,why-slow" || !w.Demo || w.URL != "https://github.com/example/app" {
 		t.Errorf("state wrapper: %+v", w)
 	}
-	if got := strings.Join(ctlSource{}.apis(), ","); got != "state,jobs,job,series,explain,metrics,priority,trend" {
+	if got := strings.Join(ctlSource{}.apis(), ","); got != "state,jobs,job,series,explain,metrics,priority,trend,why-slow" {
 		t.Errorf("controller apis %q", got)
 	}
 }
