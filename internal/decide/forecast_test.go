@@ -108,3 +108,27 @@ func TestForecastRunnerOnAHostThatIsDown(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// A job whose room one end does not make says how many others end there
+// first: 4G free, 4G each from a1 and a2, and the job needs 12G.
+func TestForecastSaysTheOtherEndsItNeeds(t *testing.T) {
+	small1 := func(name string) Runner { r := running(name, t0); r.CPUs = 1; return r }
+	big := job("big", 0)
+	big.CPUs, big.MemBytes = 1, 12*gb
+	s := snap([]Host{small()}, []Demand{big}, []Runner{small1("r1"), small1("r2"), small1("r3")})
+	busy := map[string]Busy{
+		"r1": {Ends: s.Now.Add(time.Minute), Job: "a1"},
+		"r2": {Ends: s.Now.Add(2 * time.Minute), Job: "a2"},
+		"r3": {Ends: s.Now.Add(time.Hour), Job: "a3"},
+	}
+	got := Forecast(s, busy, nil, prov)["big"]
+	if got.After != "a2" || got.AfterRunner != "r2" || got.AfterWith != 1 {
+		t.Fatalf("big: %+v", got)
+	}
+	// with 8G free now, a1's end alone is enough
+	s.Runners = s.Runners[:2]
+	busy["r2"] = Busy{Ends: s.Now.Add(time.Hour), Job: "a2"}
+	if got := Forecast(s, busy, nil, prov)["big"]; got.After != "a1" || got.AfterWith != 0 {
+		t.Fatalf("big, one end enough: %+v", got)
+	}
+}

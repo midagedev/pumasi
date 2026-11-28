@@ -290,6 +290,9 @@ func TestExpectText(t *testing.T) {
 		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r1"}, "lint", "starts in under a minute on h1, when the e2e running there for 3m ends", "e2e"},
 		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r2"}, "lint", "starts in under a minute on h1, when the e2e running there for 1m ends", "e2e"},
 		{JobExpect{InSeconds: 30, Host: "h2", After: "build", AfterRunner: "r3"}, "lint", "starts in under a minute on h2, when the build running on h1 ends", "build"},
+		// its end alone does not make the room: others ending first do too
+		{JobExpect{InSeconds: 150, Host: "h1", After: "pack", AfterRunner: "r4", AfterWith: 2}, "lint", "starts in ~3m on h1, when pack ends, once 2 others there have ended too", ""},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e", AfterRunner: "r2", AfterWith: 1}, "lint", "starts in ~3m on h1, when the e2e running there for 1m ends, once 1 other there has ended too", ""},
 	} {
 		runners := []RunnerState{{Name: "r1", Host: "h1", Job: "e2e", AgeSeconds: 200}, {Name: "r2", Host: "h1", Job: "e2e", AgeSeconds: 70},
 			{Name: "r3", Host: "h1", Job: "build"}, {Name: "r4", Host: "h1", Job: "pack"}}

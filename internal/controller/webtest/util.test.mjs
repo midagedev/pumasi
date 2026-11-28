@@ -19,6 +19,8 @@ test("expectText says which job a wait is for, as the controller does", () => {
     [{ inSeconds: 30, host: "h1", after: "e2e", afterRunner: "r1" }, "lint", "starts in under a minute on h1, when the e2e running there for 3m ends", "e2e", R],
     [{ inSeconds: 30, host: "h1", after: "e2e", afterRunner: "r2" }, "lint", "starts in under a minute on h1, when the e2e running there for 1m ends", "e2e", R],
     [{ inSeconds: 30, host: "h2", after: "build", afterRunner: "r3" }, "lint", "starts in under a minute on h2, when the build running on h1 ends", "build", R],
+    [{ inSeconds: 150, host: "h1", after: "pack", afterRunner: "r4", afterWith: 2 }, "lint", "starts in ~3m on h1, when pack ends, once 2 others there have ended too", "", R],
+    [{ inSeconds: 150, host: "h1", after: "e2e", afterRunner: "r2", afterWith: 1 }, "lint", "starts in ~3m on h1, when the e2e running there for 1m ends, once 1 other there has ended too", "", R],
   ]) assert.equal(expectText(e, rs, self, wait ? [{ job: wait }] : []), want);
 });
 

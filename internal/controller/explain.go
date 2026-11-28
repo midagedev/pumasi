@@ -515,8 +515,9 @@ func countList(by map[string]int) string {
 // A job it waits for that is still waiting itself is said to be: "after the
 // e2e waiting ahead of it". With the runners and the waiting jobs, a running
 // job whose name more than one job has in sight says which one: where it
-// runs, and how long it has, when its host runs more than one. The
-// dashboard says the same (web/js/util.js expectText).
+// runs, and how long it has, when its host runs more than one. When that
+// job's end alone does not make the room, it says that others ending there
+// before it do too. The dashboard says the same (web/js/util.js expectText).
 func (e JobExpect) Text(self string, runners []RunnerState, waiting []JobWait) string {
 	var in string
 	switch s := e.InSeconds; {
@@ -533,6 +534,10 @@ func (e JobExpect) Text(self string, runners []RunnerState, waiting []JobWait) s
 	}
 	if e.AfterRunner == "" {
 		return t + ", after the " + e.After + " waiting ahead of it"
+	}
+	with := ""
+	if e.AfterWith > 0 {
+		with = fmt.Sprintf(", once %d %s there %s ended too", e.AfterWith, map[bool]string{true: "other", false: "others"}[e.AfterWith == 1], map[bool]string{true: "has", false: "have"}[e.AfterWith == 1])
 	}
 	var at *RunnerState
 	same := 0
@@ -558,7 +563,7 @@ func (e JobExpect) Text(self string, runners []RunnerState, waiting []JobWait) s
 		if after == self {
 			after = "another " + after
 		}
-		return t + ", when " + after + where + " ends"
+		return t + ", when " + after + where + " ends" + with
 	}
 	on := cmp.Or(where, " there")
 	mins := func(r RunnerState) int64 { return r.AgeSeconds / 60 }
@@ -573,13 +578,13 @@ func (e JobExpect) Text(self string, runners []RunnerState, waiting []JobWait) s
 	}
 	switch {
 	case twins < 2:
-		return t + ", when the " + e.After + " running" + on + " ends"
+		return t + ", when the " + e.After + " running" + on + " ends" + with
 	case sameMin > 1:
-		return t + fmt.Sprintf(", when one of the %d %s running%s ends", twins, e.After, on)
+		return t + fmt.Sprintf(", when one of the %d %s running%s ends", twins, e.After, on) + with
 	case mins(*at) < 1:
-		return t + ", when the " + e.After + " running" + on + " for under a minute ends"
+		return t + ", when the " + e.After + " running" + on + " for under a minute ends" + with
 	default:
-		return t + fmt.Sprintf(", when the %s running%s for %dm ends", e.After, on, mins(*at))
+		return t + fmt.Sprintf(", when the %s running%s for %dm ends", e.After, on, mins(*at)) + with
 	}
 }
 

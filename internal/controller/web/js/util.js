@@ -283,22 +283,25 @@ function apart(need, have, fmt) {
 // waits for that is still waiting itself is said to be: "after the e2e waiting
 // ahead of it". With the waiting jobs too, a running job whose name more than
 // one job has in sight says which one: where it runs, and how long it has,
-// when its host runs more than one.
+// when its host runs more than one. When that job's end alone does not make
+// the room, it says that others ending there before it do too.
 export function expectText(e, runners = [], self = "", waiting = []) {
   if (!e) return "";
   const t = `starts in ${inText(e.inSeconds)} on ${e.host}`;
   if (!e.after) return t;
   if (!e.afterRunner) return `${t}, after the ${e.after} waiting ahead of it`;
+  const n = e.afterWith || 0;
+  const with_ = n ? `, once ${n} ${n === 1 ? "other" : "others"} there ${n === 1 ? "has" : "have"} ended too` : "";
   const at = runners.find((r) => r.name === e.afterRunner);
   const same = runners.filter((r) => r.job === e.after).length + waiting.filter((j) => j.job === e.after).length;
   const where = at && at.host !== e.host ? ` on ${at.host}` : "";
-  if (!at || same < 2) return `${t}, when ${e.after === self ? "another " + e.after : e.after}${where} ends`;
+  if (!at || same < 2) return `${t}, when ${e.after === self ? "another " + e.after : e.after}${where} ends${with_}`;
   const on = where || " there";
   const mins = (r) => Math.floor((r.ageSeconds || 0) / 60);
   const twins = runners.filter((r) => r.job === e.after && r.host === at.host);
-  if (twins.length < 2) return `${t}, when the ${e.after} running${on} ends`;
-  if (twins.filter((r) => mins(r) === mins(at)).length > 1) return `${t}, when one of the ${twins.length} ${e.after} running${on} ends`;
-  return `${t}, when the ${e.after} running${on} for ${mins(at) < 1 ? "under a minute" : mins(at) + "m"} ends`;
+  if (twins.length < 2) return `${t}, when the ${e.after} running${on} ends${with_}`;
+  if (twins.filter((r) => mins(r) === mins(at)).length > 1) return `${t}, when one of the ${twins.length} ${e.after} running${on} ends${with_}`;
+  return `${t}, when the ${e.after} running${on} for ${mins(at) < 1 ? "under a minute" : mins(at) + "m"} ends${with_}`;
 }
 const inText = (s = 0) => (s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m");
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
