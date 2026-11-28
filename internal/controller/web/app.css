@@ -120,6 +120,7 @@ h2 small { text-transform: none; letter-spacing: 0; font-weight: 500; margin-lef
 .gl { color: var(--muted); }
 .gp { font-weight: 800; min-width: 50px; text-align: right; white-space: nowrap; }
 .gp.short { color: var(--bad); }
+.gp.ready { color: var(--ready); }
 .gbar { position: relative; display: flex; height: 8px; border-radius: 3px; overflow: hidden; background: var(--code); border: 1px solid var(--line); }
 .gbar i { display: block; height: 100%; }
 .gbar i.give { background: repeating-linear-gradient(-45deg, var(--ready) 0 2px, rgba(96, 176, 255, 0.35) 2px 4px); }

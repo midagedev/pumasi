@@ -80,7 +80,7 @@ async function refreshSeries() {
 
 function apply() {
   const s = store.state;
-  setLive(s.hosts);
+  setLive(s.hosts, s.runners);
   // a job whose runner is already starting says so on its crate too, as in the list
   const going = new Set(waitRows(s).filter((r) => r._go).map(jobKey));
   for (const j of s.waitingJobs || []) j._go = going.has(jobKey(j));

@@ -1256,7 +1256,8 @@ export class Scene {
           ctx.restore();
         }
         ctx.font = "800 12px ui-sans-serif, system-ui, sans-serif";
-        ctx.fillStyle = p && p.free < (k === "mem" ? GiB : 0.5) ? rgb(th.bad) : th.text;
+        const low = k === "mem" ? GiB : 0.5;
+        ctx.fillStyle = p && p.free < low ? rgb(p.room < low ? th.bad : th.ready) : th.text;
         ctx.textAlign = "right";
         ctx.fillText(p ? (k === "mem" ? short(p.free / GiB) + "G" : short(p.free)) + " free" : "-", x + w - pad, yy + 0.5);
         ctx.textAlign = "left";

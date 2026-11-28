@@ -182,7 +182,10 @@ export function hostLoad(h, runners = []) {
 // show the host now. Hosts it names that are up are read from the latest state
 // (setLive), so the sentence and the card never disagree.
 let live = new Map();
-export const setLive = (hosts) => { live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, h])); };
+// With runners, each host also knows the memory its ready runners give way.
+export const setLive = (hosts, runners = []) => {
+  live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, { h, give: ((hostLoad(h, runners).mem || {}).give || 0) / GiB }]));
+};
 export function plainReason(reason) {
   const r = reason || "";
   if (!r) return "a runner is starting for it";
@@ -192,7 +195,7 @@ export function plainReason(reason) {
   const open = p.hosts.filter((h) => !h.closed);
   for (const h of p.hosts) {
     const now = !h.closed && live.get(h.name);
-    if (now) { h.cpu = now.freeCpus || 0; h.mem = (now.freeMem || 0) / GiB; }
+    if (now) { h.cpu = now.h.freeCpus || 0; h.mem = (now.h.freeMem || 0) / GiB; h.give = now.give; }
   }
   const shut = p.hosts.filter((h) => h.closed).map((h) => `${h.name} ${plainNote(h.note)}`);
   // a host that is closed or reserved is often the whole story: always said
@@ -204,8 +207,11 @@ export function plainReason(reason) {
   if (!memOK.length) {
     const best = open.slice().sort((a, b) => b.mem - a.mem)[0];
     const [need, have] = apart(p.needMem, best.mem, gbn);
-    if (need === have) return `needs ${need} memory, ${best.name} is just short of it${tail}`;
-    return `needs ${need} memory, the most free${shut.length ? " elsewhere" : ""} is ${have} (${best.name})${tail}`;
+    // a host whose ready runners give way makes more than its free memory
+    const most = open.slice().sort((a, b) => b.mem + (b.give || 0) - a.mem - (a.give || 0))[0];
+    const more = most.give > 0.05 && most.mem + most.give > best.mem + 0.05 ? `; ${most.name} makes ${gbn(most.mem + most.give)} with its ready runners giving way` : "";
+    if (need === have) return `needs ${need} memory, ${best.name} is just short of it${more}${tail}`;
+    return `needs ${need} memory, the most free${shut.length ? " elsewhere" : ""} is ${have} (${best.name})${more}${tail}`;
   }
   const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
   if (best.cpu < p.needCpu + 0.05) {

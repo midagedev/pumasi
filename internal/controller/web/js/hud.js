@@ -4,6 +4,8 @@ import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, 
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
+// runCount: "3 running · 2 ready", the header chip's words for a few runners.
+const runCount = (rs) => [`${rs.filter((r) => r.job).length} running`, ...(rs.some(isReady) ? [`${rs.filter(isReady).length} ready`] : [])].join(" · ");
 export const store = { state: null, jobs: [], findings: [], explainText: "", prio: null, prioMissing: false, series: null, base: "" };
 
 // ---------------------------------------------------------------- writes
@@ -117,7 +119,7 @@ export function renderChrome(onSelect) {
     const gauge = (label, p, free) => el("span", { class: "g" }, el("span", { class: "gl", text: label }),
       el("span", { class: "gbar" }, p ? [el("i", { class: "mine " + (L.tone === "ready" ? "warn" : L.tone), style: `width:${((p.seg.held + p.seg.kept) * 100).toFixed(1)}%` }), el("i", { class: "give", style: `width:${(p.seg.give * 100).toFixed(1)}%` }), el("i", { class: "other", style: `width:${(p.seg.other * 100).toFixed(1)}%` }),
         el("b", { class: "used", style: `width:${(p.seg.used * 100).toFixed(1)}%` })] : null),
-      el("span", { class: "gp" + (p && p.free <= 0.05 * p.lend ? " short" : ""), text: p ? free + " free" : "-" }));
+      el("span", { class: "gp" + (p && p.free <= 0.05 * p.lend ? (p.room <= 0.05 * p.lend ? " short" : " ready") : ""), text: p ? free + " free" : "-" }));
     const off = L.word === "offline" || L.word === "no data";
     const ready = L.giving ? `${L.giving} ready ${L.giving === 1 ? "runner gives" : "runners give"} way: ${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}` : "";
     const shared = L.share > 1 ? `cores shared ×${L.share}: ${h.cpus} cores count as ${short(L.cpu ? L.cpu.lend : 0)}` : "";
@@ -279,7 +281,7 @@ function build(sel, actions) {
         C ? section(`CPU · ${cpus(C.free)} free` + (C.give ? ` · ${cpus(C.give)} more when ready runners give way` : ""), memBar(parts(C, cpus)),
           el("div", { class: "note", text: `Its runners use ${cpus(C.used)} now.` + (L.share > 1 ? ` Cores shared: placement counts the ${h.cpus} cores ${L.share}× (${cpus(C.lend)}), as jobs that share a core only take longer; it stops at cpu pressure ${(s.limits || {}).psiCpu || 40}%. Memory is never shared.` : "") })) : null,
         readyN ? el("div", { class: "note ready-note", text: `${readyN} ready ${readyN === 1 ? "runner" : "runners"} (blue): up with no job yet, kept warm for their class's next job. Each takes a job of its own class at once${L.giving ? `; ${L.giving} step aside for a waiting job of another class that needs the room` : ""}.` }) : null,
-        section(`Running here (${runners.length})`, runnerRows(runners, actions)),
+        section(`Runners here (${runCount(runners)})`, runnerRows(runners, actions)),
         facts([["kind", h.kind], ["os", h.os || "-"], ["agent", h.agent || "-"], ["last heard", h.seenSeconds === null || h.seenSeconds === undefined ? "-" : ago(h.seenSeconds) + " ago · " + Math.round(h.rttMs) + "ms"], ["last dropped", h.lastDrop || "-"],
           ["shares", h.budgetCpus || h.budgetMem ? `at most ${h.budgetCpus ? cpus(h.budgetCpus) : "any CPU"} and ${h.budgetMem ? gb(h.budgetMem) : "any memory"}` : "whatever it has free"],
           ["pressure", ["cpu", "mem", "io"].map((k) => { const v = h[{ cpu: "cpuPressure", mem: "memPressure", io: "ioPressure" }[k]]; return v === null || v === undefined ? null : `${k} ${v.toFixed(1)}%`; }).filter(Boolean).join(" · ") || "-"],
@@ -305,7 +307,7 @@ function build(sel, actions) {
             el("tbody", {}, p.hosts.map((hh) => el("tr", { "data-host": hh.name }, el("td", { text: hh.name }), el("td", { class: "num", text: hh.closed ? (/^(down|unreach)/.test(hh.note) ? "offline" : hh.note) : `${cpus(hh.cpu)} · ${gbn(hh.mem)}` }),
               el("td", { class: "num problem", text: hh.closed ? "-" : [hh.short.cpu > 0 ? cpus(hh.short.cpu) : "", hh.short.mem > 0 ? gbn(hh.short.mem) : ""].filter(Boolean).join(" · ") || "just short" }))))) : null) : section("Waiting", el("div", { class: "note", text: "nothing waits on this belt" })),
         jobs.length ? section("Jobs on the belt", jobRows(jobs, actions)) : null,
-        section(`Running (${runners.length})`, runnerRows(runners, actions)),
+        section(`Runners (${runCount(runners)})`, runnerRows(runners, actions)),
         facts([["os / driver", `${c.os || "linux"} / ${c.driver || "-"}` + (c.docker ? " · docker " + c.docker : "")],
           ["first size guess", c.cpus ? `${cpus(c.cpus)} · ${gb(c.memory)}` : null], ["memory limit", c.limitMem ? gb(c.limitMem) : null], ["hosts", c.hosts && c.hosts.length ? c.hosts.join(", ") : "any of its OS"],
           ["kept ready", c.reserve ? c.reserve + " runner(s) kept room for" : null], ["overflow", ov ? `room for ${ov.take} now · has ${ov.held}${ov.after ? " · only after " + ov.after : ""}; the rest go to fixed runners` : null],
