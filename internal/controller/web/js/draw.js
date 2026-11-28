@@ -1310,16 +1310,19 @@ export class Scene {
 }
 
 // runningSummary: a host's runners as job names, the same name counted once
-// ("e2e (chromium) ×2"), the most first; runners still starting at the end.
+// ("e2e (chromium) ×2"), the most first; then the runners up and listening
+// for a job (ready: kept warm, or about to be handed one), then those still
+// starting.
 function runningSummary(runners) {
   const n = new Map();
-  let starting = 0;
+  let starting = 0, ready = 0;
   for (const r of runners) {
-    if (!r.job) { starting++; continue; }
+    if (!r.job) { if (r.state === "idle") ready++; else starting++; continue; }
     const name = r.job.replace(/\s+\d+\/\d+$/, ""); // "nightly-soak 2/3": one of a set
     n.set(name, (n.get(name) || 0) + 1);
   }
   const out = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, c]) => (c > 1 ? `${k} ×${c}` : k));
+  if (ready) out.push(`${ready} ready`);
   if (starting) out.push(`${starting} starting`);
   return out;
 }
