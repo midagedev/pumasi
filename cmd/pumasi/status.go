@@ -194,7 +194,11 @@ func printStatus(w io.Writer, s controller.State) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(tw, "JOB SIZE\tWORKFLOW\tRAN AS\tNEXT RUN\tLAST RUN\tLARGEST\tRUNS")
 		for _, j := range s.Sizes {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", j.Job, j.Workflow, j.Platform, sizeText(j.EstCPUs, j.EstMem), sizeText(j.LastCPUs, j.LastMem), sizeText(j.TopCPUs, j.TopMem), j.Runs)
+			next := sizeText(j.EstCPUs, j.EstMem)
+			if j.Over > 0 {
+				next += fmt.Sprintf(" (its class's limit; needs %s)", gib(j.Over))
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", j.Job, j.Workflow, j.Platform, next, sizeText(j.LastCPUs, j.LastMem), sizeText(j.TopCPUs, j.TopMem), j.Runs)
 		}
 		tw.Flush()
 	}

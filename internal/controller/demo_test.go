@@ -372,3 +372,28 @@ func releaseMoments() []float64 {
 	}
 	return out
 }
+
+// The sizes table says what a job's next run is placed with: a job past its
+// class's hard memory limit at the limit, with what it would need.
+func TestDemoSizesHeldAtTheLimit(t *testing.T) {
+	d := NewDemo(1)
+	s := d.view(864, time.Now()).state()
+	found := false
+	for _, j := range s.Sizes {
+		if j.Job != "e2e (firefox)" {
+			continue
+		}
+		found = true
+		if j.EstMem != 20<<30 || j.Over <= 20<<30 {
+			t.Errorf("e2e (firefox) next run %s, over %s: want held at 20G with more over it", gib(j.EstMem), gib(j.Over))
+		}
+	}
+	if !found {
+		t.Fatal("no size for e2e (firefox)")
+	}
+	for _, j := range s.Sizes {
+		if j.Job != "e2e (firefox)" && j.Over != 0 {
+			t.Errorf("%s over its limit: %+v", j.Job, j)
+		}
+	}
+}

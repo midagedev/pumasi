@@ -621,7 +621,7 @@ export function renderList(actions) {
   const seen = {};
   for (const j of s.sizes || []) { const k = j.repo + "/" + j.workflow + "/" + j.job; seen[k] = (seen[k] || 0) + 1; }
   const named = (j) => (seen[j.repo + "/" + j.workflow + "/" + j.job] > 1 && j.platform ? `${j.job} (${j.platform})` : j.job);
-  fill("l-sizes", (s.sizes || []).map((j) => el("tr", {}, td(named(j)), td(j.workflow, "muted opt"), td(sz(j.estCpus, j.estMem), "num"), td(sz(j.lastCpus, j.lastMem), "num"), td(sz(j.topCpus, j.topMem), "num opt"), td(j.runs, "num"))));
+  fill("l-sizes", (s.sizes || []).map((j) => el("tr", {}, td(named(j)), td(j.workflow, "muted opt"), td(sz(j.estCpus, j.estMem) + (j.over ? ` (its limit; needs ${gb(j.over)})` : ""), "num"), td(sz(j.lastCpus, j.lastMem), "num"), td(sz(j.topCpus, j.topMem), "num opt"), td(j.runs, "num"))));
   $("l-incidents").replaceChildren(...[...s.incidents.map((i) => [i, true]), ...(s.recentIncidents || []).slice().reverse().map((i) => [i, false])].map(([i, open]) =>
     el("li", { class: open ? "open" : "", "data-kind": i.kind }, el("b", { text: i.kind + " " }), i.detail, el("span", { class: "muted", text: open ? `  open ${dur(since(i.openedAt))}` : `  ${clock(i.openedAt)}${i.resolvedAt ? " – " + clock(i.resolvedAt) : ""}` }))));
   if (!s.incidents.length && !(s.recentIncidents || []).length) $("l-incidents").replaceChildren(el("li", { class: "muted", text: "none" }));

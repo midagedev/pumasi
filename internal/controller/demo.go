@@ -1468,12 +1468,26 @@ func (v demoView) state() State {
 	for _, k := range keys {
 		runs := w.measured[k]
 		parts := splitKey(k)
-		e := size.Learn(runs, size.Estimate{})
+		e := size.Learn(runs, size.Estimate{}).AtLimit(int64(d.class(d.classOfKey(parts)).Limit.Memory))
 		last := runs[len(runs)-1]
 		out.Sizes = append(out.Sizes, JobSize{Repo: parts[0], Workflow: parts[1], Job: parts[2], Platform: parts[3], EstCPUs: e.CPUs, EstMem: e.MemBytes,
-			LastCPUs: last.CPUs, LastMem: last.MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs})
+			LastCPUs: last.CPUs, LastMem: last.MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs, Over: e.Over})
 	}
 	return out
+}
+
+// classOfKey is the class a measured job runs in: its kind's, or light-mac
+// for a light job measured on the mac.
+func (d *Demo) classOfKey(parts [4]string) string {
+	for _, kd := range demoKinds {
+		if kd.workflow == parts[1] && kd.job == parts[2] {
+			if kd.class == "light" && parts[3] == d.class("light-mac").Platform() {
+				return "light-mac"
+			}
+			return kd.class
+		}
+	}
+	return ""
 }
 
 func splitKey(k string) [4]string {
