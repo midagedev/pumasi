@@ -138,7 +138,7 @@ func local(t float64) float64 { return t - math.Floor(t/demoCycle)*demoCycle }
 
 func demoConfig() *config.Config {
 	c := &config.Config{URL: "https://github.com/example/app", WaitAlert: 4 * time.Minute, PriorityHeadStart: config.DefaultHeadStart,
-		DiskMinFree: 10, PSICPUThreshold: 40, PSIMemThreshold: 10, PSIIOThreshold: 50, MaxStarting: 4,
+		DiskMinFree: 10, CPUOvercommit: config.DefaultCPUOvercommit, PSICPUThreshold: 40, PSIMemThreshold: 10, PSIIOThreshold: 50, MaxStarting: 4,
 		EvaluateEvery: 2 * time.Second, ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
 	cls := []config.Class{
 		{Name: "pr-checks"},
@@ -759,7 +759,7 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 	now := demoEpoch.Add(time.Duration(t * float64(time.Second)))
 	at := func(s float64) time.Time { return demoEpoch.Add(time.Duration(s * float64(time.Second))) }
 	s := decide.Snapshot{Now: now, PSICPUThreshold: d.cfg.PSICPUThreshold, PSIMemThreshold: d.cfg.PSIMemThreshold, PSIIOThreshold: d.cfg.PSIIOThreshold,
-		MaxStarting: d.cfg.MaxStarting, HeadStart: d.cfg.PriorityHeadStart, BlindHold: size.BlindHold,
+		MaxStarting: d.cfg.MaxStarting, HeadStart: d.cfg.PriorityHeadStart, BlindHold: size.BlindHold, CPUOvercommit: d.cfg.CPUOvercommit,
 		ProvisionTimeout: d.cfg.ProvisionTimeout, IdleTimeout: d.cfg.IdleTimeout, HostLostAfter: d.cfg.HostLostAfter}
 	for _, h := range demoHosts {
 		n := d.hostNow(w, h, t)
@@ -769,7 +769,7 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 			dh.DownFor = time.Duration((local(t) - h.down[0]) * float64(time.Second))
 		}
 		if h.os == "linux" {
-			dh.PSICPU, dh.PSIIO = n.psiCPU, n.psiIO
+			dh.PSICPU, dh.PSIIO, dh.CPUPressureKnown = n.psiCPU, n.psiIO, true
 		}
 		dh.Closed = d.closed(h, n)
 		s.Hosts = append(s.Hosts, dh)

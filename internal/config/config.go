@@ -38,6 +38,11 @@ type Config struct {
 	PSIMemThreshold float64       `yaml:"-"`
 	PSIIOThreshold  float64       `yaml:"-"`
 	MaxStarting     int           `yaml:"-"`
+	// CPUOvercommit: on a server that measures cpu pressure and has no cpu
+	// budget, the cpu its runners hold may add up to this many times its cores;
+	// cpu pressure stops placing there when the cores are in fact short.
+	// Memory is never overcommitted. Default DefaultCPUOvercommit; 1 = off.
+	CPUOvercommit float64 `yaml:"cpuOvercommit"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -218,8 +223,10 @@ type Size struct {
 
 // The first estimate of a class that gives none.
 const (
-	DefaultCPUs   = 2
-	DefaultMemory = 4 << 30
+	// DefaultCPUOvercommit: see Config.CPUOvercommit and docs/design.md.
+	DefaultCPUOvercommit = 1.5
+	DefaultCPUs          = 2
+	DefaultMemory        = 4 << 30
 )
 
 type Host struct {
@@ -318,6 +325,9 @@ func (c *Config) defaults() {
 	c.PSIIOThreshold, c.MaxStarting = 50, 4
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
+	}
+	if c.CPUOvercommit == 0 {
+		c.CPUOvercommit = DefaultCPUOvercommit
 	}
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
@@ -438,6 +448,9 @@ func (c *Config) validate() error {
 	}
 	if a := c.Notify.Away; a != nil && (*a < 0 || *a > 0 && *a < time.Minute) {
 		return fmt.Errorf("notify.away must be 0 (no host is asked) or at least 1m")
+	}
+	if c.CPUOvercommit < 1 || c.CPUOvercommit > 4 {
+		return fmt.Errorf("cpuOvercommit must be from 1 (off) to 4")
 	}
 	if len(c.Classes) == 0 {
 		return fmt.Errorf("at least one class is required")

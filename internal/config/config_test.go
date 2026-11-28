@@ -329,3 +329,23 @@ func TestRuntimeRules(t *testing.T) {
 		}
 	}
 }
+
+// cpuOvercommit is 1.5 unless set; 1 turns it off; below 1 or above 4 is refused.
+func TestCPUOvercommit(t *testing.T) {
+	load := func(extra string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: [{name: a}]\nhosts: [{ssh: h}]\n"+extra), 0o600)
+		return Load(p)
+	}
+	for extra, want := range map[string]float64{"": DefaultCPUOvercommit, "cpuOvercommit: 1\n": 1, "cpuOvercommit: 2\n": 2} {
+		c, err := load(extra)
+		if err != nil || c.CPUOvercommit != want {
+			t.Errorf("%q: %v %v, want %g", extra, c, err, want)
+		}
+	}
+	for _, bad := range []string{"cpuOvercommit: 0.5\n", "cpuOvercommit: -1\n", "cpuOvercommit: 5\n"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), "cpuOvercommit") {
+			t.Errorf("%q: err %v", bad, err)
+		}
+	}
+}

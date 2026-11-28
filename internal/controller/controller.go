@@ -814,7 +814,7 @@ func (c *Controller) recordUsage(r api.Runner) {
 func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) decide.Snapshot {
 	s := decide.Snapshot{Now: now, Runners: runners, PSICPUThreshold: c.cfg.PSICPUThreshold, PSIMemThreshold: c.cfg.PSIMemThreshold,
 		PSIIOThreshold: c.cfg.PSIIOThreshold, MaxStarting: c.cfg.MaxStarting,
-		HeadStart: c.cfg.PriorityHeadStart, BlindHold: size.BlindHold,
+		HeadStart: c.cfg.PriorityHeadStart, BlindHold: size.BlindHold, CPUOvercommit: c.cfg.CPUOvercommit,
 		ProvisionTimeout: c.cfg.ProvisionTimeout, IdleTimeout: c.cfg.IdleTimeout, HostLostAfter: c.cfg.HostLostAfter}
 	for _, h := range c.hosts {
 		if h.snap != nil {
@@ -829,6 +829,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			dh.CPUs, dh.MemBytes, dh.NonRunnerCPU, dh.NonRunnerMem, dh.PSICPU = a.CPUs, a.MemBytes, a.NonRunnerCPU, a.NonRunnerMem, a.PSI["cpu"]
 			dh.PSIMem, dh.KeepMem = a.PSI["memory"], keepMem(a.MemBytes)
 			dh.PSIIO = a.PSI["io"]
+			_, dh.CPUPressureKnown = a.PSI["cpu"]
 			dh.Pressed = h.pressed
 			h.pressed = nil
 			for res, thr := range map[string]float64{"cpu": c.cfg.PSICPUThreshold, "memory": c.cfg.PSIMemThreshold, "io": c.cfg.PSIIOThreshold} {

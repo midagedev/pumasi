@@ -64,6 +64,9 @@ type Host struct {
 	PSICPU  float64
 	PSIMem  float64
 	PSIIO   float64
+	// CPUPressureKnown: the host measures cpu pressure (Linux PSI), so that
+	// PSICPU 0 means no pressure and not "not measured".
+	CPUPressureKnown bool
 	// Pressed names what the host was over its threshold for at the last look
 	// ("cpu", "memory", "io"): it opens again only well under, see Over.
 	Pressed []string
@@ -160,7 +163,13 @@ type Snapshot struct {
 	// HighOnly: while set, only expedited and high jobs (and the jobs ahead
 	// of them in their class) get new runners; the others wait with it as
 	// the reason. Running jobs go on.
-	HighOnly         string
+	HighOnly string
+	// CPUOvercommit: on a server that measures cpu pressure and lends its
+	// cores without a budget, the cpu its runners hold may add up to this many
+	// times its cores (less what the rest of the machine uses); cpu pressure
+	// over PSICPUThreshold stops placing there when the cores are in fact
+	// short. 0 or 1 = no overcommit. Memory never is. See cpuShared.
+	CPUOvercommit    float64
 	ProvisionTimeout time.Duration
 	IdleTimeout      time.Duration
 	HostLostAfter    time.Duration
@@ -362,7 +371,7 @@ func Decide(s Snapshot) Plan {
 		}
 		for _, hn := range hostNames {
 			h := hosts[hn]
-			freeCPU, freeMem := free(h, alloc[hn])
+			freeCPU, freeMem := s.free(h, alloc[hn])
 			ok, reason := takes(s, c, h)
 			switch {
 			case !ok && reason == "":
@@ -449,7 +458,7 @@ func Decide(s Snapshot) Plan {
 			continue
 		}
 		h := hosts[best]
-		freeCPU, freeMem := free(h, alloc[best])
+		freeCPU, freeMem := s.free(h, alloc[best])
 		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", bestCPU, gib(bestMem), freeCPU, gib(freeMem))
 		if d.Sized != "" {
 			reason += " " + d.Sized
@@ -459,6 +468,9 @@ func Decide(s Snapshot) Plan {
 		}
 		if bestHold > bestMem {
 			reason += fmt.Sprintf("; holds %s while it is watched", gib(bestHold))
+		}
+		if cores, _ := Free(h, alloc[best][0]+bestCPU, 0); s.cpuShared(h) && cores <= 0 {
+			reason += fmt.Sprintf("; cores shared: runners hold %.1fcpu of %.1f there, cpu pressure %.0f", alloc[best][0]+bestCPU, h.CPUs-h.NonRunnerCPU, h.PSICPU)
 		}
 		if d.Ranked != "" {
 			reason += "; " + d.Ranked
@@ -520,7 +532,7 @@ func Decide(s Snapshot) Plan {
 				if !lends {
 					continue
 				}
-				cpu, mem := free(h, alloc[name])
+				cpu, mem := s.free(h, alloc[name])
 				var byMem int
 				switch {
 				case c.NextMem > 0 && watched[name] == 0:
@@ -640,7 +652,7 @@ func room(s Snapshot, c Class, hosts map[string]Host, alloc map[string][2]float6
 			if !lends {
 				continue
 			}
-			cpu, mem := free(h, alloc[name])
+			cpu, mem := s.free(h, alloc[name])
 			n += max(0, int(math.Min((cpu+1e-9)/needCPU, mem/needMem)))
 		}
 	}
@@ -793,7 +805,25 @@ func failedUnlessJob(r Runner) string {
 // after the runners' charges and everyone else's measured use, and no more
 // than the budget leaves when the host has one. Nobody sets the first number:
 // it moves with the machine.
-func free(h Host, a [2]float64) (cpu, mem float64) { return Free(h, a[0], a[1]) }
+// free is what a runner may still be placed against on h, its runners
+// holding a: Free, with the cores counted CPUOvercommit times where cpuShared.
+func (s Snapshot) free(h Host, a [2]float64) (cpu, mem float64) {
+	cpu, mem = Free(h, a[0], a[1])
+	if s.cpuShared(h) {
+		cpu = math.Max(0, h.CPUs*s.CPUOvercommit-h.NonRunnerCPU-a[0])
+	}
+	return cpu, mem
+}
+
+// cpuShared reports whether runners on h may hold more cpu than its cores.
+// CPU is a rate: jobs that share a core take longer, nothing is lost, and
+// cpu pressure says when they do. Memory is not: it is never counted twice.
+// Only on a server that lends without a cpu budget (a desktop's person and a
+// budget's promise keep every core they were promised) and measures cpu
+// pressure, with a threshold to stop at.
+func (s Snapshot) cpuShared(h Host) bool {
+	return s.CPUOvercommit > 1 && s.PSICPUThreshold > 0 && h.CPUPressureKnown && h.Kind != "desktop" && h.BudgetCPUs <= 0
+}
 
 // Free is free for a host whose runners hold cpus and mem.
 func Free(h Host, cpus, held float64) (cpu, mem float64) {
