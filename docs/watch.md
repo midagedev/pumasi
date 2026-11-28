@@ -30,18 +30,18 @@ pumasi trend --min-side 0          # list a job's change at once, not after a da
 CHANGED (newest first)
   pr-checks.yml / build-image: memory +36% (8.5G -> 11.5G), since commit 0c83298 on main, Thu Nov 19 19:00 (pull request #2246 ran at the new level before it); still so
       https://github.com/OWNER/REPO/commit/0c83298…
-  pr-checks.yml / typecheck: time -22% (1m24s -> 1m06s), cpu -21% (1m25s -> 1m07s), since commit 6e197ba on main, Tue Nov 17 19:09 (pull request #2104 ran at the new level before it); still so
-      step "Install" 25s -> 19s, step "Typecheck" 47s -> 36s; https://github.com/OWNER/REPO/commit/6e197ba…
-  pr-checks.yml / unit-tests: time +41% (1m28s -> 2m04s), cpu +42% (2m54s -> 4m08s), since commit 85979f9 on main, Mon Nov 16 19:01 (pull request #2077 ran at the new level before it); still so
-      step "Run tests" 47s -> 1m18s; https://github.com/OWNER/REPO/commit/85979f9…
-  pr-checks.yml / e2e (chromium): slowly growing, time +25% over 28d along its trend (2m39s -> 3m18s, at least +23%), no single commit
+  pr-checks.yml / typecheck: time -22% (1m23s -> 1m05s), cpu -22% (1m25s -> 1m07s), since commit 6e197ba on main, Tue Nov 17 19:09 (pull request #2104 ran at the new level before it); still so
+      step "Install" 25s -> 20s, step "Typecheck" 48s -> 37s; https://github.com/OWNER/REPO/commit/6e197ba…
+  pr-checks.yml / unit-tests: time +41% (1m26s -> 2m02s), cpu +42% (2m47s -> 3m58s), since commit 85979f9 on main, Mon Nov 16 19:01 (pull request #2077 ran at the new level before it); still so
+      step "Run tests" 47s -> 1m20s; https://github.com/OWNER/REPO/commit/85979f9…
+  pr-checks.yml / e2e (chromium): slowly growing, time +24% over 28d along its trend (2m38s -> 3m16s, at least +23%), no single commit
 
 JOB                       RUNS  TIME p50  p90    CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
-pr-checks.yml (workflow)  6250  4m17s     5m46s  +3%     14.4G    47m24s   30s       ▁▁█▂▂▄▂▇▂▃▂▄▄█
-  build-image             6249  2m11s     2m55s  +3%     11.8G    10m26s   29s       ▅▁▂▂▂▃▂▃▂▂▂▃▃█
-  e2e (chromium)          6249  3m09s     4m17s  +25%*   10.3G    9m52s    28s       ▁▁▁▃▂▃▄▅▄▄▄▄▅█
-  typecheck               6250  1m14s     1m42s  -22%*   2.3G     1m14s    28s       ██▇▆▁▁▂▂▂▂▁▁▂▄
-  unit-tests              6249  1m59s     2m39s  +41%*   3.3G     3m36s    28s       ▁▂▄▆▇▇▇█▇▇▆▇▇█
+pr-checks.yml (workflow)  6250  4m04s     5m34s  +0%     14.4G    46m17s   30s       ▂▂▂▂▂▂▂▂▂▂▂▂▂▂
+  build-image             6249  2m10s     2m32s  +3%     11.8G    10m38s   28s       ▂▂▂▂▂▂▂▂▂▂▂▂▂▂
+  e2e (chromium)          6249  3m07s     3m58s  +24%*   10.3G    10m04s   28s       ▁▂▂▃▃▄▄▆▆▆▆▇▇█
+  typecheck               6250  1m08s     1m33s  -22%*   2.3G     1m09s    28s       ███▇▁▂▂▂▂▂▁▁▁▁
+  unit-tests              6249  1m59s     2m26s  +41%*   3.3G     3m41s    28s       ▁▂▃▇▇▇██▇█▇▇▇▇
   …
 ```
 
@@ -185,7 +185,7 @@ pumasi forecast --demo          # the demo's history, which queued on the demo d
 ```
 
 ```
-CI used 2544 cpu-hours in the last 7 days (2423 the week before); over the last 5 weeks it grew +7% a week (+5% to +10%, 80% interval). At the busiest hours it keeps 30 of the 66 physical cores busy (45%); at this rate they need every core in ~11 weeks (8 to 17 weeks); one job in ten waits a minute or more for room in ~8 weeks (now under 1%, 1s on average).
+CI used 2482 cpu-hours in the last 7 days (2368 the week before); over the last 5 weeks it grew +7% a week (+5% to +11%, 80% interval). At the busiest hours it keeps 29 of the 66 physical cores busy (45%); at this rate they need every core in ~12 weeks (8 to 18 weeks); one job in ten waits a minute or more for room in ~8 weeks (now under 1%, 0s on average).
 ```
 
 - **Growth** is the Theil–Sen slope of the weekly cpu-hours (on logs), with its 80% interval. A week the ledger does not reach the start of is shown but not fitted; a ledger whose last job is more than two days old ends the weeks there.
