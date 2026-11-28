@@ -33,3 +33,12 @@ classes:
 # notify: {webhook: https://hooks.example/…}   # or command: my-notify --stdin; problems and their end, one line each
 #                                          # the webhook is also given to two hosts: they say so when the controller is gone for 5m (away: 0 = no)
 # image: ghcr.io/actions/actions-runner:2.338.2   # the runner version; keep a version tag, not :latest
+# watch:                                   # limits on CI itself; each crossed one is an incident (docs/watch.md)
+#   limits:
+#     - {match: {workflow: ci.yml, job: "e2e*"}, maxJobTime: 20m, maxMemory: 12G}   # the median of the last 5 runs
+#     - {match: {workflow: ci.yml}, maxRunTime: 25m}                               # first job's start to last job's end
+#     - {match: {workflow: "deploy*.yml"}, maxWait: 5m}                            # waiting for a runner, now
+#     - {match: {workflow: nightly.yml, event: schedule}, finishBy: "07:00"}
+#   cpuHoursPerDay: 300                    # all jobs together, from midnight
+#   slope: 10%                             # a job's median time grew more than this in a week
+#   regressions: 20%                       # announce a slower commit this big once (default; off = never)

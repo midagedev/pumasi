@@ -105,12 +105,12 @@ func Open(path string) (*Ledger, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + opsSchema); err != nil {
+	if _, err := db.Exec(schema + opsSchema + runsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	// Columns added after the first release; "duplicate column" means it is there.
-	for _, col := range []string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER",
+	for _, col := range append([]string{"runners ADD COLUMN log_tail TEXT", "runners ADD COLUMN oom_kills INTEGER",
 		// mem_work_peak: the most memory held that was not page cache (mem_peak counts the cache too).
 		// est_*: what placement counted on for this runner; est_runs = finished runs it was learned from.
 		"runners ADD COLUMN mem_work_peak INTEGER", "runners ADD COLUMN est_cpus REAL", "runners ADD COLUMN est_mem INTEGER", "runners ADD COLUMN est_runs INTEGER", "runners ADD COLUMN est_blind INTEGER",
@@ -119,11 +119,15 @@ func Open(path string) (*Ledger, error) {
 		// platform: the OS and driver the runner ran as ("linux/docker"); part of its job's key.
 		"runners ADD COLUMN platform TEXT",
 		// event: what triggered the job's run (push, schedule, …), for the priority rules.
-		"demand ADD COLUMN event TEXT"} {
+		"demand ADD COLUMN event TEXT"}, runFactsColumns...) {
 		if _, err := db.Exec("ALTER TABLE " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("schema: %w", err)
 		}
+	}
+	if _, err := db.Exec(runsIndexes); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("schema: %w", err)
 	}
 	return &Ledger{db: db}, nil
 }
@@ -256,6 +260,7 @@ type Runner struct {
 	EstBlind                 bool      // placed on the class's first estimate with nothing measured of the job or its workflow
 	StartedAt                time.Time // JobStarted, or the runner's own "Running job" line
 	RemovedAt                time.Time
+	Event                    string // what triggered the job's run, from JobStarted
 }
 
 // InsertRunner records a runner as placed. platform is what it runs as (see
@@ -340,9 +345,12 @@ type Job struct {
 func (l *Ledger) JobStarted(runner string, j Job, at time.Time) (bool, error) {
 	// The message can come after the runner is over (the controller was away while
 	// the job ran): the row still learns which job it was, its state stays.
+	// What the workflow's ref says of the run: its branch, or its pull request.
+	branch, pr := RefFacts(j.Workflow)
 	res, err := l.db.Exec(`UPDATE runners SET state=CASE WHEN state IN ('starting','idle','busy') THEN 'busy' ELSE state END,
-	  assigned_job_id=?, repo=?, workflow=?, job=?, run_id=?, started_at=CASE WHEN state IN ('starting','idle','busy') THEN ? ELSE COALESCE(started_at, ?) END
-	  WHERE name=?`, j.ID, j.Repo, j.Workflow, j.Name, j.RunID, ts(at), ts(at), runner)
+	  assigned_job_id=?, repo=?, workflow=?, job=?, run_id=?, started_at=CASE WHEN state IN ('starting','idle','busy') THEN ? ELSE COALESCE(started_at, ?) END,
+	  event=COALESCE(NULLIF(?,''), event), head_branch=COALESCE(head_branch, NULLIF(?,'')), pr=COALESCE(pr, NULLIF(?,0))
+	  WHERE name=?`, j.ID, j.Repo, j.Workflow, j.Name, j.RunID, ts(at), ts(at), j.Event, branch, pr, runner)
 	if err != nil {
 		return false, err
 	}
@@ -416,7 +424,7 @@ func (l *Ledger) demand(where string, args ...any) ([]Demand, error) {
 
 const runnerCols = `name, class, host, state, COALESCE(runner_id,0), created_at, posted_at, listening_at, COALESCE(assigned_job_id,''), COALESCE(job,''), removed_at,
   COALESCE(repo,''), COALESCE(result,''), COALESCE(run_id,0), started_at, COALESCE(oom_kills,0), COALESCE(mem_peak,0),
-  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0), COALESCE(est_blind,0)`
+  COALESCE(workflow,''), COALESCE(mem_work_peak,0), COALESCE(est_cpus,0), COALESCE(est_mem,0), COALESCE(est_runs,0), COALESCE(est_blind,0), COALESCE(event,'')`
 
 func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 	rows, err := l.db.Query(`SELECT `+runnerCols+` FROM runners WHERE `+where+` ORDER BY created_at`, args...)
@@ -430,7 +438,7 @@ func (l *Ledger) queryRunners(where string, args ...any) ([]Runner, error) {
 		var created, posted, listening, removed, started sql.NullString
 		if err := rows.Scan(&r.Name, &r.Class, &r.Host, &r.State, &r.RunnerID, &created, &posted, &listening, &r.JobID, &r.Job, &removed,
 			&r.Repo, &r.Result, &r.RunID, &started, &r.OOMKills, &r.MemPeak,
-			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns, &r.EstBlind); err != nil {
+			&r.Workflow, &r.MemWorkPeak, &r.EstCPUs, &r.EstMem, &r.EstRuns, &r.EstBlind, &r.Event); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.PostedAt, r.ListeningAt, r.RemovedAt = parseTS(created), parseTS(posted), parseTS(listening), parseTS(removed)
@@ -541,6 +549,13 @@ func (l *Ledger) ResolveIncident(key string, at time.Time) (Incident, bool, erro
 }
 
 func (l *Ledger) OpenIncidents() ([]Incident, error) { return l.incidents(`resolved_at IS NULL`) }
+
+// HasIncident says whether an incident with this key was ever recorded.
+func (l *Ledger) HasIncident(key string) (bool, error) {
+	var n int
+	err := l.db.QueryRow(`SELECT COUNT(*) FROM incidents WHERE key=?`, key).Scan(&n)
+	return n > 0, err
+}
 
 // ClosedIncidents are the incidents resolved since a moment, the oldest first.
 func (l *Ledger) ClosedIncidents(since time.Time) ([]Incident, error) {
@@ -694,6 +709,13 @@ type FinishedJob struct {
 	EstMem      int64   `json:"estMem"`
 	ExitCode    *int    `json:"exitCode"`
 	OOMKills    int     `json:"oomKills"`
+	// What the job was a run of (run facts), and whether its host was
+	// saturated by others for much of it (see JobRun.Contended).
+	Event     string `json:"event,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	SHA       string `json:"sha,omitempty"`
+	PR        int    `json:"pr,omitempty"`
+	Contended bool   `json:"contended,omitempty"`
 }
 
 // JobTotal is how many jobs the runners of a class finished with one result
@@ -734,7 +756,8 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 	    COALESCE((julianday(r.started_at)-julianday(d.first_seen))*86400, 0),
 	    COALESCE((julianday(r.finished_at)-julianday(r.started_at))*86400, 0),
 	    COALESCE(r.provision_ms,0), COALESCE(r.cpu_sec,0), COALESCE(r.mem_peak,0), r.exit_code, COALESCE(r.oom_kills,0),
-	    COALESCE(r.mem_work_peak,0), COALESCE(r.est_cpus,0), COALESCE(r.est_mem,0)
+	    COALESCE(r.mem_work_peak,0), COALESCE(r.est_cpus,0), COALESCE(r.est_mem,0),
+	    COALESCE(r.event, d.event, ''), COALESCE(r.head_branch,''), COALESCE(r.head_sha,''), COALESCE(r.pr,0), COALESCE(r.contended_sec,0)
 	  FROM runners r LEFT JOIN demand d ON d.job_id = r.assigned_job_id
 	  WHERE r.removed_at IS NOT NULL OR r.state IN ('failed','lost')
 	  ORDER BY COALESCE(r.finished_at, r.removed_at, r.created_at) DESC LIMIT ?`, limit)
@@ -747,11 +770,13 @@ func (l *Ledger) RecentJobs(limit int) ([]FinishedJob, error) {
 		var j FinishedJob
 		var created, started, finished sql.NullString
 		var exit sql.NullInt64
+		var contended float64
 		if err := rows.Scan(&j.Runner, &j.Class, &j.Host, &j.Job, &j.Repo, &j.RunID, &j.State, &j.Result, &j.Reason,
 			&created, &started, &finished, &j.WaitSec, &j.RunSec, &j.ProvisionMs, &j.CPUSec, &j.MemPeak, &exit, &j.OOMKills,
-			&j.MemWorkPeak, &j.EstCPUs, &j.EstMem); err != nil {
+			&j.MemWorkPeak, &j.EstCPUs, &j.EstMem, &j.Event, &j.Branch, &j.SHA, &j.PR, &contended); err != nil {
 			return nil, err
 		}
+		j.Contended = j.RunSec > 0 && contended >= ContendedShare*j.RunSec
 		j.CreatedAt, j.StartedAt, j.FinishedAt = parseTS(created), parseTS(started), parseTS(finished)
 		if exit.Valid {
 			c := int(exit.Int64)

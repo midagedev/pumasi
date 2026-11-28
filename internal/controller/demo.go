@@ -2,6 +2,8 @@ package controller
 
 import (
 	"cmp"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -17,6 +19,7 @@ import (
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
+	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
 // The demo is a made-up shop of four hosts and eight classes that the real
@@ -47,6 +50,19 @@ type Demo struct {
 	checks []*demoWorld
 	specs  map[int][]demoSpec // arrivals by cycle, made once
 	ops    demoOps            // what people did on the demo's priority controls; not replayed by seed
+	hist   *synth.History     // the weeks before the demo began, for trends (made on first use)
+}
+
+// history is five weeks of a made-up repository's CI up to the day the demo
+// began: what `pumasi trend --demo` shows, served to the dashboard's trend.
+func (d *Demo) history() *synth.History {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.hist == nil {
+		h := synth.Demo(d.started)
+		d.hist = &h
+	}
+	return d.hist
 }
 
 // NewDemo makes a demo whose clock starts at demoStartAt now.
@@ -97,7 +113,16 @@ func (s demoSource) url() string             { return s.d.cfg.URL }
 func (s demoSource) demo() bool              { return true }
 func (s demoSource) apis() []string {
 	// priority covers /api/priority, /api/expedite, /api/mode and /api/priority/rules.
-	return []string{"state", "jobs", "job", "series", "explain", "priority"}
+	return []string{"state", "jobs", "job", "series", "explain", "priority", "trend", "why-slow", "forecast"}
+}
+func (s demoSource) runs(from time.Time) ([]ledger.JobRun, error) {
+	var out []ledger.JobRun
+	for _, r := range s.d.history().Runs {
+		if !r.FinishedAt.Before(from) && !r.FinishedAt.After(s.at) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 func (s demoSource) now() time.Time { return s.at }
 func (s demoSource) priority() *PriorityView {
@@ -207,6 +232,19 @@ var demoKinds = map[string]demoKind{
 }
 
 const demoRepo = "example/app"
+
+// demoRunFacts is what GitHub would say a demo job's run was of: a pull
+// request's head for the pull request checks, main for the rest.
+func demoRunFacts(sp demoSpec) (event, branch, sha string, pr int) {
+	event = sp.k().event
+	sum := sha1.Sum([]byte(strconv.FormatInt(sp.runID, 10)))
+	sha = hex.EncodeToString(sum[:])
+	if event == "pull_request" {
+		pr = 300 + int(sp.runID%47)
+		return event, "feature-" + strconv.Itoa(pr), sha, pr
+	}
+	return event, "main", sha, 0
+}
 
 // demoSpec is one job as it will arrive and run.
 type demoSpec struct {
@@ -351,7 +389,8 @@ type demoRunner struct {
 	est               size.Estimate
 	cpuSec            float64
 	memPeak           int64
-	ended             bool // its job is over while the host was away; it is told when the host is back
+	contSec           float64 // seconds its host was saturated by others (facts.go's rule)
+	ended             bool    // its job is over while the host was away; it is told when the host is back
 }
 
 // busy: GitHub has handed the runner its job. Not started != 0: the demo
@@ -562,6 +601,18 @@ func (d *Demo) limitOf(r demoRunner) int64 {
 }
 
 func (d *Demo) progress(w *demoWorld, t float64) {
+	// What each host's cores do this tick, for whether a job is contended.
+	load, running := map[string]float64{}, map[string]int{}
+	for _, h := range demoHosts {
+		load[h.name] = d.hostNow(w, h, t).otherCPU
+	}
+	for _, r := range w.runners {
+		if r.started > 0 {
+			c, _ := r.job.spec.use(t - r.started)
+			load[r.host] += c
+			running[r.host]++
+		}
+	}
 	var keep []demoRunner
 	for _, r := range w.runners {
 		up := d.up(r.host, t)
@@ -586,6 +637,9 @@ func (d *Demo) progress(w *demoWorld, t float64) {
 		cpu, mem := r.job.spec.use(el)
 		r.cpuSec += cpu * demoTick
 		r.memPeak = max(r.memPeak, mem)
+		if h := d.host(r.host); load[r.host] >= 0.9*h.cpus && (load[r.host]-cpu >= 0.25*h.cpus || running[r.host] >= 2) {
+			r.contSec += demoTick
+		}
 		oom := r.job.spec.grow > 0 && mem >= d.limitOf(r)
 		if (el < r.job.spec.end && !oom) || !up {
 			if oom {
@@ -1233,6 +1287,8 @@ func (v demoView) jobs() []ledger.FinishedJob {
 			State: "done", Result: f.result, Reason: "job completed", CreatedAt: v.ts(r.created), StartedAt: v.ts(r.started), FinishedAt: v.ts(f.finished),
 			WaitSec: r.started - r.job.firstSeen, RunSec: f.finished - r.started, ProvisionMs: int64(r.prov * 1000), CPUSec: math.Round(r.cpuSec*10) / 10,
 			MemWorkPeak: r.memPeak, MemPeak: r.memPeak + r.memPeak/3, EstCPUs: r.est.CPUs, EstMem: r.est.MemBytes}
+		j.Event, j.Branch, j.SHA, j.PR = demoRunFacts(r.job.spec)
+		j.Contended = j.RunSec > 0 && r.contSec >= ledger.ContendedShare*j.RunSec
 		if f.oom {
 			j.OOMKills = 1
 		}

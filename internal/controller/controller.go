@@ -98,6 +98,14 @@ type Controller struct {
 	// expChecked: when GitHub was last asked after an expedited job that no
 	// class holds, by its id (ops.go). Evaluate's goroutine only.
 	expChecked map[int64]time.Time
+	// contendedAt: the last round contention was recorded in; prunedAt: when
+	// old step timings were last deleted (facts.go).
+	contendedAt time.Time
+	prunedAt    time.Time
+	// alarmedAt, announcedAt: when watch limits were last checked and
+	// regressions last looked for (watch.go); the facts loop's goroutine only.
+	alarmedAt   time.Time
+	announcedAt time.Time
 }
 
 // github is what the controller asks of GitHub's scale set service.
@@ -298,6 +306,7 @@ func (c *Controller) Run(ctx context.Context, distDir string) error {
 		c.lastAlive = fi.ModTime()
 	}
 	go c.book.deliver(ctx)
+	go c.factsLoop(ctx)
 	// Quarantine lives in this process; one left open by an earlier controller is over.
 	if open, err := c.ledger.OpenIncidents(); err == nil {
 		for _, in := range open {
@@ -553,6 +562,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 		return
 	}
 	runners := c.syncRunners(ctx, live)
+	c.recordContention(now, live)
 	// An agent that restarted together with the controller (a new build) has not
 	// sampled yet and lists no runners: what was adopted is told once it has.
 	warming := slices.ContainsFunc(c.hosts, func(h *host) bool { return h.quiet && !h.downSince.IsZero() })

@@ -318,6 +318,15 @@ rerun: 1                              # 우리 쪽 잘못으로 실패한 run �
 
 사건은 열릴 때, 30분마다, 해제될 때 한 줄씩 간다. 장애마다의 감지·복구는 [설계](design.md#견고함), 실제로 일으켜 본 결과는 [확인된 것](verified.md).
 
+## CI 지켜보기: 추세, 느려진 커밋, 한도, 용량
+
+pumasi 가 돌린 잡의 측정값(시간·CPU·메모리·커밋·스텝)으로 다음을 한다. 자세한 것과 측정된 정확도는 영어 문서 [watch.md](watch.md) 에 있다.
+
+- `pumasi trend`: 잡별 하루하루의 시간과 느려진(빨라진) 커밋·PR·스텝, 천천히 늘어나는 잡 (`GET /api/trend`)
+- `pumasi why-slow <run URL | PR URL | --pr N | commit>`: 그것이 CI 를 느리게 했는지, 어디서 (`GET /api/why-slow`)
+- `pumasi forecast`: 이 속도면 가장 바쁜 시간이 코어를 다 쓰는 때와 대기가 두 배가 되는 때 (`GET /api/forecast`)
+- 설정의 `watch:` 아래 한도(`maxJobTime`, `maxRunTime`, `maxMemory`, `maxWait`, `finishBy`), `cpuHoursPerDay`, `slope`, `regressions`: 넘으면 사건이 되어 `notify` 로 간다
+
 ## 대시보드
 
 `pumasi up` 이 loopback 에 웹 화면을 같이 띄운다(`pumasi open`). 문제 · 호스트 · 러너 · 대기와 사유 · 최근 잡 50개(대기·실행 시간, cpu 초, 메모리 peak, 로그 끝) · 24시간 추이를 한 화면에 보여 준다.

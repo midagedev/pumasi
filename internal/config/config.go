@@ -63,6 +63,9 @@ type Config struct {
 
 	Notify Notify `yaml:"notify"`
 
+	// Watch: what is kept of finished jobs, and the limits set on them.
+	Watch Watch `yaml:"watch"`
+
 	// Listen: the address every host dials, the hosts of hosts: too. Default
 	// DefaultListen: all of this machine's addresses.
 	Listen string `yaml:"listen"`
@@ -367,6 +370,7 @@ func (c *Config) defaults() {
 		on := true
 		c.Ahead = &on
 	}
+	c.Watch.defaults()
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
 	}
@@ -500,6 +504,9 @@ func (c *Config) validate() error {
 		if err := r.Validate(); err != nil {
 			return fmt.Errorf("priority rule %d: %w", i+1, err)
 		}
+	}
+	if err := c.Watch.validate(); err != nil {
+		return err
 	}
 	hosts := map[string]bool{}
 	for _, h := range c.Hosts {

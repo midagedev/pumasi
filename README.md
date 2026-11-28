@@ -109,6 +109,8 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 **Security in one line.** GitHub credentials stay on the controller. Hosts get one-time registrations. Container jobs see only their container. A native job sees what that host user sees, so use native classes only for repos you trust. The dashboard listens on loopback by default. Its write endpoints (expedite, mode, rules) take JSON only and, unless you set a dashboard token, only from this machine.
 
+**Watching CI.** From the same measurements: `pumasi trend` shows each job's time day by day and the commit, pull request and step where it got slower or faster, and jobs slowly growing; `pumasi why-slow <PR URL>` says whether a pull request made CI slower and where; `pumasi forecast` says when CI's growth fills the hosts. Limits on job time, memory, wait, deadlines and CPU-hours become incidents. All of it is JSON too (`/api/trend`, `/api/why-slow`, `/api/forecast`) for agents, with measured accuracy in [docs/watch.md](docs/watch.md).
+
 <p>
 <img src="docs/img/dashboard-light.webp" width="66%" alt="The dashboard in the light theme">
 <img src="docs/img/dashboard-phone.webp" width="22%" alt="The dashboard on a phone">
@@ -130,7 +132,7 @@ What pumasi can't do, because GitHub or the platform gives it no handle:
 
 Early, pre-1.0. It has run real GitHub jobs on a Linux server (Docker), a WSL2 desktop, an Apple silicon Mac and a Windows 11 desktop. [docs/verified.md](docs/verified.md) lists every behavior of the design and how far each was checked: on real hosts, by unit tests only, or not yet run. Not yet run, among others: Windows size measurement, real host reboots, and a GitHub App end to end (the App path is unit-tested).
 
-The detailed docs are in Korean for now: [guide](docs/guide.md) (every config key and command), [design](docs/design.md), [verified](docs/verified.md), [research](docs/research/). The CLI, the dashboard and their output are in English.
+The detailed docs are in Korean for now: [guide](docs/guide.md) (every config key and command), [design](docs/design.md), [verified](docs/verified.md), [research](docs/research/). Watching CI is in English: [watch](docs/watch.md). The CLI, the dashboard and their output are in English.
 
 ## License
 

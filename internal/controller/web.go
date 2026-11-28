@@ -34,6 +34,8 @@ type dashSource interface {
 	// apis: the /api routes this server answers beyond /api/live, so the page
 	// asks only for what is there.
 	apis() []string
+	// runs: the jobs that finished since a moment, with their run facts.
+	runs(from time.Time) ([]ledger.JobRun, error)
 }
 
 // webMux serves the dashboard and its read-only JSON.
@@ -64,6 +66,7 @@ func webMux(src func(*http.Request) dashSource) *http.ServeMux {
 		s, err := src(r).series()
 		reply(w, s, err)
 	})
+	watchRoutes(mux, src)
 	// What the dashboard shows, as a report a person or an agent reads without
 	// the picture: the problems, the line and why, and what to type next.
 	mux.HandleFunc("GET /api/explain", func(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +120,10 @@ func (s ctlSource) priority() *PriorityView {
 	return &v
 }
 func (s ctlSource) apis() []string {
-	return []string{"state", "jobs", "job", "series", "explain", "metrics", "priority"}
+	return []string{"state", "jobs", "job", "series", "explain", "metrics", "priority", "trend", "why-slow", "forecast"}
+}
+func (s ctlSource) runs(from time.Time) ([]ledger.JobRun, error) {
+	return s.c.ledger.FinishedRuns(from, time.Time{})
 }
 
 // webHandler serves the dashboard, its JSON and /metrics on the status listener.
