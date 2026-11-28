@@ -465,7 +465,9 @@ export class Scene {
     ctx.textBaseline = "middle";
     ctx.fillStyle = lit ? th.text : rgb(th.off);
     const os = h.os ? osBadge(h.os) : "?";
-    ctx.fillText(`${os} · ${h.kind || ""} · ${h.memBytes ? gib(h.memBytes) + " RAM" : "no data"}`, 0, 0);
+    // the machine's memory, and what of it runners get when a budget says less
+    const lent = h.budgetMem && h.budgetMem < h.memBytes ? `, lends ${gib(h.budgetMem)}` : "";
+    ctx.fillText(`${os} · ${h.kind || ""} · ${h.memBytes ? gib(h.memBytes) + " RAM" + lent : "no data"}`, 0, 0);
     ctx.restore();
     v.base();
   }
