@@ -36,9 +36,9 @@ func Run(sc Scenario) Report {
 	for _, f := range r.Fixed {
 		r.Runs = append(r.Runs, RunFixed(f, jobs))
 	}
-	cold := sc
-	cold.Cold = true
-	r.Runs = append(r.Runs, RunPumasi(sc, jobs), RunPumasi(cold, jobs))
+	strict, cold := sc, sc
+	strict.CPUOvercommit, cold.Cold = 1, true
+	r.Runs = append(r.Runs, RunPumasi(strict, jobs), RunPumasi(sc, jobs), RunPumasi(cold, jobs))
 	return r
 }
 
@@ -109,7 +109,7 @@ func count(xs []string) string {
 func Sweep() string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', tabwriter.AlignRight)
-	names := []string{"fixed", "fixed-per-class", "fixed-split", "pumasi", "pumasi-cold"}
+	names := []string{"fixed", "fixed-per-class", "fixed-split", "pumasi-strict", "pumasi", "pumasi-cold"}
 	fmt.Fprintf(w, "pushes every\tseeds\tjobs\t%s\t%s\t\n", strings.Join(names, "\t"), strings.Join(names, "\t"))
 	for _, every := range [][2]float64{{25, 40}, {35, 55}, {50, 70}} {
 		var n, jobs int

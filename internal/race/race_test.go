@@ -17,8 +17,8 @@ func TestRunIsDeterministic(t *testing.T) {
 // Each setup runs every job once, never before it arrived, and ends with none waiting.
 func TestEverySetupRunsEveryJob(t *testing.T) {
 	r := Run(Film)
-	if len(r.Runs) != 5 {
-		t.Fatalf("%d runs, want 5", len(r.Runs))
+	if len(r.Runs) != 6 {
+		t.Fatalf("%d runs, want 6", len(r.Runs))
 	}
 	for _, x := range r.Runs {
 		last := x.Frames[len(x.Frames)-1]

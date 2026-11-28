@@ -21,6 +21,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/size"
 )
@@ -126,12 +127,18 @@ type Job struct {
 	Dur  float64 `json:"dur"`
 	CPU  float64 `json:"cpu"`
 	Mem  float64 `json:"mem"`
+	// Busy: it uses its cpu from the first second to the last (a compile, a
+	// test suite that saturates its cores) instead of coming up to it.
+	Busy bool `json:"busy,omitempty"`
 }
 
 // use is what the job uses el seconds after it started: it comes up to its
 // pace over the first fifth of its run.
 func (j Job) use(el float64) (cpu, mem float64) {
 	r := math.Min(1, el/math.Max(10, 0.2*j.Dur))
+	if j.Busy {
+		return j.CPU, j.Mem * (0.3 + 0.7*r)
+	}
 	return j.CPU * (0.4 + 0.6*r), j.Mem * (0.3 + 0.7*r)
 }
 
@@ -157,15 +164,20 @@ type Scenario struct {
 	// Cold: pumasi has measured nothing before the stream; otherwise it has
 	// seen each job's last runs (another day like this one).
 	Cold bool `json:"cold"`
+	// Busy: every job uses its cpu from start to end, the worst case for
+	// sharing cores.
+	Busy bool `json:"busy,omitempty"`
+	// CPUOvercommit is pumasi's cpuOvercommit (1 = none).
+	CPUOvercommit float64 `json:"cpuOvercommit"`
 }
 
 // Film is the scenario the film shows: a busy quarter hour.
-var Film = Scenario{Seed: 7, Pushes: 18, Every: [2]float64{35, 55}, Provision: 8}
+var Film = Scenario{Seed: 7, Pushes: 18, Every: [2]float64{35, 55}, Provision: 8, CPUOvercommit: config.DefaultCPUOvercommit}
 
 func (sc Scenario) draw(r *rand.Rand, at float64, kind string) Job {
 	k := kindOf(kind)
 	u := func(v [2]float64) float64 { return v[0] + r.Float64()*(v[1]-v[0]) }
-	return Job{Kind: kind, At: at, Dur: math.Round(u(k.Dur)), CPU: round2(u(k.CPU)), Mem: round2(u(k.Mem))}
+	return Job{Kind: kind, At: at, Dur: math.Round(u(k.Dur)), CPU: round2(u(k.CPU)), Mem: round2(u(k.Mem)), Busy: sc.Busy}
 }
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
@@ -780,9 +792,12 @@ func estimate(measured map[string][]size.Sample, kind string) size.Estimate {
 // up in sc.Provision seconds and GitHub hands it its class's oldest job.
 // A finished job's run is measured for the next.
 func RunPumasi(sc Scenario, jobs []Job) Result {
-	res := Result{Name: "pumasi", Setup: fmt.Sprintf("decide.Decide each %gs with sizes from size.Learn; a runner takes %gs to come up", Tick, sc.Provision), Waits: make([]float64, len(jobs))}
-	if sc.Cold {
+	res := Result{Name: "pumasi", Setup: fmt.Sprintf("decide.Decide each %gs with sizes from size.Learn, cpuOvercommit %g; a runner takes %gs to come up", Tick, max(1, sc.CPUOvercommit), sc.Provision), Waits: make([]float64, len(jobs))}
+	switch {
+	case sc.Cold:
 		res.Name, res.Setup = "pumasi-cold", res.Setup+"; nothing measured before"
+	case sc.CPUOvercommit <= 1:
+		res.Name = "pumasi-strict"
 	}
 	measured := history(sc)
 	m := newMachines()
@@ -850,12 +865,12 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		}
 		runners = keep
 
-		s := decide.Snapshot{Now: at(t), Classes: classes, MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold,
+		s := decide.Snapshot{Now: at(t), Classes: classes, MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, CPUOvercommit: sc.CPUOvercommit,
 			ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
 		for _, h := range Hosts {
 			dh := h.decide()
 			if h.OS == "linux" {
-				dh.PSICPU = math.Round(m.psi[h.Name]*100) / 100
+				dh.PSICPU, dh.CPUPressureKnown = math.Round(m.psi[h.Name]*100)/100, true
 				pressed[h.Name] = decide.Over(dh.PSICPU, PSICPUThreshold, pressed[h.Name])
 				if pressed[h.Name] {
 					dh.Pressed = []string{"cpu"}
