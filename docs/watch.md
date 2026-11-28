@@ -1,6 +1,6 @@
-# Watching CI: trends, regressions, limits
+# Watching CI: trends, regressions, limits, capacity
 
-pumasi already measures every job it runs: its time, CPU and memory, on which host, next to what else. This page covers what it does with those measurements: how long each job takes day by day, the commit where a job got slower, limits and budgets that open an incident when crossed, and answers to "did this pull request make CI slower, and where?" for a person or a coding agent.
+pumasi already measures every job it runs: its time, CPU and memory, on which host, next to what else. This page covers what it does with those measurements: how long each job takes day by day, the commit where a job got slower (or faster), jobs slowly growing, limits and budgets that open an incident when crossed, answers to "did this pull request make CI slower, and where?" for a person or a coding agent, and when CI's growth will fill the hosts.
 
 Everything here is computed from the ledger on the controller (`pumasi.db`). Nothing is sent anywhere, and nothing is estimated that was not measured.
 
@@ -27,15 +27,24 @@ pumasi trend --demo                # a made-up repository, no controller needed
 
 ```
 CHANGED (newest first)
-  ci.yml / integration: time +34% (8m01s -> 10m45s), cpu +36% (18m29s -> 25m11s), since commit b94ae72 on main, Thu Nov 12 18:33 (pull request #1109 ran at the new level before it); still so
-      step "Run integration" 5m30s -> 7m58s; https://github.com/OWNER/REPO/commit/b94ae72…
+  ci.yml / build: memory +35% (11.1G -> 15.0G), since commit 2ed2250 on main, Thu Nov 19 19:27; still so
+      or 85f834f just before it (not counted: busy host or failed); https://github.com/OWNER/REPO/commit/2ed2250…
+  ci.yml / typecheck: time -24% (1m33s -> 1m11s), cpu -25% (1m29s -> 1m07s), since commit 564563e on main, Tue Nov 17 19:33 (pull request #1162 ran at the new level before it); still so
+      step "Install" 28s -> 21s, step "Typecheck" 52s -> 40s; https://github.com/OWNER/REPO/commit/564563e…
+  ci.yml / unit-tests: time +39% (4m29s -> 6m14s), cpu +37% (8m25s -> 11m33s), since commit 9f3001a on main, Mon Nov 16 19:02 (pull request #1148 ran at the new level before it); still so
+      step "Run tests" 2m28s -> 4m01s; https://github.com/OWNER/REPO/commit/9f3001a…
+  ci.yml / e2e (chromium): slowly growing, time +28% over 28d along its trend (11m38s -> 14m55s, at least +21%), no single commit
 
 JOB                     RUNS  TIME p50  p90     CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
-ci.yml (workflow)       434   12m54s    17m29s  -0%     11.3G    2h04m    30s       ▄█▅▅▆▅▆█▅▅▅▅▆▄█▅▆▆▇█▆▃▃▁
-  integration           434   8m51s     12m44s  +35%    6.3G     19m42s   27s       ▂▃▁▁▁▁▂▁▁▂▁▂▆▆▅▅▆▅▆▇▇█▅▅
+ci.yml (workflow)       358   14m53s    20m29s  +10%    15.4G    2h15m    30s       ▇▅▂▁▃▄▆▂▂▃█▅▇▆▅
+  build                 358   5m42s     7m34s   -1%     15.4G    27m10s   28s       █▂▃▂▇▂▁▃▅▃▂▅▂▂▅
+  e2e (chromium)        358   14m18s    19m52s  +28%*   9.8G     43m38s   28s       ▅▃▁▁▃▅▇▃▃▄█▆▆▄▄
+  typecheck             358   1m22s     1m48s   -24%*   2.3G     1m18s    28s       ▇█▇▆▂▂▁▂▂▁▄▁▅▂▆
+  unit-tests            358   5m52s     8m09s   +39%*   3.4G     10m43s   28s       ▂▁▃▆▅▅█▆▄▅▅▅▅▅▆
+  …
 ```
 
-Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end.
+(`pumasi trend --demo`.) Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end. CHANGE is what the list above says of the job (its time steps and creep together, marked `*`); for a job with nothing listed, the median of the span's last third of days against its first.
 
 **How a change is found.** For each job and each of time, memory and CPU, on runs that succeeded and were not contended:
 
@@ -43,7 +52,9 @@ Numbers are of runs that succeeded. A workflow's time is a run's, from its first
 2. The series is split where its median level moves (binary segmentation on L1 cost), and each split is kept only when the two sides differ by 10% or more and a rank test (Mann–Whitney) gives z ≥ 3.5, with at least 8 runs on each side. A move that goes back within three days is dropped as transient.
 3. The commit: the best split among the main branch's own runs near it. Main's runs that were not counted there (contended or failed) are named as possible too ("or 85f834f just before it").
 4. The pull request: one whose runs before the change were all at the new level, at least two of them, the last within two days before it. When more than one fits, none is named.
-5. A job that crept up over many merges, rather than at one commit, is shown as crept ("no single commit"), not pinned on whichever commit happened to cross the line.
+5. A step that turns out to be part of a slow climb (the drift around it is half the step or more) is shown as crept ("no single commit"), not pinned on whichever commit happened to cross the line.
+
+**Slowly growing.** A job with no step in its time over the last 28 days (or the span, when longer) whose daily median time grew 12% or more along a Theil–Sen trend, with the trend's 95% interval above zero, is listed as slowly growing. 28 days because less cannot tell a creep from noise. Measured on made-up histories of six weeks (7 merges a weekday): a +25% creep over 150 merges was listed in 39 of 40; with nothing injected, 5 of 700 job-windows (100 histories) were listed falsely, at 12–13%. In a quiet repository (2 merges a weekday) 1 of 100 histories had a false one, and the same creep, spread over 75 days, was caught in 15 of 100.
 
 ## `pumasi why-slow`
 
@@ -62,7 +73,7 @@ JOB             RUNS  TIME    USUAL   p10-p90        CHANGE  VERDICT  MEM  CPU
 integration     4     11m12s  8m05s   7m10s-8m50s    +38%    slower   +2%  +41% more
 e2e (chromium)  4     12m12s  11m36s  10m13s-13m40s  +5%     usual    -1%  +2%
 …
-integration is slower: "Run integration" 5m23s -> 9m14s (+3m50s)
+integration is slower: "Run integration" 5m49s -> 8m59s (+3m09s)
 
 main changed right after #1109 was merged, and its runs were already at the new level:
   ci.yml / integration: time +34% (8m01s -> 10m45s), cpu +36% (18m29s -> 25m11s), since commit b94ae72 on main, …
@@ -102,6 +113,41 @@ In a quieter repository (2 merges a weekday instead of 8) main has fewer runs to
 Read it this way: `slower` is rarely wrong but needs a large change or several runs; a pull request with one or two runs gets `maybe` at best, and the line under it ("main changed right after #N was merged") is what settles it once main has run a few times since.
 
 "Answered" means the affected job got `slower` or `maybe slower`, or main's change was shown as the pull request's own. "Neighbours" are the other pull requests whose last run came in the two days before the change, asked the same: how often why-slow wrongly showed main's change as theirs.
+
+## `pumasi forecast`
+
+```sh
+pumasi forecast                 # the running up's hosts (each its budget, else its cores) and the ledger
+pumasi forecast --cores 48      # the ledger, against 48 cores
+pumasi forecast --weeks 12      # read 12 weeks (default 8)
+pumasi forecast --json          # also GET /api/forecast (weeks=, cores=)
+pumasi forecast --demo
+```
+
+```
+CI used 437 cpu-hours in the last 7 days (389 the week before); over the last 6 weeks it grew +12% a week (+10% to +21%, 80% interval). At the busiest hours it keeps 7 of the 24 cores busy (30%); at this rate they need every core in ~13 weeks (8 to 16 weeks), and the wait for room doubles in ~2 weeks (1 to 2 weeks); one job in ten waits a minute or more for room in ~4 weeks (now 3%, 5s on average).
+```
+
+- **Growth** is the Theil–Sen slope of the weekly cpu-hours (on logs), with its 80% interval. A week the ledger does not reach the start of is shown but not fitted; a ledger whose last job is more than two days old ends the weeks there.
+- **The busiest hours** are the 95th percentile of the hours' cores in use (each job's cpu-seconds spread over its time).
+- **The waits** come from replaying the last week's jobs on the cores, first come first served, each taking the cores it used: a run brings all its jobs at once, which is most of why CI waits. CI growing is the same week with more runs, each a copy of a run of that week at the time another run came (give or take an hour). "Need every core" is when the replay's busiest hours want all the cores; it comes later than the cpu-hours alone say, since more runs fill the quiet hours too.
+- Every date is "at this rate": the growth, carried forward. The ranges are the same dates at the ends of the growth's interval.
+
+What the replay leaves out, so real waits come **sooner** than it says: hosts are not one pool (a job needs room on one host), memory is not counted, and pumasi reserves a job's largest recent size plus 20%, more than the cores it used on average.
+
+### How well it forecasts (measured)
+
+`go run ./internal/watch/cmd/watcheval -forecast 0.08 -n 100`: a team whose merges grow 8% a week, 16 weeks; the cores set so the first week's busiest hours are at 35%. The jobs wait in a queue simulation (first come first served on one pool of cores). The forecast reads weeks 1–8; what came is read from weeks 9–16, each week smoothed with its neighbours.
+
+| | Growth 8%, 8 merges a weekday | Growth 5% (first week at 45%) | Growth 8%, 2 merges a weekday |
+|---|---|---|---|
+| Growth read from 8 weeks (p10 – p90) | +5.4% – +11.8% | +1.8% – +8.7% | +1.9% – +12.7% |
+| Share of jobs waiting a minute or more: the replay against the queue | 21% / 26% | 38% / 46% | 67% / 73% |
+| Busiest hours need every core: off by (median) | 1.9 weeks (35% of the time to it), 23 of 100 came within the history | 1.9 weeks (48%), 15 came | 2.9 weeks (39%), 5 came |
+| The mean wait for room doubles: off by (median) | 1.9 weeks (42%), 95 came | 2.3 weeks (52%), 63 came | 2.7 weeks (38%), 29 came |
+| Actual date inside the 80% range | 57% (full), 50% (double) | 66%, 54% | 60%, 63% |
+
+The replay gets today's waits about right (5 to 8 points under the queue). The dates are off by about two weeks, and most of that is the growth: eight weeks of a team whose merges come at random tell the growth only to within a few percent a week, and a date three or four weeks out moves by weeks with it. The 80% ranges hold the actual date only 50–66% of the time, because the actual weeks have their own luck as well. Read a forecast as "a month or two", not as a date. A first try with Erlang C (jobs coming one at a time at random) said 11% of the busiest hours' jobs waited where the queue had 53%.
 
 ## Limits, budgets and alarms (`watch:`)
 
