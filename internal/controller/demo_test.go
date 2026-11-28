@@ -341,7 +341,7 @@ func TestDemoStartsRunnersAhead(t *testing.T) {
 func TestDemoWatchAlarm(t *testing.T) {
 	s := NewDemo(1).view(300, time.Now()).state()
 	for _, in := range s.Incidents {
-		if in.Kind == "ci-too-slow" && strings.Contains(in.Detail, "unit-tests") && strings.Contains(in.Detail, "over its 5m00s limit") {
+		if in.Kind == "ci-too-slow" && strings.Contains(in.Detail, "unit-tests") && strings.Contains(in.Detail, "over its 1m45s limit") {
 			return
 		}
 	}

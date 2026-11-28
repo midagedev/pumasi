@@ -219,7 +219,7 @@ func demoConfig() *config.Config {
 	c.Priority = []config.PriorityRule{high, low}
 	// A limit someone set when unit-tests took four and a half minutes: the
 	// history's slower test step has taken it past.
-	c.Watch.Limits = []config.Limit{{Match: config.RuleMatch{Job: "unit-tests"}, MaxJobTime: config.Span(5 * time.Minute)}}
+	c.Watch.Limits = []config.Limit{{Match: config.RuleMatch{Job: "unit-tests"}, MaxJobTime: config.Span(105 * time.Second)}}
 	return c
 }
 
