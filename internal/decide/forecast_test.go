@@ -28,10 +28,11 @@ func TestForecastWaitsForTheEndThatMakesRoom(t *testing.T) {
 	busy := map[string]Busy{"r1": {Ends: s.Now.Add(2 * time.Minute), Job: "e2e"}}
 	runs := map[string]time.Duration{"a": 5 * time.Minute, "b": time.Minute}
 	got := Forecast(s, busy, runs, prov)
-	if a := got["a"]; a.In != 2*time.Minute+prov || a.Host != "box" || a.After != "e2e" {
+	if a := got["a"]; a.In != 2*time.Minute+prov || a.Host != "box" || a.After != "e2e" || a.AfterRunner != "r1" {
 		t.Fatalf("a: %+v", a)
 	}
-	if b := got["b"]; b.In != 2*time.Minute+prov+5*time.Minute+prov || b.After != "a" {
+	// a is waiting now: its end is a forecast, and no runner runs it yet
+	if b := got["b"]; b.In != 2*time.Minute+prov+5*time.Minute+prov || b.After != "a" || b.AfterRunner != "" {
 		t.Fatalf("b: %+v", b)
 	}
 }

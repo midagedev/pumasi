@@ -277,14 +277,30 @@ func TestExpectText(t *testing.T) {
 		e    JobExpect
 		self string
 		want string
+		wait string // the name of a job that waits too
 	}{
-		{JobExpect{InSeconds: 40, Host: "h1"}, "lint", "starts in under a minute on h1"},
-		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e"}, "lint", "starts in ~3m on h1, when e2e ends"},
-		{JobExpect{InSeconds: 6000, Host: "h2", After: "build"}, "lint", "starts in ~1h40m on h2, when build ends"},
+		{JobExpect{InSeconds: 40, Host: "h1"}, "lint", "starts in under a minute on h1", ""},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e", AfterRunner: "r1"}, "lint", "starts in ~3m on h1, when e2e ends", ""},
+		{JobExpect{InSeconds: 6000, Host: "h2", After: "build", AfterRunner: "r3"}, "lint", "starts in ~1h40m on h2, when build on h1 ends", ""},
 		// a job of the same name (another run, a matrix) is not the waiting job itself
-		{JobExpect{InSeconds: 30, Host: "h1", After: "build"}, "build", "starts in under a minute on h1, when another build ends"},
+		{JobExpect{InSeconds: 30, Host: "h1", After: "pack", AfterRunner: "r4"}, "pack", "starts in under a minute on h1, when another pack ends", ""},
+		// a job it waits for that waits too does not end before it has run
+		{JobExpect{InSeconds: 150, Host: "h1", After: "lint"}, "test", "starts in ~3m on h1, after the lint waiting ahead of it", ""},
+		// a name more than one job has: the one running there, by how long it has run
+		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r1"}, "lint", "starts in under a minute on h1, when the e2e running there for 3m ends", "e2e"},
+		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r2"}, "lint", "starts in under a minute on h1, when the e2e running there for 1m ends", "e2e"},
+		{JobExpect{InSeconds: 30, Host: "h2", After: "build", AfterRunner: "r3"}, "lint", "starts in under a minute on h2, when the build running on h1 ends", "build"},
 	} {
-		if got := c.e.Text(c.self); got != c.want {
+		runners := []RunnerState{{Name: "r1", Host: "h1", Job: "e2e", AgeSeconds: 200}, {Name: "r2", Host: "h1", Job: "e2e", AgeSeconds: 70},
+			{Name: "r3", Host: "h1", Job: "build"}, {Name: "r4", Host: "h1", Job: "pack"}}
+		var waiting []JobWait
+		if c.wait != "" {
+			waiting = []JobWait{{Job: c.wait}}
+		}
+		if c.want == "starts in ~3m on h1, when e2e ends" {
+			runners = runners[:1]
+		}
+		if got := c.e.Text(c.self, runners, waiting); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.e, got, c.want)
 		}
 	}

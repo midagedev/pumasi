@@ -24,6 +24,10 @@ type Expect struct {
 	// After: the job whose end makes the room ("" = the room is there, or a
 	// runner of its class is coming up for it).
 	After string
+	// AfterRunner: the runner of After when that job is running now ("" =
+	// After is a job still waiting, whose end is forecast too). Several jobs
+	// can share a name; this says which one.
+	AfterRunner string
 }
 
 // Horizon: a forecast looks no further ahead. A job not placed by then is
@@ -121,7 +125,7 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 		}
 	}
 
-	after := ""
+	after, afterRunner := "", ""
 	for step := 0; step < 1000 && len(cur.Demand) > 0; step++ {
 		p := Decide(cur)
 		for _, st := range p.Stop {
@@ -130,7 +134,7 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 		for _, st := range p.Start {
 			name := "forecast/" + st.Job
 			up := cur.Now.Add(provision)
-			out[st.Job] = Expect{In: up.Sub(s.Now), Host: st.Host, After: after}
+			out[st.Job] = Expect{In: up.Sub(s.Now), Host: st.Host, After: after, AfterRunner: afterRunner}
 			take(st.Job, name, up)
 			cur.Runners = append(cur.Runners, Runner{Name: name, Class: st.Class, Host: st.Host, CPUs: st.CPUs, MemBytes: st.MemBytes,
 				State: "busy", JobKnown: true, Working: true, Container: "running", CreatedAt: cur.Now, ListeningAt: up, JobStartedAt: up})
@@ -146,7 +150,7 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 			break
 		}
 		next = maxTime(next, cur.Now)
-		after = ""
+		after, afterRunner = "", ""
 		eased := map[string]bool{}
 		cur.Runners = slices.DeleteFunc(cur.Runners, func(r Runner) bool {
 			e := ends[r.Name]
@@ -155,6 +159,9 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 			}
 			if after == "" {
 				after = e.Job
+				if _, now := busy[r.Name]; now {
+					afterRunner = r.Name
+				}
 			}
 			eased[r.Host] = true
 			return true

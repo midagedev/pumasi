@@ -49,6 +49,9 @@ type JobExpect struct {
 	InSeconds int64  `json:"inSeconds"`
 	Host      string `json:"host"`
 	After     string `json:"after,omitempty"`
+	// AfterRunner: After's runner when that job runs now; "" when After is a
+	// job still waiting. Jobs can share a name: this says which one.
+	AfterRunner string `json:"afterRunner,omitempty"`
 }
 
 // ClassState is a class as the config gives it, defaults filled in.
@@ -414,7 +417,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			}
 		}
 		if e, ok := live.Expect[d.JobID]; ok {
-			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After}
+			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After, AfterRunner: e.AfterRunner}
 		}
 		j.OverLimit = live.Over[d.JobID]
 		out.WaitingJobs = append(out.WaitingJobs, j)

@@ -1065,7 +1065,7 @@ func (c *Controller) forecast(snap decide.Snapshot, live []ledger.Runner) map[st
 	c.mu.Unlock()
 	out := map[string]Expect{}
 	for id, e := range decide.Forecast(snap, busy, runs, c.provisionTime()) {
-		out[id] = Expect{StartsAt: snap.Now.Add(e.In), Host: e.Host, After: e.After}
+		out[id] = Expect{StartsAt: snap.Now.Add(e.In), Host: e.Host, After: e.After, AfterRunner: e.AfterRunner}
 	}
 	return out
 }

@@ -156,7 +156,7 @@ export function renderChrome(onSelect) {
       el("span", { class: "jn" }, lw ? el("span", { class: "lvl " + (/expedited/.test(lw) ? "expedite" : lw), text: lw }) : null, " ", j.job || "(name not known yet)"),
       el("span", { class: "age", text: ago(j.waitedSeconds) }),
       el("span", { class: "why", text: whyText(j) }),
-      j.expect ? el("span", { class: "eta", text: expectText(j.expect, store.state.runners, j.job) }) : null),
+      j.expect ? el("span", { class: "eta", text: expectText(j.expect, store.state.runners, j.job, store.state.waitingJobs || []) }) : null),
       // the first in line gets room first already: nothing to put it before
       j.expedited || i === 0 ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
@@ -354,7 +354,7 @@ function build(sel, actions) {
         el("div", { class: "kind", text: "waiting job · a crate on the map" }), el("h3", { text: j.job || "(name not known yet)" }),
         el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? (j.expedited ? "expedited" : "with expedited") : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
         el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + (row && /^behind /.test(whyText(row)) ? whyText(row) : plainReason((line && line.waitingFor) || j.reason)) }),
-        j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners, j.job) }) : null,
+        j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners, j.job, store.state.waitingJobs || []) }) : null,
         row && row._go ? null : section("Run it sooner", expediteBox(j, actions)),
         facts([["class", j.class], ["repo", j.repo], ["workflow", j.workflow], ["run", run ? el("a", { href: run, target: "_blank", rel: "noopener", text: String(j.runId) }) : String(j.runId || "-")],
           ["its place", j.ranked || (line && line.why) || "by its age"], ...(row && row._go ? [] : [["placement says", (line && line.waitingFor) || j.reason || "-"]])]),
@@ -578,7 +578,7 @@ export function renderList(actions) {
   const jobs = waitRows(s);
   fill("l-jobs", jobs.map((j) => el("tr", { "data-job-id": j.githubJobId || null, "data-run-id": j.runId, "data-class": j.class },
     td(j.position || "-", "num"), td(j.job), td(j.class), el("td", {}, j.expedited || (j.level && j.level !== "normal") ? el("span", { class: "lvl " + (j.expedited ? "expedite" : j.level), text: j.expedited ? "expedited" : j.level === "expedite" ? "with expedited" : j.level }) : null),
-    td(ago(j.waitedSeconds), "num"), el("td", { class: "wrap" }, whyText(j), j.expect && !j._go ? el("div", { class: "eta", text: expectText(j.expect, store.state.runners, j.job) }) : null), td(j.workflow, "opt muted"))), "l-jobs-empty");
+    td(ago(j.waitedSeconds), "num"), el("td", { class: "wrap" }, whyText(j), j.expect && !j._go ? el("div", { class: "eta", text: expectText(j.expect, store.state.runners, j.job, store.state.waitingJobs || []) }) : null), td(j.workflow, "opt muted"))), "l-jobs-empty");
   const mbar = (parts) => el("span", { class: "mbar" }, parts.map(([v, c, tot]) => el("i", { style: `width:${tot ? (100 * v) / tot : 0}%;background:${c}` })));
   fill("l-hosts", s.hosts.map((h) => {
     const L = hostLoad(h, s.runners), M = L.mem, C = L.cpu;

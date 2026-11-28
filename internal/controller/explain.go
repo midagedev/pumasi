@@ -512,7 +512,12 @@ func countList(by map[string]int) string {
 
 // Text says the forecast in a few words: "starts in ~3m on h1, when e2e ends".
 // self is the waiting job's name: one of its name it waits for is "another".
-func (e JobExpect) Text(self string) string {
+// A job it waits for that is still waiting itself is said to be: "after the
+// e2e waiting ahead of it". With the runners and the waiting jobs, a running
+// job whose name more than one job has in sight says which one: where it
+// runs, and how long it has, when its host runs more than one. The
+// dashboard says the same (web/js/util.js expectText).
+func (e JobExpect) Text(self string, runners []RunnerState, waiting []JobWait) string {
 	var in string
 	switch s := e.InSeconds; {
 	case s < 60:
@@ -523,14 +528,59 @@ func (e JobExpect) Text(self string) string {
 		in = fmt.Sprintf("~%dh%02dm", s/3600, s%3600/60)
 	}
 	t := "starts in " + in + " on " + e.Host
-	if e.After != "" {
+	if e.After == "" {
+		return t
+	}
+	if e.AfterRunner == "" {
+		return t + ", after the " + e.After + " waiting ahead of it"
+	}
+	var at *RunnerState
+	same := 0
+	for i, r := range runners {
+		if r.Name == e.AfterRunner {
+			at = &runners[i]
+		}
+		if r.Job == e.After {
+			same++
+		}
+	}
+	for _, j := range waiting {
+		if j.Job == e.After {
+			same++
+		}
+	}
+	where := ""
+	if at != nil && at.Host != e.Host {
+		where = " on " + at.Host
+	}
+	if at == nil || same < 2 {
 		after := e.After
 		if after == self {
 			after = "another " + after
 		}
-		t += ", when " + after + " ends"
+		return t + ", when " + after + where + " ends"
 	}
-	return t
+	on := cmp.Or(where, " there")
+	mins := func(r RunnerState) int64 { return r.AgeSeconds / 60 }
+	var twins, sameMin int
+	for _, r := range runners {
+		if r.Job == e.After && r.Host == at.Host {
+			twins++
+			if mins(r) == mins(*at) {
+				sameMin++
+			}
+		}
+	}
+	switch {
+	case twins < 2:
+		return t + ", when the " + e.After + " running" + on + " ends"
+	case sameMin > 1:
+		return t + fmt.Sprintf(", when one of the %d %s running%s ends", twins, e.After, on)
+	case mins(*at) < 1:
+		return t + ", when the " + e.After + " running" + on + " for under a minute ends"
+	default:
+		return t + fmt.Sprintf(", when the %s running%s for %dm ends", e.After, on, mins(*at))
+	}
 }
 
 func dur(sec int64) string {
@@ -656,7 +706,7 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 				n = fmt.Sprintf("#%d %s", j.Position, n)
 			}
 			if j.Expect != nil {
-				n += " (" + j.Expect.Text(j.Job) + ")"
+				n += " (" + j.Expect.Text(j.Job, s.Runners, s.WaitingJobs) + ")"
 			}
 			names = append(names, n)
 		}

@@ -1445,7 +1445,7 @@ func (v demoView) state() State {
 		jw.Level, jw.Ranked, jw.Position = cond(lj.level() == "normal", "", lj.level()), lj.Ranked, lj.place
 		jw.Expedited = v.ops.expeditedAt(j.id(), t)
 		if e, ok := v.expect[j.id()]; ok {
-			jw.Expect = &JobExpect{InSeconds: int64(e.In.Seconds()), Host: e.Host, After: e.After}
+			jw.Expect = &JobExpect{InSeconds: int64(e.In.Seconds()), Host: e.Host, After: e.After, AfterRunner: e.AfterRunner}
 		}
 		jw.OverLimit = d.estimate(w, j.spec.kind, j.class).Over
 		out.WaitingJobs = append(out.WaitingJobs, jw)
