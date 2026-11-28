@@ -100,7 +100,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 <table>
 <tr>
 <td width="50%"><img src="docs/img/dashboard-priority.webp" alt="The priority view: the line of waiting jobs with each one's level and reason"></td>
-<td width="50%"><img src="docs/img/dashboard-expedite.webp" alt="An expedited job: Run next puts it first in line, and its crate turns pink"></td>
+<td width="50%"><img src="docs/img/dashboard-expedite.webp" alt="An expedited job: Run next puts it first in line, a runner starts for it, and its crate turns pink"></td>
 </tr>
 <tr>
 <td><b>Priorities.</b> When room is short, jobs wait in one line. Rules in the config, by workflow, job, class or event, make a job <code>high</code> (counts as having come 30 minutes earlier) or <code>low</code>. A job that has waited 30 minutes passes them, so nothing starves. <code>pumasi priority</code> shows the line and why each job stands where it does.</td>
