@@ -98,13 +98,13 @@ func BuildTrend(runs []ledger.JobRun, q TrendQuery, o Options) TrendReport {
 		ratio, listed := 1.0, false
 		for _, c := range rep.Changes {
 			if c.Metric == "time" && c.Repo == s.Repo && c.Workflow == s.Workflow && c.Job == s.Job && s.Job != "" && c.Holds {
-				ratio *= 1 + c.Ratio
+				ratio *= 1 + shownOr(ShownRatio("time", c.Before, c.After), c.Ratio)
 				listed = true
 			}
 		}
 		for _, c := range rep.Creeping {
 			if c.Repo == s.Repo && c.Workflow == s.Workflow && c.Job == s.Job {
-				ratio *= 1 + c.Ratio
+				ratio *= 1 + shownOr(ShownRatio("time", c.From, c.To), c.Ratio)
 				listed = true
 			}
 		}
@@ -113,6 +113,15 @@ func BuildTrend(runs []ledger.JobRun, q TrendQuery, o Options) TrendReport {
 		}
 	}
 	return rep
+}
+
+// shownOr is a listed change as its line shows it (the two values beside
+// it), or its exact ratio when those read 0.
+func shownOr(shown, exact float64) float64 {
+	if math.IsNaN(shown) {
+		return exact
+	}
+	return shown
 }
 
 // Creep is a job whose time grew along a trend over the span, with no step.

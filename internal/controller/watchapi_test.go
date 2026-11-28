@@ -69,24 +69,35 @@ func TestDemoTrendNamesTheInjectedCommits(t *testing.T) {
 		}
 	}
 	// The creep is listed as such, and each job's CHANGE says what the
-	// lists say of it.
+	// lists say of it: the percent the two values on its line make, so a
+	// job listed once shows the same percent in the list and the table.
 	if len(rep.Creeping) != 1 || rep.Creeping[0].Job != "e2e (chromium)" || rep.Creeping[0].Ratio < 0.12 {
 		t.Errorf("creeping %+v", rep.Creeping)
 	}
 	for _, s := range rep.Series {
-		want := 1.0
+		want, lines := 1.0, 0
+		var line string
 		for _, c := range rep.Changes {
 			if c.Metric == "time" && c.Job == s.Job && s.Job != "" {
-				want *= 1 + c.Ratio
+				r := watch.ShownRatio("time", c.Before, c.After)
+				want *= 1 + r
+				lines++
+				line = watch.PctSigned(r)
 			}
 		}
 		for _, c := range rep.Creeping {
 			if c.Job == s.Job {
-				want *= 1 + c.Ratio
+				r := watch.ShownRatio("time", c.From, c.To)
+				want *= 1 + r
+				lines++
+				line = watch.PctSigned(r)
 			}
 		}
 		if want != 1 && (s.ChangeFrom != "listed" || math.Abs(s.Change-(want-1)) > 1e-9) {
 			t.Errorf("%s: change %+.3f (%s), the lists say %+.3f", s.Name(), s.Change, s.ChangeFrom, want-1)
+		}
+		if lines == 1 && watch.PctSigned(s.Change) != line {
+			t.Errorf("%s: the table says %s, its line %s", s.Name(), watch.PctSigned(s.Change), line)
 		}
 	}
 	if len(rep.Series) < 8 || rep.Grain != "day" {

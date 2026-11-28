@@ -28,11 +28,11 @@ pumasi trend --min-side 0          # list a job's change at once, not after a da
 
 ```
 CHANGED (newest first)
-  pr-checks.yml / build-image: memory +36% (8.5G -> 11.5G), since commit 0c83298 on main, Thu Nov 19 19:00 (pull request #2246 ran at the new level before it); still so
+  pr-checks.yml / build-image: memory +35% (8.5G -> 11.5G), since commit 0c83298 on main, Thu Nov 19 19:00 (pull request #2246 ran at the new level before it); still so
       https://github.com/OWNER/REPO/commit/0c83298…
-  pr-checks.yml / typecheck: time -22% (1m23s -> 1m05s), cpu -22% (1m25s -> 1m07s), since commit 6e197ba on main, Tue Nov 17 19:09 (pull request #2104 ran at the new level before it); still so
+  pr-checks.yml / typecheck: time -22% (1m23s -> 1m05s), cpu -21% (1m25s -> 1m07s), since commit 6e197ba on main, Tue Nov 17 19:09 (pull request #2104 ran at the new level before it); still so
       step "Install" 25s -> 20s, step "Typecheck" 48s -> 37s; https://github.com/OWNER/REPO/commit/6e197ba…
-  pr-checks.yml / unit-tests: time +41% (1m26s -> 2m02s), cpu +42% (2m47s -> 3m58s), since commit 85979f9 on main, Mon Nov 16 19:01 (pull request #2077 ran at the new level before it); still so
+  pr-checks.yml / unit-tests: time +42% (1m26s -> 2m02s), cpu +43% (2m47s -> 3m58s), since commit 85979f9 on main, Mon Nov 16 19:01 (pull request #2077 ran at the new level before it); still so
       step "Run tests" 47s -> 1m20s; https://github.com/OWNER/REPO/commit/85979f9…
   pr-checks.yml / e2e (chromium): slowly growing, time +24% over 28d along its trend (2m38s -> 3m16s, at least +23%), no single commit
 
@@ -41,7 +41,7 @@ pr-checks.yml (workflow)  6250  4m04s     5m34s  +0%     14.4G    46m17s   30s  
   build-image             6249  2m10s     2m32s  +3%     11.8G    10m38s   28s       ▂▂▂▂▂▂▂▂▂▂▂▂▂▂
   e2e (chromium)          6249  3m07s     3m58s  +24%*   10.3G    10m04s   28s       ▁▂▂▃▃▄▄▆▆▆▆▇▇█
   typecheck               6250  1m08s     1m33s  -22%*   2.3G     1m09s    28s       ███▇▁▂▂▂▂▂▁▁▁▁
-  unit-tests              6249  1m59s     2m26s  +41%*   3.3G     3m41s    28s       ▁▂▃▇▇▇██▇█▇▇▇▇
+  unit-tests              6249  1m59s     2m26s  +42%*   3.3G     3m41s    28s       ▁▂▃▇▇▇██▇█▇▇▇▇
   …
 ```
 
