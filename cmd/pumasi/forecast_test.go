@@ -29,7 +29,7 @@ func TestDemoForecastMatchesDashboard(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
 		t.Fatal(err)
 	}
-	if cli.Cores != api.Cores || cli.CoresFrom != api.CoresFrom || !cli.Physical || !api.Physical || cli.Cores != controller.DemoCores() {
+	if cli.Cores != api.Cores || cli.CoresFrom != api.CoresFrom || !cli.Lent || !api.Lent || cli.Cores != controller.DemoCores() {
 		t.Fatalf("cores: cli %.0f (%s), api %.0f (%s)", cli.Cores, cli.CoresFrom, api.Cores, api.CoresFrom)
 	}
 	// Made a moment apart, the two may differ in the last digits.
