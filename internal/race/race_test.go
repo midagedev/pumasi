@@ -125,3 +125,17 @@ func TestSharedCoresSlowJobsDown(t *testing.T) {
 		t.Fatal("an idle host slowed down")
 	}
 }
+
+// pumasi gives a time to every job that waits, and the first time it gives
+// is within a minute at the median, at the busiest pace with long-tailed runs.
+func TestForecastOfTheWait(t *testing.T) {
+	sc := Film
+	sc.Every, sc.Tails = [2]float64{12, 20}, true
+	st := ETA(sc, 3)
+	if st.Waited < 50 || st.Told != st.Waited {
+		t.Fatalf("%d of %d waiting jobs given a time", st.Told, st.Waited)
+	}
+	if st.FirstMedian > 60 || st.InBand < 0.5 {
+		t.Fatalf("median error %.0fs, %.0f%% within 60s/30%%", st.FirstMedian, 100*st.InBand)
+	}
+}

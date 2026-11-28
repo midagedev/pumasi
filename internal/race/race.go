@@ -150,7 +150,7 @@ func (j Job) alone() size.Sample {
 		c, _ := j.use(el)
 		sec += c * math.Min(Tick, j.Dur-el)
 	}
-	return size.Sample{CPUs: sec / j.Dur, MemBytes: int64(j.Mem * gb)}
+	return size.Sample{CPUs: sec / j.Dur, MemBytes: int64(j.Mem * gb), Secs: j.Dur}
 }
 
 // Scenario is the stream of jobs and how pumasi meets it.
@@ -167,6 +167,10 @@ type Scenario struct {
 	// Busy: every job uses its cpu from start to end, the worst case for
 	// sharing cores.
 	Busy bool `json:"busy,omitempty"`
+	// Tails: run times as CI has them, with a long tail: one run in ten takes
+	// twice as long (a retry, a cold cache), one in twenty fails a third of
+	// the way in.
+	Tails bool `json:"tails,omitempty"`
 	// CPUOvercommit is pumasi's cpuOvercommit (1 = none).
 	CPUOvercommit float64 `json:"cpuOvercommit"`
 }
@@ -177,7 +181,16 @@ var Film = Scenario{Seed: 7, Pushes: 18, Every: [2]float64{35, 55}, Provision: 8
 func (sc Scenario) draw(r *rand.Rand, at float64, kind string) Job {
 	k := kindOf(kind)
 	u := func(v [2]float64) float64 { return v[0] + r.Float64()*(v[1]-v[0]) }
-	return Job{Kind: kind, At: at, Dur: math.Round(u(k.Dur)), CPU: round2(u(k.CPU)), Mem: round2(u(k.Mem)), Busy: sc.Busy}
+	j := Job{Kind: kind, At: at, Dur: math.Round(u(k.Dur)), CPU: round2(u(k.CPU)), Mem: round2(u(k.Mem)), Busy: sc.Busy}
+	if sc.Tails {
+		switch x := r.Float64(); {
+		case x < 0.1:
+			j.Dur *= 2
+		case x < 0.15:
+			j.Dur = math.Round(j.Dur / 3)
+		}
+	}
+	return j
 }
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
@@ -285,6 +298,16 @@ type Result struct {
 	Waits   []float64 `json:"waits"` // by job, in stream order
 	Summary Summary   `json:"summary"`
 	Frames  []Frame   `json:"frames,omitempty"`
+	// Told: pumasi only, what it said of each job's start while it waited.
+	Told []Told `json:"told,omitempty"`
+}
+
+// Told is what pumasi said, at one moment, of when a waiting job would start.
+type Told struct {
+	Job    int     `json:"job"` // index in the stream
+	At     float64 `json:"at"`  // when it said so
+	Starts float64 `json:"starts"`
+	First  bool    `json:"first,omitempty"` // the first time it said anything of the job
 }
 
 func quantile(v []float64, p float64) float64 {
@@ -417,7 +440,7 @@ func start(ji int, host string, t float64, jobs []Job) *run {
 // measure is what pumasi records of a finished run: its cores on average
 // over the time it took, and its peak memory.
 func (r *run) measure(jobs []Job) size.Sample {
-	return size.Sample{CPUs: r.cpuSec / (r.end - r.started), MemBytes: int64(jobs[r.job].Mem * gb)}
+	return size.Sample{CPUs: r.cpuSec / (r.end - r.started), MemBytes: int64(jobs[r.job].Mem * gb), Secs: r.end - r.started}
 }
 
 func (m *machines) frame(f *Frame, pace map[string]float64) {
@@ -800,6 +823,7 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		res.Name = "pumasi-strict"
 	}
 	measured := history(sc)
+	told := map[int]bool{}
 	m := newMachines()
 	pressed := map[string]bool{}
 	ends := make([]float64, len(jobs))
@@ -895,6 +919,7 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			}
 			s.Runners = append(s.Runners, dr)
 		}
+		res.Told = append(res.Told, tell(s, runners, measured, jobs, sc, t, told)...)
 		for _, st := range decide.Decide(s).Start {
 			seq++
 			est := size.Estimate{CPUs: st.CPUs, MemBytes: st.MemBytes}
@@ -920,4 +945,38 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 	}
 	summarize(&res, jobs, ends)
 	return res
+}
+
+// tell is what pumasi would say now of when each waiting job starts: the
+// forecast from the same snapshot the placement sees, with run times learned
+// as the sizes are (size.Runtime of the job's measured runs).
+func tell(s decide.Snapshot, runners []runner, measured map[string][]size.Sample, jobs []Job, sc Scenario, t float64, told map[int]bool) []Told {
+	runtime := func(kind string) (time.Duration, bool) { return size.Runtime(measured[kind]) }
+	busy := map[string]decide.Busy{}
+	for _, r := range runners {
+		if r.run == nil {
+			continue
+		}
+		kind := jobs[r.run.job].Kind
+		b := decide.Busy{Job: kind}
+		if d, ok := runtime(kind); ok {
+			b.Ends = decide.EndOf(at(r.run.started), at(t), d)
+		}
+		busy[r.name] = b
+	}
+	runs := map[string]time.Duration{}
+	for _, d := range s.Demand {
+		if r, ok := runtime(d.Name); ok {
+			runs[d.ID] = r
+		}
+	}
+	var out []Told
+	for id, e := range decide.Forecast(s, busy, runs, time.Duration(sc.Provision*float64(time.Second))) {
+		var ji int
+		fmt.Sscan(id, &ji)
+		out = append(out, Told{Job: ji, At: t, Starts: t + e.In.Seconds(), First: !told[ji]})
+		told[ji] = true
+	}
+	slices.SortFunc(out, func(a, b Told) int { return cmp.Compare(a.Job, b.Job) })
+	return out
 }
