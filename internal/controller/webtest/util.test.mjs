@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine, shownRatio } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -71,4 +71,12 @@ test("shownRatio uses the values as the panel writes them", () => {
   assert.equal(Math.round(shownRatio("time", 86.4, 121.6) * 100), 42);
   assert.equal(Math.round(shownRatio("memory", 8.48 * GiB, 11.53 * GiB) * 100), 35);
   assert.ok(isNaN(shownRatio("time", 0, 10)));
+});
+
+// A job that got faster names the step that shrank most, not the first one.
+test("stepOf names the step that moved most the way the job did", () => {
+  const steps = [{ name: "Set up job", before: 3, after: 2 }, { name: "Install", before: 25, after: 20 }, { name: "Typecheck", before: 47.5, after: 37 }, { name: "Lint", before: 5, after: 6 }];
+  assert.equal(stepOf({ ratio: -0.22, steps }).name, "Typecheck");
+  assert.equal(stepOf({ ratio: 0.1, steps }).name, "Lint");
+  assert.equal(stepOf({ ratio: 0.1, steps: [] }), null);
 });

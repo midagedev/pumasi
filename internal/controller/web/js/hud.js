@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio, stepOf } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -751,7 +751,7 @@ export function ciModel() {
     // a pull request it is known to come from; else the one merged in between, likely
     const pr = c.pr || (c.first && c.first.pr) || 0;
     const likely = !pr && (c.suspects || []).length === 1 ? c.suspects[0] : 0;
-    const step = (c.steps || []).find((x) => x.after > x.before) || (c.steps || [])[0];
+    const step = stepOf(c);
     return { kind, job: c.job, metric: c.metric, ratio: shownRatio(c.metric, c.before, c.after), from: fmt(c.before), to: fmt(c.after), pr, likely, likelyURL: likely ? `${repo}/pull/${likely}` : "", sha, prURL: pr ? `${repo}/pull/${pr}` : "", shaURL: sha ? `${repo}/commit/${sha}` : "",
       step: step && c.metric === "time" ? `${step.name} ${ago(step.before)} → ${ago(step.after)}` : "", also: also.map((a) => `${a.metric} ${pctText(shownRatio(a.metric, a.before, a.after))}`), at: c.first && c.first.at };
   });

@@ -227,6 +227,13 @@ export function shown(metric, v) {
   return n >= 3600 ? Math.floor(n / 60) * 60 : n;
 }
 export const shownRatio = (metric, before, after) => (shown(metric, before) > 0 ? shown(metric, after) / shown(metric, before) - 1 : NaN);
+// stepOf: the step that moved most the way the job did (slower: the one that
+// grew most; faster: the one that shrank most), or none.
+export function stepOf(c) {
+  const way = c.ratio >= 0 ? 1 : -1;
+  const moved = (c.steps || []).map((x) => ({ x, d: way * (x.after - x.before) })).filter((m) => m.d > 0).sort((a, b) => b.d - a.d);
+  return moved.length ? moved[0].x : null;
+}
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
 // of the two is short and the most there is anywhere.
