@@ -1417,7 +1417,7 @@ function runningSummary(runners) {
 // jobs to whichever runner listens: several started together are for any.
 function aheadJobs(runners, r) {
   const A = aheadOf(r), n = runners.filter((x) => { const B = aheadOf(x); return B && x.class === r.class && B.after === A.after; }).length;
-  return n > 1 ? `a ${r.class} job (${n} started)` : A.job;
+  return n > 1 ? `a ${r.class} job (one of ${n} runners)` : A.job;
 }
 
 const short = (v) => (v >= 9.95 || v < 0.05 ? String(Math.round(v)) : v.toFixed(1));
