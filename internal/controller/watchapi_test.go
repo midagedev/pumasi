@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,13 +173,17 @@ func TestDemoForecast(t *testing.T) {
 	if DemoCores() != 66 || DemoCores() != synth.DemoFleetCores {
 		t.Fatalf("demo cores %.0f, the history's %d", DemoCores(), synth.DemoFleetCores)
 	}
+	if !rep.Physical || !strings.Contains(rep.Words, "of the 66 physical cores") {
+		t.Fatalf("the demo's cores are its hosts' physical ones: %s", rep.Words)
+	}
 	if rep.Cores != DemoCores() || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
 		t.Fatalf("%+v", rep)
 	}
 	if code := getJSON(t, srv.URL+"/api/forecast?weeks=2", &rep); code != http.StatusBadRequest {
 		t.Fatalf("weeks=2: %d", code)
 	}
-	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Load > 0.05 {
+	rep = watch.ForecastReport{}
+	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Physical || rep.Load > 0.05 {
 		t.Fatalf("cores=1000: %+v", rep)
 	}
 }

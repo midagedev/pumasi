@@ -50,7 +50,7 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 			return
 		}
 		rep := watch.Forecast(runs, cores, now, weeks)
-		rep.CoresFrom = from
+		rep.SetCores(from, from != "asked")
 		writeJSON(w, rep)
 	})
 	mux.HandleFunc("GET /api/why-slow", func(w http.ResponseWriter, r *http.Request) {
