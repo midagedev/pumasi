@@ -85,7 +85,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 <table>
 <tr>
 <td width="50%"><img src="docs/img/dashboard-wait.webp" alt="A waiting job's panel: why it waits (needs 15 GB of memory, linux-server has 2.8 GB free) and when it is expected to start (in under a minute on linux-server, when e2e (chromium) ends)"></td>
-<td width="50%"><img src="docs/img/dashboard-ahead.webp" alt="Runners started ahead on linux-server, one of two, for the release packages that come when release-check ends"></td>
+<td width="50%"><img src="docs/img/dashboard-ahead.webp" alt="Runners started ahead on linux-server, one of two, for a release job that comes when release-check ends"></td>
 </tr>
 <tr>
 <td><b>Why it waits, and when it starts.</b> GitHub only says "Waiting for a runner…". Each waiting job here says what it is short of and where, and when it is expected to start: <code>starts in under a minute on linux-server, when e2e (chromium) ends</code>. The forecast runs placement forward over the jobs' usual run times; in a simulation of four hosts its median error was 2–16 seconds (<a href="docs/design.md">design</a>).</td>
