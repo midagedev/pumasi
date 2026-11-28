@@ -1138,22 +1138,32 @@ export class Scene {
       ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
       const max = W - 2 * pad, fits = (s) => ctx.measureText(s).width <= max;
       const clip = (s) => { while (s.length > 3 && !fits(s + "…")) s = s.slice(0, -1); return fits(s) ? s : s + "…"; };
-      const rows = [[]];
+      const R = tg.runs, rows = [[]];
+      const line = (row) => row.map((e) => e.s).join(" · ");
       let k = 0;
-      for (; k < tg.runs.length; k++) {
+      for (; k < R.length; k++) {
         const row = rows[rows.length - 1];
-        if (fits([...row, tg.runs[k]].join(" · "))) { row.push(tg.runs[k]); continue; }
-        if (!row.length) { row.push(clip(tg.runs[k])); continue; }
+        if (fits(line([...row, { s: R[k].t }]))) { row.push({ i: k, s: R[k].t }); continue; }
+        if (!row.length) { row.push({ i: k, s: clip(R[k].t) }); continue; }
         if (rows.length === 3) break;
-        rows.push([clip(tg.runs[k])]);
+        rows.push([{ i: k, s: clip(R[k].t) }]);
       }
-      let left = tg.runs.length - k;
-      if (left > 0) {
+      if (k < R.length) {
+        // what does not fit is counted in jobs, so the names and the count add
+        // up to RUNNING; ready and starting runners left out are named as such
+        // when there is room, and otherwise only counted when no job is
         const last = rows[rows.length - 1];
-        while (last.length > 1 && !fits([...last, `+${left} more`].join(" · "))) { last.pop(); left++; }
-        last.push(`+${left} more`);
+        let from = k;
+        const more = (full) => {
+          let j = 0, rd = 0, st = 0;
+          for (const e of R.slice(from)) { j += e.jobs; rd += e.ready; st += e.starting; }
+          const parts = full || !j ? [j ? `+${j} more` : "", rd ? `${rd} ready` : "", st ? `${st} starting` : ""] : [`+${j} more`];
+          return { s: parts.filter(Boolean).join(" · ") };
+        };
+        while (last.length > 1 && !fits(line([...last, more(false)]))) from = last.pop().i;
+        last.push(fits(line([...last, more(true)])) ? more(true) : more(false));
       }
-      lines = rows.filter((r) => r.length).map((r) => r.join(" · "));
+      lines = rows.filter((r) => r.length).map(line);
     }
     const off = tg.L.word === "offline" || tg.L.word === "no data";
     // the bars' legend line: held, gives way, used; on two lines when one is too narrow
@@ -1398,7 +1408,7 @@ export class Scene {
 // runningSummary: a host's runners as job names, the same name counted once
 // ("e2e (chromium) ×2"), the most first; then the runners up and listening
 // for a job (ready: kept warm, or about to be handed one), then those still
-// starting.
+// starting. Each entry says how many jobs, ready and starting runners it is.
 function runningSummary(runners) {
   const n = new Map();
   let starting = 0, ready = 0;
@@ -1407,9 +1417,9 @@ function runningSummary(runners) {
     const name = r.job.replace(/\s+\d+\/\d+$/, ""); // "nightly-soak 2/3": one of a set
     n.set(name, (n.get(name) || 0) + 1);
   }
-  const out = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, c]) => (c > 1 ? `${k} ×${c}` : k));
-  if (ready) out.push(`${ready} ready`);
-  if (starting) out.push(`${starting} ${starting === 1 ? "runner" : "runners"} starting`);
+  const out = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, c]) => ({ t: c > 1 ? `${k} ×${c}` : k, jobs: c, ready: 0, starting: 0 }));
+  if (ready) out.push({ t: `${ready} ready`, jobs: 0, ready, starting: 0 });
+  if (starting) out.push({ t: `${starting} ${starting === 1 ? "runner" : "runners"} starting`, jobs: 0, ready: 0, starting });
   return out;
 }
 
