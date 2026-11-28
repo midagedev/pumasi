@@ -1,472 +1,472 @@
-# 지금의 설계
+# The design as it stands
 
-코드가 지금 하는 일을 적는다. 무엇을 실물로 확인했는지는 [verified.md](verified.md), 근거 조사는 [research/](research/).
+This describes what the code does now. What was checked on real hosts is in [verified.md](verified.md), and the background research is in [research/](research/).
 
-## 풀려는 문제
+## The problem
 
-셀프호스트 러너를 여러 머신에 깔아 쓰면 반복해서 생기는 일이다.
+These things keep happening when you spread self-hosted runners over several machines.
 
-- GitHub 은 비어 있는 러너면 **호스트 부하와 상관없이** 잡을 넣는다. 손잡이는 러너 개수뿐이다.
-- 잡 크기가 다르다. lint 한 번과 JVM·DB·브라우저를 띄우는 e2e 한 번이 똑같이 러너 1개다.
-- 잡이 남긴 컨테이너·디렉터리가 다음 잡의 자원을 갉아먹는다.
-- 사람이 쓰는 머신을 러너로 빌리면 사람도 CI 도 서로 방해한다.
+- GitHub puts a job on any idle runner, **whatever the load on its host**. The only handle is the number of runners.
+- Jobs differ in size. One lint run and one e2e run that starts a JVM, a database and a browser each count as one runner.
+- Containers and directories a job leaves behind eat into the next job's resources.
+- When a machine someone works at is lent as a runner, the person and CI get in each other's way.
 
-그래서: 잡 크기와 호스트 여유를 보고 배치하고(자리가 없으면 GitHub 큐에서 기다린다), 러너는 잡 하나로 끝내고, 사람이 앉은 머신에는 새 일을 주지 않는다.
-Kubernetes 를 요구하지 않는다.
+So: place by job size and host headroom (when there is no room, the job waits in GitHub's queue), end each runner after one job, and give no new work to a machine someone is sitting at.
+Kubernetes is not required.
 
-## GitHub 이 주는 손잡이는 scale set 뿐이다
+## Scale sets are the only handle GitHub gives
 
-GitHub 공식 `actions/scaleset` 클라이언트 위에 만든다. 그 API 의 성질이 설계를 정한다.
+pumasi is built on GitHub's official `actions/scaleset` client. The properties of that API decide the design.
 
-| 사실 | 설계에 주는 뜻 |
+| Fact | What it means for the design |
 |---|---|
-| scale set 안에서는 GitHub 이 비어 있는 아무 러너에 잡을 준다. 특정 잡을 특정 러너로 보낼 수 없다 | **클래스(크기·OS)마다 scale set 을 따로 만든다.** 유일한 분류 수단이다 |
-| 잡이 배정되면 레포·워크플로·잡 이름이 러너가 생기기 전에 온다 | 무엇이 기다리는지 보고 몇 개를 어디에 띄울지 정한다 |
-| 잡의 `runs-on` 라벨이 전부 scale set 의 라벨 안에 있으면 그 scale set 으로 온다. 라벨은 만들 때 정해지고 `self-hosted`·OS·아키텍처도 줄 수 있다 | 기본 라벨은 `[self-hosted, pumasi-<클래스>]`, 클래스의 `labels` 로 바꾼다 |
-| 맞는 scale set 이 있으면 같은 라벨의 일반 등록 러너는 idle 이어도 잡을 받지 못한다. scale set 에 러너가 없어도 넘어가지 않는다 | 고정 러너에서 옮길 때 라벨 단위로 한 번에 넘어온다. 되돌리기는 scale set 삭제(`down`) |
-| 러너 목록 조회 API 가 없다. 죽은 러너의 등록은 지울 때까지 남는다 | **controller 가 러너 장부(SQLite)를 든다.** 에이전트의 스냅샷으로 맞춘다 |
-| 용량을 0 으로 보고하면 대기 잡이 안 보인다 | 용량은 늘 넉넉히 보고하고, **러너를 안 띄우는 것으로** 기다리게 한다. 보이지 않아도 되니 다른 러너로 흘려보내라는 클래스(`overflow: true`)만 실제 자리를 보고한다 |
-| 아무도 안 받은 배정은 5분 뒤 거둬졌다 다시 오고, 세 번 뒤에는 메시지가 끊긴다 | 미룬 수요를 장부에 들고 있다가 자리가 나면 메시지 없이 스스로 띄운다 |
-| 잡을 든 러너의 등록 삭제는 GitHub 이 거절한다 | 떠 있는 러너를 지우기 전에 **등록 삭제를 먼저 청한다**(아래 견고함) |
-| 러너가 죽어도 GitHub 은 약 10분 뒤에야 잡을 실패로 닫고, 다시 돌리지 않는다 | 러너의 죽음은 에이전트가 직접 보고, 다시 돌리기는 `rerun:` 으로 |
+| Within a scale set, GitHub gives a job to any idle runner. A given job cannot be sent to a given runner | **One scale set per class (size, OS).** It is the only way to sort jobs |
+| When a job is assigned, its repo, workflow and job name arrive before any runner exists | pumasi sees what is waiting and decides how many runners to start, and where |
+| A job goes to a scale set when all of its `runs-on` labels are among the scale set's labels. Labels are set when the scale set is created, and can include `self-hosted`, OS and architecture | Default labels are `[self-hosted, pumasi-<class>]`; a class's `labels` changes them |
+| When a matching scale set exists, ordinary registered runners with the same labels get no jobs even when idle. Jobs don't fall through to them even when the scale set has no runners | Moving off fixed runners happens all at once, per label set. Going back means deleting the scale set (`down`) |
+| There is no API to list runners. A dead runner's registration stays until deleted | **The controller keeps a runner ledger (SQLite).** It is reconciled with the agents' snapshots |
+| Reporting capacity 0 hides the waiting jobs | Capacity is always reported generously, and jobs are made to wait **by not starting runners**. Only a class that says its jobs need not be visible and should flow to other runners (`overflow: true`) reports its real room |
+| An assignment nobody takes is taken back after 5 minutes and comes again; after three times the messages stop | Deferred demand is kept in the ledger, and when room frees up pumasi starts runners on its own, without a message |
+| GitHub refuses to delete the registration of a runner holding a job | Before removing a runner that is up, pumasi **first asks to delete its registration** (see Robustness below) |
+| When a runner dies, GitHub closes its job as failed only after about 10 minutes, and does not rerun it | The agent sees runner deaths directly; reruns are done with `rerun:` |
 
-## 구성
+## Parts
 
 ```
                  GitHub (scale set API)
-                        │  listener (클래스마다 하나)
-              ┌─────────▼──────────┐
-              │   controller        │  pumasi up
-              │  클래스 · 장부 · Decide │  listen :7411
-              └───▲───────────▲─────┘
-                  │ TLS 연결 하나씩 (호스트가 건다)
-          ┌───────┴──┐   ┌────┴──────┐
-          │ agent     │   │ agent      │   호스트마다 하나, 그 사용자의 서비스
-          │ docker    │   │ native     │   러너 = 컨테이너 또는 프로세스
+                        │  listener (one per class)
+              ┌─────────▼─────────────────┐
+              │ controller                │  pumasi up
+              │ classes · ledger · Decide │  listen :7411
+              └───▲───────────▲───────────┘
+                  │ one TLS connection each (the host dials)
+          ┌───────┴───┐   ┌───┴────────┐
+          │ agent     │   │ agent      │   one per host, a service of that user
+          │ docker    │   │ native     │   runner = container or process
           └───────────┘   └────────────┘
 ```
 
-- **controller** — 클래스마다 listener 로 수요를 받고, 호스트들의 스냅샷으로 배치를 정해 "이 호스트에 이 클래스 러너 하나"를 시킨다.
-  러너 하나짜리 JIT 설정을 만들어 넘긴다. GitHub 토큰은 controller 에만 있다.
-- **agent** — 호스트마다 하나. 러너를 띄우고 지우고, 호스트와 러너의 수치를 답한다. GitHub 자격이 없다.
-- 바이너리는 하나다(`pumasi`). 호스트는 자기 OS 의 판을 controller 에서 받는다.
+- **controller**: takes demand through one listener per class, decides placement from the hosts' snapshots, and orders "one runner of this class on this host".
+  It makes a JIT config for one runner and hands it over. The GitHub token exists only on the controller.
+- **agent**: one per host. It starts and removes runners and answers with host and runner metrics. It has no GitHub credentials.
+- There is one binary (`pumasi`). A host fetches the build for its OS from the controller.
 
-## 클래스와 배치
+## Classes and placement
 
-클래스 = scale set 하나 = 러너의 OS·드라이버·라벨. 키는 [안내서](guide.md#클래스)의 표. 크기는 클래스가 아니라 잡의 것이다(아래 「크기」).
+A class = one scale set = a runner's OS, driver and labels. Its keys are in the table in the [guide](guide.md#classes). Size belongs to the job, not the class (see "Size" below).
 
-배치는 순수 함수 `Decide(snapshot) -> Plan` 이고 결정마다 사유 문자열을 남긴다(대기 사유가 그것이다).
+Placement is a pure function `Decide(snapshot) -> Plan`, and every decision leaves a reason string (that is the wait reason).
 
-1. **수요**: 클래스별 대기 잡 − 이미 뜨고 있거나 노는 그 클래스 러너 수. 남은 잡마다 그 잡의 크기가 붙는다.
-2. **자격**: 클래스의 OS·`hosts`·`mounts` 에 맞고, 닫혀 있지 않고(연결 끊김, 격리, 디스크 부족, 사람이 쓰는 중, CPU 압박(PSI) 40% 이상, 메모리 압박(PSI) 10% 이상, 호스트가 스스로 닫음),
-   `자리 − 다른 클래스의 reserve ≥ 잡의 크기` 인 호스트. CPU 의 자리는 아래 「CPU 는 나눠 쓴다」.
-3. **순위**: server 먼저, 그다음 desktop. 같은 종류 안에서는 여유가 큰 쪽.
-4. **자리가 없으면 아무것도 안 한다.** 잡은 GitHub 큐에서 기다리고, 10분(`waitAlert`)이 넘으면 사건이 된다.
-5. 노는 러너는 두지 않는다. 잡이 오면 띄우고(기동 수 초), 잡을 못 받은 러너는 5분 뒤 지운다.
+1. **Demand**: waiting jobs per class, minus that class's runners already starting or idle. Each remaining job carries its size.
+2. **Eligibility**: a host that matches the class's OS, `hosts` and `mounts`, is not closed (connection lost, quarantined, low disk, in use by a person, CPU pressure (PSI) 40% or more, memory pressure (PSI) 10% or more, closed by the host itself),
+   and has `room − other classes' reserve ≥ job size`. For CPU room, see "CPU is shared" below.
+3. **Ranking**: servers first, then desktops. Within the same kind, the one with more headroom.
+4. **If there is no room, it does nothing.** The job waits in GitHub's queue, and after 10 minutes (`waitAlert`) it becomes an incident.
+5. No idle runners are kept. A runner starts when a job comes (a few seconds to boot), and a runner that got no job is removed after 5 minutes.
 
-클래스별 러너 수 상한은 없다. 상한은 호스트의 자리뿐이다.
+There is no cap on runners per class. The only cap is the hosts' room.
 
-### 줄: 자리가 모자랄 때의 순서
+### The line: the order when room is short
 
-`Decide` 는 기다리는 잡을 한 줄로 세우고 앞에서부터 자리를 준다. 기본은 온 순서다. `priority` 규칙이 잡에 등급(high · normal · low)을 주면, 줄은 `처음 본 시각 − 등급 × headStart` 순이 된다.
+`Decide` puts waiting jobs in one line and gives room from the front. By default the order is arrival. When `priority` rules give a job a level (high · normal · low), the line is ordered by `first seen − level × headStart`.
 
-- **등급이 아니라 시간으로 당긴다.** 등급을 엄격한 층으로 두면 low 잡이 굶는다. 시간으로 치면 aging 이 따로 필요 없다: 누구든 오래 기다리면 앞이다.
-- **GitHub 이 주는 손잡이가 클래스 사이에만 있다.** github.com 의 scale set 에는 고를 잡이 오지 않는다 — 잡은 `JobAssigned` 로 바로 배정되어 오고(`JobAvailable`·`AcquireJobs` 는 한 번도 쓰이지 않았다),
-  배정된 잡은 그 scale set 의 러너에게 배정 순서대로 나간다. 러너를 특정 잡에 묶는 길은 없다. pumasi 가 정하는 것은 어느 클래스의 러너를 먼저 띄우느냐뿐이다.
-- **그래서 등급은 앞사람에게 물려준다.** 한 클래스의 줄에서 뒤에 high 잡이 있으면 그 앞의 잡들도 같은 등급으로 친다(`inherit`). 그 high 잡이 나가려면 앞의 잡이 먼저 나가야 하므로, 이것이 그 잡을 가장 빨리 내보내는 길이다. 사유에 누가 당겼는지 적힌다.
-- **기다리는 높은 잡의 자리를 지킨다.** 자리가 없어 미뤄진 잡이 갈 수 있는 호스트에는, 그 평가에서 그보다 등급이 낮은 잡을 새로 놓지 않는다. 같은 등급끼리는 전처럼 작은 잡이 빈틈을 채운다. 낮은 잡이 밀리는 시간은 headStart × 등급 차를 넘지 않는다(그 뒤에는 줄에서 앞이다).
-- **밀어내지 않는다.** 도는 잡과 이미 뜬 러너는 줄과 상관없다.
-- **바로 적용.** controller 는 평가마다 설정 파일의 수정 시각을 보고, 바뀌었으면 `priority`·`priorityHeadStart` 만 다시 읽는다. 읽지 못하면 전의 규칙을 쓴다. 규칙이 바뀌면 `decisions` 에 `priority` 행이 남는다.
-- **지금 규칙은 장부에.** `pumasi priority add` 의 규칙은 장부(`priority_rules`)에 있고 파일 규칙보다 먼저 본다. 기한이 있으면 그 뒤로는 평가에 들어가지 않는다. 파일을 다시 쓰지 않는 것은, 사람이 고치는 파일을 프로그램이 같이 고치면 둘 중 하나가 지기 때문이다 — 옮기려면 `pumasi priority` 가 보이는 한 줄을 사람이 적는다.
+- **It moves jobs up by time, not by level.** With levels as strict tiers, low jobs starve. Counting in time needs no separate aging: anyone who waits long enough is in front.
+- **GitHub's handle exists only between classes.** A scale set on github.com never gets jobs to choose from: jobs arrive already assigned with `JobAssigned` (`JobAvailable` and `AcquireJobs` were never used),
+  and assigned jobs go to that scale set's runners in assignment order. There is no way to tie a runner to a given job. All pumasi decides is which class's runner starts first.
+- **So a level is passed on to the jobs in front.** If a high job is further back in a class's line, the jobs ahead of it count at the same level (`inherit`). The high job can only go once the jobs in front of it go, so this is the fastest way to get it out. The reason says who pulled them forward.
+- **Room is kept for a higher job that waits.** On hosts where a job deferred for lack of room could go, no job of a lower level is newly placed in that evaluation. Within one level, small jobs fill the gaps as before. A lower job is held back no longer than headStart × the level difference (after that it is ahead in the line).
+- **Nothing is pushed out.** Running jobs and runners already up have nothing to do with the line.
+- **Applied at once.** On every evaluation the controller checks the config file's modification time, and if it changed, rereads only `priority` and `priorityHeadStart`. If it can't read them, it uses the previous rules. When the rules change, a `priority` row is left in `decisions`.
+- **Runtime rules live in the ledger.** Rules from `pumasi priority add` are in the ledger (`priority_rules`) and are checked before the file's rules. Those with an end are left out of evaluation after it. The file is not rewritten because when a program edits a file people also edit, one of the two loses; to move a rule into the file, a person writes the one line `pumasi priority` shows.
 
-**세우기(expedite)는 등급이 아니라 자리다.** 세운 잡의 순위는 어떤 등급보다 높고(`1<<20 − 세운 차례`), 세운 차례가 앞인 것이 앞이다. 이 순위로 위의 장치가 그대로 돈다:
-앞의 잡이 물려받고(`inherit` 이 세운 표시도 물려준다), 자리가 없으면 그 잡이 갈 수 있는 호스트를 지킨다. 지키는 데에 하나를 더 걸었다 — **러너가 모두 빠져도 그 잡이 들어가지 않는 호스트는 지키지 않는다.** 아무리 기다려도 오지 않을 잡을 위해 호스트를 비워 두는 것은 막는 것일 뿐이다(high 잡에도 같다).
+**Expedite is room, not a level.** An expedited job ranks above every level (`1<<20 − expedite order`), and the one expedited earlier is in front. With this rank the mechanisms above work unchanged:
+the jobs in front inherit it (`inherit` passes on the expedited mark too), and when there is no room, the hosts that job can go to are kept for it. One more condition was added to keeping a host: **a host the job would not fit even with every runner gone is not kept.** Keeping a host empty for a job that will never come, however long it waits, only blocks (the same holds for high jobs).
 
-- **열쇠는 (레포, run, 잡 이름)이다.** scale set 메시지의 잡 id 는 GitHub 이 다시 배정할 때마다(러너 없이 5분) 바뀐다. 세울 때 받은 GitHub 의 잡 id 와 pumasi 의 잡 id 는 찾는 데만 쓴다.
-- **GitHub 이 아직 쥔 잡**(`overflow` 클래스가 받지 않은 잡)은 줄에 「올 잡」으로 넣는다: 그 클래스의 줄 맨 뒤(받은 잡이 먼저 나가므로)에 서고, 러너를 띄우지 않으며, 자리가 있으면 그 자리를 지키고 그 클래스의 받는 수를 1 이상으로 연다.
-  잡이 실제로 배정되면 줄의 보통 잡이 된다. 이때도 GitHub 은 그 라벨의 가장 오래된 잡을 먼저 배정하므로, 「올 잡」이 정확히 그 잡이라는 보장은 없다 — 세울 때 그렇게 말한다.
-- **세운 잡이 받아 둔 잡은 돌려주지 않는다.** `overflow` 클래스는 놓지 못한 잡을 돌려주지만(받는 수를 줄여 GitHub 이 다시 배정하게), 세운 잡과 그것이 당긴 잡은 자리가 날 때까지 쥐고 있는다.
-- **풀림**: 장부의 그 잡 행이 러너에 닫히면(시작), run 이 끝났다고 닫히면, 줄에서 사라졌으면. 줄에 없는 잡은 1분에 한 번 GitHub 에 묻는다(`in_progress` 면 다른 러너가 받은 것, `completed` 면 끝난 것). 세운 때부터 시작까지의 시간과 받은 러너가 `expedites` 표에 남는다.
+- **The key is (repo, run, job name).** The job id in scale set messages changes every time GitHub reassigns the job (5 minutes with no runner). The GitHub job id and the pumasi job id given at expedite time are used only to find the job.
+- **A job GitHub still holds** (one an `overflow` class has not taken) is put in the line as "a job to come": it stands at the back of that class's line (jobs already taken go first), starts no runner, keeps room if there is room, and opens that class's number taken to at least 1.
+  Once the job is actually assigned, it becomes an ordinary job in the line. Even then GitHub assigns the oldest job of those labels first, so there is no guarantee the "job to come" is exactly that job. pumasi says so at expedite time.
+- **Jobs taken for an expedited job are not given back.** An `overflow` class gives back jobs it can't place (it lowers its number so GitHub reassigns them), but an expedited job and the jobs it pulled are held until room frees up.
+- **Released**: when that job's row in the ledger is closed by a runner (it started), when it is closed because the run ended, or when it is gone from the line. For a job not in the line, GitHub is asked once a minute (`in_progress` means another runner took it, `completed` means it ended). The time from expedite to start and the runner that took it are kept in the `expedites` table.
 
-**언제 시작하나(예상).** 기다리는 잡마다 「`starts in ~3m on server1, when e2e (chromium) ends`」를 붙인다. `decide.Forecast` 가 지금의 스냅샷을 앞으로 돌린다: 도는 잡은 그 잡의 최근 10번 실행 시간의 중앙값만큼 돌고 끝나며(이미 넘겼으면 그 10분의 1, 최소 15초 뒤), 끝날 때마다 `Decide` 를 다시 부르고, 러너가 뜨는 시간은 최근 러너들의 중앙값이다. 배치 그 자체로 돌리므로 줄·reserve·세운 잡·blind hold 가 그대로 반영된다.
-  모르는 것: 그 뒤에 올 잡, 닫히거나 열릴 호스트(사람이 앉음, 끊김). CPU 압박은 그 호스트의 잡이 하나 끝나면 풀린다고 본다. 실행 시간을 모르는 잡이 막고 있거나, 닫힌 호스트를 기다리거나, 2시간 너머면 시간을 말하지 않는다 — 대기 사유만 남는다.
-  중앙값을 쓰는 이유: 크기는 모자라면 잡이 죽으니 최대에 여유를 얹지만, 예상 시각은 이르거나 늦거나 똑같이 틀리는 것이 낫다.
-  얼마나 맞나(`go run ./internal/race/cmd`, seed 10개): 20초 넘게 기다린 잡 모두에 시간이 붙었고, 처음 붙은 시간의 오차 중앙값은 2 ~ 16초, p90 은 14 ~ 70초, 「60초 또는 기다린 시간의 30% 안」이 90 ~ 100% 였다(실행 시간의 10분의 1이 두 배로 늘고 20분의 1이 일찍 실패하는 긴 꼬리를 넣어도). 대체로 이르게 말한다(평균 +1 ~ −21초). 데모에서는 사람이 앉는 데스크톱과 끊기는 호스트 때문에 p90 이 100초 남짓이다.
+**When will it start (forecast).** Each waiting job gets `starts in ~3m on server1, when e2e (chromium) ends`. `decide.Forecast` runs the current snapshot forward: a running job runs for the median of its last 10 run times and ends (if it is already past that, a tenth of it later, at least 15 seconds), `Decide` is called again at each end, and runner boot time is the median of recent runners. It runs placement itself, so the line, reserve, expedited jobs and blind holds are all reflected.
+  What it doesn't know: jobs that will come later, hosts that will close or open (a person sits down, a connection drops). CPU pressure is assumed to ease once one job on that host ends. When a job with unknown run time is in the way, when it waits for a closed host, or when the time is past 2 hours, no time is given; only the wait reason remains.
+  Why the median: for size, too little kills the job, so the max plus a margin is used; for a start time, being early and being late are equally wrong, which is better.
+  How accurate (`go run ./internal/race/cmd`, 10 seeds): every job that waited more than 20 seconds got a time; the median error of the first time given was 2–16 seconds, p90 14–70 seconds, and 90–100% were "within 60 seconds or 30% of the time waited" (even with a long tail added where a tenth of run times double and a twentieth fail early). It mostly says too early (mean +1 to −21 seconds). In the demo, p90 is a little over 100 seconds because of desktops people sit at and hosts that drop off.
 
-**모드**는 지금 하나다: `high-only` 동안 `Decide` 는 세운 잡과 high 잡이 아닌 잡을 놓지 않는다(줄에는 남는다). 기한이 늘 있다(기본 1시간, 최대 24시간) — 잊힌 스위치가 모든 잡을 막고 있는 것이 이 기능의 가장 큰 사고라서다. 장부의 `settings` 에 두므로 재시작을 넘긴다.
+There is one **mode** now: during `high-only`, `Decide` does not place jobs that are neither expedited nor high (they stay in the line). It always has an end (default 1 hour, at most 24 hours), because a forgotten switch blocking every job is the worst accident this feature can cause. It is kept in the ledger's `settings`, so it survives restarts.
 
-쓰지 않은 손잡이: 메시지를 받을 때 보내는 `maxCapacity` 는 그 scale set 에 배정되는(도는 것 포함) 잡 수의 상한이고, 넘는 잡은 배정되지 않은 채 같은 라벨의 다른 scale set 이나 고정 러너로 간다(잰 것은 verified.md).
-pumasi 는 지금 상한 없이 받는다 — 받을 수 있는 만큼만 받으면 넘치는 잡이 같은 라벨의 고정 러너로 흘러가게 할 수 있지만, 그것은 「옮기는 중」의 동작을 바꾸는 일이라 따로 정한다.
+A handle not used: the `maxCapacity` sent when receiving messages caps the jobs assigned to that scale set (running ones included), and jobs over it stay unassigned and go to another scale set or fixed runners with the same labels (measured in verified.md).
+pumasi takes jobs with no cap for now. Taking only what it can would let overflow jobs flow to fixed runners with the same labels, but that changes how "moving over" behaves, so it is decided separately.
 
-### 크기: 사람이 숫자를 고치지 않는다
+### Size: nobody edits numbers
 
-한도를 사람이 적으면 잡이 자랄 때마다 죽고, 사람이 숫자를 올린다. 그래서 숫자를 둘로 가른다: **배치가 세는 크기**는 재서 정하고, **강제하는 한도**는 잡이 아니라 호스트를 기준으로 둔다.
+When people write limits, a job dies every time it grows, and someone raises the number. So the numbers are split in two: the **size placement counts** is measured, and the **limit that is enforced** is set by the host, not the job.
 
-- **잡의 열쇠** = 레포 · 워크플로우 파일(ref 는 뗀다) · 잡 이름 · 플랫폼(OS/드라이버, `linux/docker`). 앞의 셋은 대기 잡의 메시지에 실려 오고 플랫폼은 그 잡을 받은 클래스의 것이므로, 러너를 띄우기 전에 크기를 안다.
-  클래스 이름은 열쇠에 없다: 잡을 `linux-s` 에서 `linux-l` 로 옮겨도 잰 크기는 따라간다.
-  **OS 를 넣는 이유**: 같은 이름의 잡이 Linux 와 Mac 에서 도는 것은 다른 프로그램(다른 툴체인·다른 바이너리)이다. 섞으면 큰 쪽이 양쪽을 다 키운다.
-  **드라이버까지 넣는 이유**: 재는 대상이 다르다. 컨테이너 러너의 표본은 그 컨테이너 cgroup 전체(`docker: inside` 면 안에서 뜬 데몬과 그 컨테이너들까지)이고, native 러너의 표본은 러너 프로세스와 그 자손이며 잡이 호스트의 도커로 띄운 것은 들어가지 않는다. 도구도 다르다(이미지에 든 것 대 호스트에 깔린 것).
-  가르는 값은 싸다 — 같은 잡이 한 OS 에서 두 드라이버를 오가는 일이 드물고, 오가면 그쪽 첫 실행 한 번을 「재 본 적 없는 잡」으로 놓일 뿐이다. 안 갈랐을 때의 값은 조용히 틀린 숫자다.
-  아키텍처(arm64/amd64)와 `docker: inside` 여부는 가르지 않는다: 같은 OS·드라이버 안의 차이는 최대 × 1.2 의 여유에 맡긴다(잰 근거는 없다).
-  **옛 장부**: 플랫폼을 적기 전의 행은 controller 가 뜰 때 그 행의 클래스가 지금 설정에 있으면 그 클래스의 OS/드라이버로 채운다(클래스의 OS 는 바뀌지 않는 것으로 본다). 설정에서 사라진 클래스의 행은 플랫폼 없이 남아 표본이 되지 않고, 그 잡은 다시 배운다.
-  매트릭스 잡은 이름에 값이 들어 와서(`build (linux)`) 조합마다 따로다. reusable workflow 로 불린 잡은 이름이 `부른 잡 / 안의 잡`, 워크플로우는 **불린 파일**로 온다 —
-  한 워크플로우 안에서 같은 파일을 두 번 불러도 갈리지만, 서로 다른 워크플로우가 같은 이름의 잡으로 같은 파일을 부르면 한 열쇠로 뭉친다(큰 쪽으로 놓일 뿐이다).
-  `name:` 에 실행마다 바뀌는 식을 넣은 잡은 매번 새 열쇠라 제 표본이 쌓이지 않고, 아래의 「같은 워크플로우에서 빌리기」로 놓인다.
-- **표본** = 끝나서 치워진 러너의 장부 행: 메모리는 페이지 캐시를 뺀 최대(`mem_work_peak`), CPU 는 `cpu 초 / 돈 시간`.
-  cgroup 의 `memory.peak` 은 캐시를 포함해서 쓰지 않는다 — 파일을 많이 읽는 빌드는 준 만큼 다 채운다(실물: 300MiB 를 쥐고 1.5G 파일을 읽은 잡이 peak 1950M, 캐시 뺀 값 449M).
-  Linux 는 5초마다 `memory.current − (file − shmem)` 을 읽어 최대를 잡는다. Mac·Windows 는 프로세스 메모리의 합이라 캐시가 원래 없다.
-  캐시 뺀 값이 없는 옛 행은 표본에서 뺀다. 메모리 한도에서 프로세스를 잃은 실행은 "한도보다 많이 필요했다"만 알려 주므로 표본을 한도 이상으로 올린다.
-  **러너 하나의 메모리는 머신의 물리 메모리를 넘지 않는다.** 에이전트가 샘플마다 그 값에서 자른다(모든 OS). Mac 의 값은 프로세스마다의 footprint(활성 상태 보기의 「메모리」)를 더한 것인데,
-  fork 뒤 함께 쓰는 copy-on-write 페이지·공유 매핑·GPU 버퍼를 프로세스마다 한 번씩 세고 압축된 메모리를 원래 크기로 센다 — 실물: 32G Mac 에서 한 잡이 113.8G 로 재어졌다.
-  libproc 에는 프로세스 트리 하나를 겹침 없이 재는 값이 없고(영역마다 공유 여부를 따지는 것은 샘플마다 하기엔 비싸다) 그래서 합은 그대로 두고 상한만 건다. 잘린 값도 실제보다 클 수 있다 — 그 잡은 다음에 「어느 호스트도 빌려줄 수 없는 크기」로 아래 규칙에 따라 혼자 놓인다.
-  **이미 장부에 있는 그런 표본**(자르기 전 판이 적은 것)은 추정에서 뺀다: controller 가 호스트마다 마지막으로 들은 물리 메모리보다 큰 표본은 세지 않고, 추정의 출처에 `1 run that held more than its host's memory left out` 이라고 남긴다.
-  장부는 에이전트가 말한 대로 두고(기록), 배우는 자리(`size.Learn`)에서 거른다 — 추정을 만드는 곳이 거기 하나이고, 호스트의 메모리를 아는 것은 controller 뿐이다. 한도에서 끊긴 표본은 호스트 메모리에서 잘라 남긴다.
-- **추정** = 최근 10개 표본의 최대 × 1.2(한도에서 끊긴 표본은 × 1.5), 메모리는 64M 단위로 올림, 바닥은 0.1cpu/256M. 표본이 없으면 클래스의 `cpus`·`memory`(기본 2/4G).
-  최대를 쓰는 이유: 커진 잡은 한 번에 믿고, 작아진 잡은 10번을 지켜본 뒤에 믿는다. 틀렸을 때 싼 쪽으로 기운 것이다.
-- **재 본 적 없는 잡**은 둘로 가른다.
-  **같은 워크플로우에 아는 것이 있으면 빌린다**: 그 워크플로우의 다른 잡들의 끝난 표본(최근 30개)과, 지금 돌고 있는 잡 가운데 3분 넘게 돈 것이 지금 쥔 양 — 그중 최대 × 1.2 와 클래스의 첫 추정 중 큰 쪽. 가장 큰 것을 빌리므로 작은 잡은 첫 실행 한 번을 크게 놓인다(끝나면 제 크기를 배운다).
-  **워크플로우에도 아는 것이 없으면 「모르는 잡」이다**: 클래스의 첫 추정은 짐작일 뿐이라, 그 러너는 잡이 3분을 돌 때까지 메모리를 첫 추정의 3배로 쥐고 있고(CPU 는 그대로 — 바쁜 CPU 는 느려질 뿐이다), 모르는 잡을 지켜보는 중인 호스트는 다음 모르는 잡을 그 3배가 비어 있을 때만 받는다. 지켜보는 것이 없는 호스트는 첫 추정만 맞으면 하나를 받는다 — 3배가 안 들어가는 작은 호스트에서도 잡이 한 번은 재어져야 하기 때문이다.
-  3분이 지나면 러너는 max(추정, 지금 쓰는 양)으로 돌아가고, 그 잡이 지금 쥔 양이 같은 워크플로우의 나머지 잡이 빌리는 크기가 된다.
-  왜 이렇게: 4G 로 짐작한 JVM 빌드 잡이 첫 실행부터 8G 를 넘는 일이 있다. 그런 잡 여럿이 한꺼번에 오면(새 워크플로우의 매트릭스, 장부가 빈 첫날) 짐작대로 나란히 놓여 호스트가 넘친다. 3배와 3분은 잰 값이 아니라 정한 값이다 — 그 사례(2배 남짓)에 여유를 둔 것이고, 3분 안에 다 자라지 않는 잡은 그 뒤 「지금 쓰는 양」과 압박 감지가 받는다. 치르는 값은 모르는 잡이 몰릴 때 뒤의 것들이 최대 3분(또는 앞의 잡이 끝날 때까지) 더 기다리는 것이고, 잡마다 한 번뿐이다.
-- **러너가 쥔 것** = max(추정, 지금 쓰는 양). 추정은 러너를 띄울 때 장부에 적고, GitHub 이 그 러너의 잡을 알려 오면(JobStarted) 그 잡의 추정으로 바꾼다 — 가장 오래 기다린 잡을 보고 띄운 러너가 다른 잡을 받을 수 있다.
-- **호스트의 자리** = `머신 − Σ러너가 쥔 것 − 러너 아닌 것들이 지금 쓰는 양 − 남겨 두는 메모리`, `budget` 이 있으면 `budget − Σ러너가 쥔 것` 과 비교해 작은 쪽.
-  "러너 아닌 것들이 쓰는 양"은 에이전트가 재는 값이다(Linux `MemTotal − MemAvailable − 러너의 작업 메모리`, Mac 은 memorystatus, Windows 는 남은 물리 메모리).
-  남겨 두는 메모리는 머신의 10%(1 ~ 4G): 메모리는 늘어나지 않고, 재는 값은 몇 초 묵은 것이다.
-- **어느 호스트도 빌려줄 수 없는 크기.** 클래스가 갈 수 있는 호스트(클래스의 `hosts`·OS 가 맞고, 한 번이라도 답한 것 — 지금 닫혀 있어도 센다) 중 어느 것도 **영영** 빌려줄 수 없는 추정이면,
-  즉 `min(머신 − 남겨 두는 메모리, budget)`(CPU 는 `min(코어 수, budget)`)의 최댓값보다 크면, 그 잡은 기다려도 소용이 없다. 그래서 그 축(CPU·메모리 따로)의 크기를
-  **그 호스트가 러너 없이 빌려줄 수 있는 만큼**(위 「호스트의 자리」에서 러너를 모두 뺀 값)으로 잘라 놓는다 — 호스트가 비면 거기서 혼자 돈다. 빈 호스트가 여럿이면 가장 많이 빌려줄 수 있는 곳으로 간다.
-  기다리는 동안 그 호스트는 다른 대기 잡에게 그렇듯 그 잡을 위해 지켜진다(더 낮은 잡은 들이지 않는다). 사유에 `its size 6.2cpu/127.2G is more than any host of mac-diag can ever lend (10.0cpu/29.0G at most): it runs alone on mac-a` 가 붙고,
-  `explain` 의 대기 항목이 같은 말과 「잰 값이 공유 메모리를 두 번 센 것일 수 있다」를 말한다. `overflow` 클래스의 「더 놓을 수 있는 수」도 같은 규칙으로 센다(빈 호스트마다 하나).
-  더 큰 호스트가 지금 닫혀 있을 뿐이면 자르지 않고 그 호스트를 기다린다. 답한 적 없는 호스트(크기를 모름)는 세지 않는다 — 꺼진 큰 호스트 하나 때문에 영영 기다리지 않게.
-  왜: 실물에서 한 잡의 잘못 잰 값(113.8G) 때문에 추정이 127.2G 가 되자, 그 클래스의 유일한 호스트(32G)에는 영원히 안 들어가서 GitHub 이 그 클래스에 준 잡들이 140분을 기다렸다. 잡의 열쇠에 클래스가 없어서, 다른 클래스에서 잰 값이 이 클래스를 막았다.
-- **한도.** 추정은 어디에도 강제하지 않는다. 러너에 거는 것은 (가) 클래스의 `limit`, 없으면 (나) 호스트를 지키는 메모리 한도 = 머신의 80%(`budget` 의 memory 가 더 작으면 그 값)뿐이고, CPU 는 (가)가 없으면 안 건다.
-  **「도는 잡을 죽이지 않는다」와 「호스트를 죽이지 않는다」의 경계가 (나)다**: 러너 하나가 머신의 80% 를 넘는 것은 그 잡의 크기 문제가 아니라 그 머신의 모든 잡이 걸린 문제라서, 그때만 넘은 프로세스를 커널이 죽인다.
-  여러 러너가 함께 자라 머신이 바닥나는 것은 한도로 막지 못한다 — 남겨 두는 메모리와 압박 감지가 새 러너를 먼저 멈출 뿐이다. Mac 은 (가)(나) 모두 걸 수단이 없다.
-- **CPU 는 나눠 쓴다(`cpuOvercommit`, 기본 1.5).** 메모리의 자리는 위 그대로다. CPU 의 자리는 `코어 × cpuOvercommit − pumasi 밖이 쓰는 CPU − 러너들이 쥔 CPU` 다.
-  다만 네 조건을 다 갖춘 호스트에서만 그렇다: server 이고, cpu `budget` 이 없고, CPU 압박(PSI)을 재고(Linux), CPU 압박 문턱(40)이 있다. 나머지는 코어 그대로다.
-  왜: CPU 는 모자라면 나눠 써서 느려질 뿐이고 아무것도 잃지 않으며, 모자란지는 CPU 압박이 직접 말한다. 메모리는 모자라면 잡이 죽고, 지금 쓰는 양으로는 다가올 최대를 모른다. 그래서 메모리만 추정대로 엄격히 지킨다.
-  1.5 의 근거: 추정은 최근 10번 가운데 가장 컸던 평균에 20% 를 얹은 것이다. 20% 는 메모리의 순간 최대를 위한 여유고, CPU 의 순간 최대는 잡을 느리게 할 뿐이다.
-  1.5배까지 놓인 잡이 모두 제 최대 평균만큼 쓰는 최악에서도 수요는 코어의 1.5 / 1.2 = 1.25배다. 이때 각 잡이 최대 20% 늦어질 뿐이고, 그 전에 CPU 압박이 오르면 더는 놓지 않는다.
-  `go run ./internal/race/cmd` 의 시뮬레이션(코어를 나눠 쓰면 비례해서 느려지는 모델)에서는 1.5 를 넘겨도(2, 3) 대기가 더 줄지 않았다(메모리가 먼저 찬다). 잡이 처음부터 끝까지 CPU 를 다 쓰는 최악의 흐름에서도 실행이 늘어난 것은 p90 2% 였다.
-  desktop 과 cpu `budget` 은 사람·약속의 몫이라 넘지 않는다(에이전트도 budget 을 넘는 시작을 거절한다). Mac·Windows 는 CPU 압박을 재지 못해 막을 것이 없으니 넘지 않는다.
-  시작 사유가 코어를 넘겨 놓았음을 말한다(`cores shared: runners hold …cpu of … there, cpu pressure …`). 대기 사유의 `Xcpu free` 는 이 자리로 센 값이다.
-- **보이는 것.** 시작 결정의 사유가 크기와 출처를 말하고(`takes 0.4cpu/1.8G of the free … for build (learned from 3 runs, …)`), 추정이 4분의 1 넘게 움직이면 `estimate` 결정이 `decisions` 에 남는다. `status` 와 대시보드는 러너마다 추정과 지금 쓰는 양, 잡마다 다음 크기·지난 실행·최근 최대·표본 수를 보인다.
+- **The job's key** = repo · workflow file (ref stripped) · job name · platform (OS/driver, `linux/docker`). The first three come in the waiting job's message, and the platform is that of the class that took the job, so the size is known before a runner starts.
+  The class name is not in the key: move a job from `linux-s` to `linux-l` and its measured size follows.
+  **Why the OS is in it**: a job with the same name on Linux and on Mac is a different program (a different toolchain, different binaries). Mixed, the larger one inflates both.
+  **Why the driver is in it too**: what is measured differs. A container runner's sample is that container's whole cgroup (with `docker: inside`, including the daemon started inside and its containers); a native runner's sample is the runner process and its descendants, and what the job started with the host's docker is not included. The tools differ too (what is in the image vs what is installed on the host).
+  Splitting is cheap: the same job rarely moves between two drivers on one OS, and when it does, its first run on the other side is placed once as a "job never measured". The cost of not splitting is a quietly wrong number.
+  Architecture (arm64/amd64) and whether `docker: inside` is set are not split: differences within the same OS and driver are left to the max × 1.2 margin (no measurement backs this).
+  **Old ledger**: rows from before the platform was recorded are filled in when the controller starts, with the OS/driver of the row's class if that class is in the current config (a class's OS is assumed not to change). Rows of classes gone from the config stay without a platform and are not samples, and that job is learned again.
+  A matrix job has its values in its name (`build (linux)`), so each combination is separate. A job called through a reusable workflow comes with the name `calling job / inner job`, and its workflow is **the called file**.
+  Calling the same file twice within one workflow still keeps them apart, but different workflows calling the same file with a job of the same name are merged under one key (it is just placed at the larger size).
+  A job whose `name:` holds an expression that changes every run gets a new key every time and builds up no samples of its own; it is placed by "borrowing from the same workflow" below.
+- **Sample** = the ledger row of a runner that finished and was cleaned up: memory is the peak without page cache (`mem_work_peak`), CPU is `cpu seconds / run time`.
+  cgroup's `memory.peak` includes cache, so it is not used: a build that reads many files fills whatever it is given (real case: a job holding 300MiB that read a 1.5G file had a peak of 1950M, and 449M without cache).
+  On Linux, `memory.current − (file − shmem)` is read every 5 seconds to catch the peak. On Mac and Windows it is a sum of process memory, so there is no cache in it to begin with.
+  Old rows without the no-cache value are left out of samples. A run that lost a process at a memory limit only tells us "it needed more than the limit", so its sample is raised to at least the limit.
+  **One runner's memory never exceeds the machine's physical memory.** The agent clips every sample to that value (on every OS). The Mac value is the sum of each process's footprint (the "Memory" column in Activity Monitor),
+  which counts copy-on-write pages shared after fork, shared mappings and GPU buffers once per process, and counts compressed memory at its original size. Real case: on a 32G Mac, one job was measured at 113.8G.
+  libproc has no value that measures one process tree without overlap (checking each region for sharing is too expensive for every sample), so the sum is kept and only capped. A clipped value can still be larger than the truth; that job is then placed alone next time as a "size no host can lend", by the rule below.
+  **Such samples already in the ledger** (written by a version before the clipping) are left out of the estimate: the controller does not count a sample larger than the physical memory it last heard from each host, and notes `1 run that held more than its host's memory left out` in the estimate's source.
+  The ledger keeps what the agent said (it is a record), and the filtering happens where learning happens (`size.Learn`): that is the only place estimates are made, and only the controller knows the hosts' memory. A sample cut off at a limit is stored clipped to the host's memory.
+- **Estimate** = the max of the last 10 samples × 1.2 (× 1.5 for samples cut off at a limit), memory rounded up to 64M, floor 0.1cpu/256M. With no samples, the class's `cpus`/`memory` (default 2/4G).
+  Why the max: a job that grew is believed at once, a job that shrank is believed after watching 10 runs. When wrong, it leans to the cheaper side.
+- **A job never measured** is handled one of two ways.
+  **If the same workflow has something known, it borrows**: the finished samples of the workflow's other jobs (last 30), and what jobs running now for over 3 minutes hold right now; the larger of the max of those × 1.2 and the class's first estimate. Since it borrows the largest, a small job is placed big for its first run (it learns its own size when it ends).
+  **If the workflow has nothing known either, it is an "unknown job"**: the class's first estimate is only a guess, so that runner holds 3× the first estimate in memory until the job has run 3 minutes (CPU unchanged: a busy CPU only slows things down), and a host watching an unknown job takes the next unknown job only when that 3× is free. A host watching nothing takes one if the first estimate fits, because even on a small host where 3× does not fit, a job has to be measured once.
+  After 3 minutes the runner goes back to max(estimate, current use), and what that job holds then becomes the size the rest of the workflow's jobs borrow.
+  Why: a JVM build job guessed at 4G can pass 8G on its first run. When several such jobs come at once (a new workflow's matrix, the first day with an empty ledger), they are placed side by side by the guess and the host overflows. 3× and 3 minutes are chosen, not measured: a margin over that case (a little over 2×); a job that has not finished growing within 3 minutes is caught after that by "current use" and pressure detection. The price is that when unknown jobs bunch up, the later ones wait up to 3 minutes longer (or until the earlier job ends), and only once per job.
+- **What a runner holds** = max(estimate, current use). The estimate is written to the ledger when the runner starts, and replaced with that job's estimate when GitHub reports the runner's job (JobStarted): a runner started for the longest-waiting job can get a different job.
+- **A host's room** = `machine − Σ held by runners − current use by non-runners − memory reserve`; with a `budget`, the smaller of that and `budget − Σ held by runners`.
+  "Use by non-runners" is measured by the agent (Linux `MemTotal − MemAvailable − runners' working memory`, Mac memorystatus, Windows free physical memory).
+  The memory reserve is 10% of the machine (1–4G): memory does not stretch, and the measured values are a few seconds old.
+- **A size no host can lend.** If the estimate is one that none of the hosts the class can go to (matching the class's `hosts` and OS, and having answered at least once; counted even if closed now) can **ever** lend,
+  that is, larger than the largest `min(machine − memory reserve, budget)` (CPU: `min(cores, budget)`), waiting does not help that job. So the size on that axis (CPU and memory separately) is
+  cut to **what that host can lend with no runners** ("a host's room" above with all runners removed) and placed: when the host is empty, the job runs there alone. If several hosts are empty, it goes to the one that can lend the most.
+  While it waits, that host is kept for it as for any other waiting job (lower jobs are not let in). The reason carries `its size 6.2cpu/127.2G is more than any host of mac-diag can ever lend (10.0cpu/29.0G at most): it runs alone on mac-a`,
+  and the waiting job's entry in `explain` says the same, plus "the measured value may count shared memory twice". An `overflow` class's "how many more can be placed" is counted by the same rule (one per empty host).
+  If a larger host is only closed for now, the size is not cut and the job waits for that host. Hosts that never answered (size unknown) are not counted, so one large host that is off does not make a job wait forever.
+  Why: in a real case, one job's mismeasured value (113.8G) made the estimate 127.2G, which never fit the class's only host (32G), so the jobs GitHub gave that class waited 140 minutes. The job's key has no class, so a value measured in another class blocked this class.
+- **Limits.** The estimate is enforced nowhere. All a runner gets is (a) the class's `limit`, or without one, (b) the memory limit that protects the host = 80% of the machine (or the `budget` memory if smaller). CPU is not limited without (a).
+  **(b) is the line between "never kill a running job" and "never kill the host"**: one runner passing 80% of the machine is not a problem of that job's size but one that affects every job on the machine, so only then does the kernel kill the process that went over.
+  Several runners growing together until the machine runs out cannot be stopped by limits; the memory reserve and pressure detection only stop new runners first. Mac has no way to apply either (a) or (b).
+- **CPU is shared (`cpuOvercommit`, default 1.5).** Memory room is as above. CPU room is `cores × cpuOvercommit − CPU used outside pumasi − CPU held by runners`.
+  But only on a host that meets all four conditions: it is a server, has no cpu `budget`, measures CPU pressure (PSI) (Linux), and has a CPU pressure threshold (40). Everywhere else it is the cores as they are.
+  Why: when CPU is short, jobs share it and slow down but lose nothing, and CPU pressure says directly whether it is short. When memory is short, jobs die, and current use does not tell the peak to come. So only memory is held strictly to the estimate.
+  The basis for 1.5: an estimate is the largest average of the last 10 runs plus 20%. The 20% is margin for memory's momentary peak; CPU's momentary peak only slows the job.
+  Even in the worst case, where every job placed up to 1.5× uses its own peak average, demand is 1.5 / 1.2 = 1.25× the cores. Then each job is at most 20% slower, and if CPU pressure rises before that, nothing more is placed.
+  In the `go run ./internal/race/cmd` simulation (a model where sharing cores slows jobs proportionally), going past 1.5 (2, 3) did not cut waits further (memory fills first). Even in the worst flow, where jobs use all their CPU from start to end, run time grew by 2% at p90.
+  Desktops and a cpu `budget` are a person's share or a promise, so they are not exceeded (the agent also refuses a start beyond its budget). Mac and Windows cannot measure CPU pressure and so have nothing to stop it, so they are not exceeded.
+  The start reason says when cores were exceeded (`cores shared: runners hold …cpu of … there, cpu pressure …`). The `Xcpu free` in a wait reason is counted with this room.
+- **What you see.** A start decision's reason states the size and its source (`takes 0.4cpu/1.8G of the free … for build (learned from 3 runs, …)`), and when an estimate moves by more than a quarter, an `estimate` decision is left in `decisions`. `status` and the dashboard show each runner's estimate and current use, and each job's next size, last run, recent max and sample count.
 
-### 미리 띄워 두기(`warm`): 러너가 뜨는 시간을 대기에서 뺀다
+### Keeping runners up ahead (`warm`): taking runner boot time out of the wait
 
-pumasi 는 잡이 온 뒤에 러너를 띄운다. 그래서 자리가 넉넉해도 모든 잡이 러너가 뜨는 시간(JIT 등록 + 컨테이너 시작, 8 ~ 10초)을 기다린다. 미리 떠 있는 고정 러너는 이 시간이 없다.
-그래서 클래스마다 몇 개의 러너를 잡 없이 띄워 둔다. GitHub 은 잡을 그 클래스의 듣고 있는 러너에게 바로 준다.
+pumasi starts a runner after a job comes. So even with plenty of room, every job waits for a runner to boot (JIT registration + container start, 8–10 seconds). Fixed runners that are already up have no such wait.
+So each class keeps a few runners up without a job. GitHub gives a job straight to a listening runner of that class.
 
-- **몇 개.** 사람이 정하지 않는다. 지난 30분(`decide.WarmWindow`) 동안 그 클래스의 잡이 온 모양에서 배운다: 15초 안에 함께 온 잡(한 push 의 워크플로우들, matrix 하나)을 한 묶음으로 보고, 가장 큰 묶음의 크기만큼(`decide.WarmCount`).
-  묶음이 하나뿐이었던 클래스(하루 한 번의 배포)는 0 이다 — 한 번 온 것은 다음에 대해 아무것도 말하지 않는다. 30분 조용하면 0 이 되고, 남은 러너는 원래의 idle timeout(5분)이 거둔다.
-  `warm`(기본 8)은 그 상한이다. `warm: 0` 이면 끈다. overflow 클래스에는 없다.
-- **크기.** 어느 잡이 올지 모르므로 그 클래스가 최근에 받은 잡 가운데 가장 큰 크기를 쥔다(overflow 의 다음 잡 크기와 같은 값). 잡이 오면 그 잡의 크기로 바뀐다. 메모리는 엄격히 지킨다.
-- **어디서.** 기다리는 잡이 원하지 않는 자리에서만 띄운다: 기다리는 잡이 지켜 둔 호스트, 자리를 기다리는 잡이 있는 클래스, high 만 받는 동안에는 띄우지 않는다. `maxStarting` 과 `reserve` 는 그대로다.
-- **비켜 준다.** 다른 클래스의 기다리는 잡이 잡 없는 러너가 쥔 자리만 있으면 들어갈 때, 그 러너를 멈추고 같은 계획에서 그 잡을 놓는다(시작 사유 `once 1 spare runner(s) without a job give it up`). overflow 클래스가 받을 수 있는 수도 그 자리를 빈 것으로 센다.
-  비켜 주는 것은 「여분」뿐이다: 클래스의 잡 없는 러너 수에서 GitHub 이 그 클래스에 쥔 잡 수를 뺀 만큼. 워커가 돌고 있는 러너(잡이 시작됐는데 GitHub 의 알림이 늦은 것)는 여분이 아니다.
-  멈추는 것은 GitHub 에서 그 러너를 먼저 지우는 길을 지나므로, 그 순간 잡을 받았으면 지우지 못하고 그대로 둔다.
-- **사람 우선과 압박.** 호스트가 그 클래스를 받지 않게 되면(데스크톱에 사람이 앉음, 디스크, CPU·메모리 압박) 그 호스트의 여분 러너는 바로 떠난다. 남아 있으면 GitHub 이 다음 잡을 그 호스트에 묻지 않고 줄 것이기 때문이다.
-- **idle timeout.** 클래스마다 가장 최근에 듣기 시작한 `Warm` 개는 idle timeout 이 없다. 그보다 많은 것, 받지 않는 호스트의 것은 원래대로 5분 뒤 멈춘다.
-- **`warmMin`.** 클래스에 적으면 배운 수가 그보다 작아도 그만큼은 띄워 둔다(크기는 그 클래스가 마지막에 받은 잡들 가운데 가장 큰 것). 이 러너들은 비켜 주지 않는다: 운영자가 「이 클래스는 기다리면 안 된다」고 적은 것이기 때문이다. 받지 않게 된 호스트(사람, 압박)에서는 다른 여분처럼 떠난다.
-  하네스에서 deploy 클래스에 `warmMin: 1`(native 기동, `needs`, 시드 10개): deploy-api 의 대기가 평균 8 ~ 11초에서 0.6초로, 가장 바쁜 흐름(15 ~ 25초)에서도 최대 1초다. 대가는 그 러너가 쥔 6 ~ 7G 와, 자리가 모자랄 때 다른 잡이 그만큼 더 기다리는 것이다: 전체 대기 p90 이 25 ~ 40초 흐름에서 18.7 → 23.5초(`warm` 이 켜져 있으면 16.3 → 18.9초), 15 ~ 25초 흐름에서 94.5 → 100.5초. 비켜 주게 두면 바쁠 때 deploy-api 가 다시 최대 36 ~ 37초를 기다렸다 — 비켜 준 뒤 그 자리를 다른 잡이 차지해서다.
+- **How many.** Not set by people. It is learned from how jobs of that class came in the last 30 minutes (`decide.WarmWindow`): jobs that came within 15 seconds of each other (one push's workflows, one matrix) count as one batch, and the count is the size of the largest batch (`decide.WarmCount`).
+  A class that had only one batch (a once-a-day deploy) gets 0: one arrival says nothing about the next. After 30 quiet minutes it becomes 0, and the remaining runners are reclaimed by the usual idle timeout (5 minutes).
+  `warm` (default 8) is the cap. `warm: 0` turns it off. Overflow classes don't have it.
+- **Size.** Which job will come is unknown, so each holds the size of the largest job the class got recently (the same value as an overflow class's next-job size). When a job comes, it switches to that job's size. Memory is held strictly.
+- **Where.** Only in room no waiting job wants: not on a host kept for a waiting job, not for a class that has jobs waiting for room, and not during high-only. `maxStarting` and `reserve` still apply.
+- **Giving way.** When another class's waiting job would fit only in room held by runners without a job, those runners are stopped and the job is placed in the same plan (start reason `once 1 spare runner(s) without a job give it up`). The number an overflow class can take also counts that room as free.
+  Only "spares" give way: the class's runners without a job, minus the jobs GitHub holds for that class. A runner whose worker is running (the job started but GitHub's notice is late) is not a spare.
+  Stopping goes through deleting the runner on GitHub first, so if it got a job at that moment, it cannot be deleted and is left alone.
+- **People first, and pressure.** When a host stops taking that class (a person sits at the desktop, disk, CPU or memory pressure), its spare runners leave at once. If they stayed, GitHub would give the next job to that host without asking.
+- **idle timeout.** The `Warm` runners per class that most recently started listening have no idle timeout. Any beyond that, and those on hosts not taking jobs, stop after 5 minutes as usual.
+- **`warmMin`.** Set on a class, it keeps that many up even when the learned count is smaller (sized at the largest of the jobs the class got last). These runners do not give way: the operator wrote that "this class must not wait". On a host that stops taking jobs (a person, pressure) they leave like other spares.
+  In the harness, with `warmMin: 1` on the deploy class (native boot, `needs`, 10 seeds): deploy-api's wait went from 8–11 seconds on average to 0.6 seconds, and at most 1 second even in the busiest flow (15–25 seconds). The cost is the 6–7G that runner holds, and other jobs waiting that much longer when room is short: overall wait p90 went 18.7 → 23.5 seconds in the 25–40 second flow (16.3 → 18.9 seconds with `warm` on), and 94.5 → 100.5 seconds in the 15–25 second flow. When it was allowed to give way, deploy-api again waited up to 36–37 seconds when busy, because after it gave way another job took the room.
 
-**왜 미리 크기를 쥐나.** 자리를 쥐지 않고 띄우면, 잡이 왔을 때 그 호스트의 메모리가 이미 다른 잡에 나가 있을 수 있다. 쥔 자리는 비켜 주기로 돌려주므로, 그 대가는 기다리는 잡이 아니라 아무도 원하지 않는 자리다.
+**Why hold the size ahead of time.** If a runner started without holding room, by the time a job came the host's memory might already be given to other jobs. Held room is given back by giving way, so the cost falls not on waiting jobs but on room nobody wants.
 
-**재 본 것.** `go run ./internal/race/cmd`, 같은 4대·같은 잡, 시드 10개 평균, 러너가 뜨는 데 8초:
+**Measured.** `go run ./internal/race/cmd`, the same 4 hosts and the same jobs, mean of 10 seeds, 8 seconds for a runner to boot:
 
-| push 간격 | per-class 고정(사후에 맞춤) | pumasi, warm 없이 | pumasi |
+| Push interval | Fixed per class (tuned after the fact) | pumasi, without warm | pumasi |
 |---|---|---|---|
-| 50 ~ 70초 | 0:01 / 0:02 / 1:20 | 0:09 / 0:10 / 0:18 | 0:01 / 0:08 / 0:14 |
-| 35 ~ 55초 | 0:01 / 0:02 / 1:42 | 0:09 / 0:10 / 0:39 | 0:01 / 0:09 / 0:21 |
-| 25 ~ 40초 | 0:01 / 0:12 / 2:19 | 0:09 / 0:25 / 1:26 | 0:05 / 0:24 / 1:18 |
+| 50–70 s | 0:01 / 0:02 / 1:20 | 0:09 / 0:10 / 0:18 | 0:01 / 0:08 / 0:14 |
+| 35–55 s | 0:01 / 0:02 / 1:42 | 0:09 / 0:10 / 0:39 | 0:01 / 0:09 / 0:21 |
+| 25–40 s | 0:01 / 0:12 / 2:19 | 0:09 / 0:25 / 1:26 | 0:05 / 0:24 / 1:18 |
 
-(대기 중앙값 / p90 / 최대.) 자리가 남는 흐름에서는 중앙값이 고정 러너와 같아지고, 최대는 어느 흐름에서나 더 짧다. 가장 바쁜 흐름에서는 자리가 차서 미리 띄울 곳이 적어 0:05 에 그친다. p90 은 여전히 8 ~ 9초다:
-첫 push(아직 배운 것이 없음), 하루 한 번 오는 잡, 그리고 큰 잡이 도는 옆에 그 클래스의 가장 큰 잡 자리를 하나 더 쥘 수 없는 호스트(Mac)의 잡이다.
-대가: 잡 없는 러너가 쥔 자리가 평균 메모리 16 ~ 28%, CPU 21 ~ 36% 다(warm 없이 2 ~ 4%). 미리 띄운 러너의 81 ~ 92% 가 잡을 받았고, 잡 없이 멈춘 러너는 한 판(124잡)에 0.5 ~ 4.6 개다.
-한가할수록 쥐는 자리가 크다 — 남는 자리를 쓰기 때문이다. 시뮬레이션은 GitHub 이 듣는 러너에게 잡을 주는 지연을 0 으로 본다(고정 러너도 같다).
+(Wait median / p90 / max.) In flows with room to spare, the median matches fixed runners, and the max is shorter in every flow. In the busiest flow, room is full and there are few places to start runners ahead, so the median only gets to 0:05. p90 is still 8–9 seconds:
+the first push (nothing learned yet), jobs that come once a day, and jobs on a host (the Mac) that cannot hold room for one more of the class's largest job next to a big job that is running.
+Cost: room held by runners without a job averages 16–28% of memory and 21–36% of CPU (2–4% without warm). 81–92% of the runners started ahead got a job, and 0.5–4.6 runners per run (124 jobs) stopped without one.
+The quieter it is, the more room is held, because it uses room that is left over. The simulation takes GitHub's delay in giving a job to a listening runner as 0 (the same for fixed runners).
 
-**늦어진 잡.** 비켜 주기가 있어도 잡 없는 러너 때문에 늦게 시작하는 잡이 있다: 아직 뜨는 중인 러너는 비켜 줄 수 없고, 비켜 줄 러너가 쥔 것이 메모리는 되는데 CPU 가 모자란 때다.
-같은 순간의 스냅숏에서 미리 띄운 잡 없는 러너만 뺀 채 다시 배치해 보고, 그러면 시작했을 기다리는 잡을 한 판(2초)씩 센다(`warmCost`). 시드 10개, 한 판 124잡 안팎:
+**Delayed jobs.** Even with giving way, some jobs start late because of runners without a job: a runner still booting cannot give way, and sometimes what a giving-way runner holds is enough memory but not enough CPU.
+The same moment's snapshot is placed again with only the runners started ahead without a job removed, and the waiting jobs that would then have started are counted one tick (2 seconds) at a time (`warmCost`). 10 seeds, about 124 jobs per run:
 
-| push 간격 | 늦어진 잡 / 늦어진 초 합(가장 많이 늦은 잡) | `warm` 이 줄인 대기 합 |
+| Push interval | Delayed jobs / total seconds delayed (most-delayed job) | Total wait cut by `warm` |
 |---|---|---|
-| 50 ~ 70초 | 0.1 ~ 0.7개 / 0 ~ 4초 (4 ~ 6초) | 712 ~ 838초 |
-| 35 ~ 55초 | 0.7 ~ 1.6개 / 2 ~ 8초 (4 ~ 8초) | 679 ~ 823초 |
-| 25 ~ 40초 | 2.3 ~ 2.9개 / 9 ~ 14초 (6 ~ 22초) | 435 ~ 541초 |
-| 15 ~ 25초 | 0.5 ~ 1.6개 / 2 ~ 6초 (6 ~ 10초) | 264 ~ 343초 |
+| 50–70 s | 0.1–0.7 / 0–4 s (4–6 s) | 712–838 s |
+| 35–55 s | 0.7–1.6 / 2–8 s (4–8 s) | 679–823 s |
+| 25–40 s | 2.3–2.9 / 9–14 s (6–22 s) | 435–541 s |
+| 15–25 s | 0.5–1.6 / 2–6 s (6–10 s) | 264–343 s |
 
-(범위는 러너가 뜨는 시간 8초·native 분포·`needs` 가 있는 흐름 사이.) 늦어진 초는 줄인 대기의 3% 를 넘지 않아 고치지 않았다. 크기를 클래스의 가장 큰 잡 대신 대표 크기로 줄이는 것도 하지 않았다: 큰 잡이 작게 쥔 러너를 받으면 그 호스트의 메모리를 넘겨 쥐게 된다.
+(The ranges are across flows with an 8-second runner boot, the native distribution, and `needs`.) The seconds delayed are at most 3% of the wait cut, so this was not fixed. Shrinking the size from the class's largest job to a typical size was not done either: a big job landing on a runner that held little would hold more than the host's memory.
 
-### 앞질러 띄우기(`ahead`): `needs:` 로 오는 잡
+### Starting ahead (`ahead`): jobs that come through `needs:`
 
-`needs:` 가 있는 잡(단위 테스트 뒤의 e2e, api 배포 뒤의 web 배포)은 앞의 잡이 끝나야 GitHub 이 러너를 찾는다. 그때 러너를 띄우면 그 잡은 러너가 뜨는 시간을 늘 기다린다. `warm` 은 이것을 덮지 못하는 때가 있다: 하루 한 번의 배포 사슬처럼 묶음이 하나뿐인 클래스, 그리고 첫 push.
-그래서 앞의 잡이 끝날 때를 보고 그만큼 먼저 띄운다.
+A job with `needs:` (e2e after unit tests, a web deploy after an api deploy) gets a runner from GitHub only after the job before it ends. A runner started then means that job always waits for the boot. `warm` sometimes cannot cover this: a class with only one batch, like a once-a-day deploy chain, and the first push.
+So pumasi watches when the earlier job will end and starts that much earlier.
 
-- **누가 누구 뒤에 오나.** 원장에서 배운다(`decide.LearnNeeds`, 지난 7일, 10분마다). 한 워크플로우 실행에서 첫 잡들보다 15초 넘게 늦게 온 잡은, 같은 실행에서 그 직전(1분 안)에 끝난 잡을 기다린 것으로 본다. 두 번 넘게, 그리고 앞의 잡이 끝난 실행의 절반 넘게 그랬으면 짝으로 남기고, 끝난 뒤 온 시간의 중앙값을 지연으로 쓴다. 손으로 다시 돌린 것, 승인을 기다린 것은 1분을 넘으므로 짝이 되지 않는다.
-- **언제.** 지금 도는 잡이 끝날 때는 대기 ETA 와 같은 값이다(그 잡의 최근 실행 시간 중앙값, `decide.EndOf`). 그 뒤에 올 잡이 러너가 뜨는 시간 + 한 판(`evaluateEvery`) 안에 올 것 같으면 그 잡의 클래스에 러너를 하나 띄운다. 이미 온 잡, 한 단계 너머의 잡은 세지 않는다.
-- **크기와 자리.** 그 잡의 크기를 쥔다. 어디서·비켜 주기·압박·idle timeout 은 `warm` 과 같다: 기다리는 잡이 원하지 않는 자리에서만 띄우고, 잡이 오거나 1분이 지나 기대가 사라지면 보통 러너처럼 거둔다. `warm` 으로 이미 떠 있는 러너가 있으면 그것을 센다.
-- 시작 사유에 `ahead: e2e expected in ~6s, when unit ends (1 of 1 expected), …` 로 보인다. 지금 몇 개를 기대하는지는 `/api/state` 의 `classes[].soon` 이다. 끄려면 `ahead: false`.
+- **Who comes after whom.** Learned from the ledger (`decide.LearnNeeds`, the last 7 days, every 10 minutes). In one workflow run, a job that came more than 15 seconds after the first jobs is taken to have waited for a job in the same run that ended just before it (within 1 minute). If that happened more than twice, and in more than half of the runs where the earlier job ended, the pair is kept, and the median time from that end to the arrival is used as the delay. Manual reruns and jobs that waited for approval take over 1 minute, so they don't become pairs.
+- **When.** When a running job will end is the same value as the wait ETA (the median of that job's recent run times, `decide.EndOf`). If the job after it is likely to come within runner boot time + one round (`evaluateEvery`), one runner is started for that job's class. Jobs already here and jobs more than one step away are not counted.
+- **Size and room.** It holds that job's size. Where, giving way, pressure and idle timeout are as for `warm`: it starts only in room no waiting job wants, and when the job comes or the expectation lapses after 1 minute, it is reclaimed like a normal runner. A runner already up through `warm` is counted.
+- The start reason shows `ahead: e2e expected in ~6s, when unit ends (1 of 1 expected), …`. How many are expected now is `classes[].soon` in `/api/state`. To turn it off, `ahead: false`.
 
-**재 본 것.** 같은 하네스에 `needs:` 를 넣고(e2e 두 갈래는 unit-tests 뒤, size-report 는 label-check 뒤, deploy-web 은 deploy-api 뒤, 끝난 뒤 1.5 ~ 4.5초), 러너가 뜨는 시간은 실제 호스트에서 잰 native 러너의 분포(중앙값 약 4.8초, 다섯에 하나 5.7 ~ 12초, 서른셋에 하나 12 ~ 36초)로 했다. 짝은 앞선 3일치 흐름에서 배운다. 시드 10개 평균:
+**Measured.** The same harness with `needs:` added (the two e2e branches after unit-tests, size-report after label-check, deploy-web after deploy-api, 1.5–4.5 seconds after the end), with runner boot time drawn from the distribution of native runners measured on real hosts (median about 4.8 seconds, one in five 5.7–12 seconds, one in thirty-three 12–36 seconds). Pairs are learned from the previous 3 days of flow. Mean of 10 seeds:
 
-| push 간격 | 구성 | 대기 중앙값 / p90 / 최대 | `needs` 잡 중앙값 / p90 | 잡 없는 러너가 쥔 메모리 | 잡 없이 멈춘 러너 |
+| Push interval | Setup | Wait median / p90 / max | `needs` jobs median / p90 | Memory held by runners without a job | Runners stopped without a job |
 |---|---|---|---|---|---|
-| 35 ~ 55초 | per-class 고정 | 0:01 / 0:02 / 1:21 | 0:01 / 0:03 | - | - |
-| | pumasi, 둘 다 끔 | 0:07 / 0:11 / 0:36 | 0:07 / 0:11 | 3.9G | 0 |
-| | `ahead` 만 | 0:06 / 0:09 / 0:35 | 0:02 / 0:09 | 5.8G | 0.9 |
-| | `warm` 만 | 0:01 / 0:07 / 0:25 | 0:01 / 0:07 | 48.6G | 6.2 |
-| | 둘 다(기본) | 0:01 / 0:06 / 0:19 | 0:01 / 0:05 | 49.2G | 7.1 |
-| 25 ~ 40초 | per-class 고정 | 0:01 / 0:08 / 2:18 | 0:01 / 0:25 | - | - |
-| | pumasi, 둘 다 끔 | 0:07 / 0:21 / 1:00 | 0:08 / 0:35 | 4.5G | 0 |
-| | `ahead` 만 | 0:06 / 0:20 / 1:00 | 0:05 / 0:34 | 6.2G | 0.9 |
-| | `warm` 만 | 0:03 / 0:18 / 1:07 | 0:06 / 0:32 | 37.4G | 12.7 |
-| | 둘 다(기본) | 0:02 / 0:19 / 0:57 | 0:04 / 0:32 | 38.5G | 12.8 |
+| 35–55 s | Fixed per class | 0:01 / 0:02 / 1:21 | 0:01 / 0:03 | - | - |
+| | pumasi, both off | 0:07 / 0:11 / 0:36 | 0:07 / 0:11 | 3.9G | 0 |
+| | `ahead` only | 0:06 / 0:09 / 0:35 | 0:02 / 0:09 | 5.8G | 0.9 |
+| | `warm` only | 0:01 / 0:07 / 0:25 | 0:01 / 0:07 | 48.6G | 6.2 |
+| | Both (default) | 0:01 / 0:06 / 0:19 | 0:01 / 0:05 | 49.2G | 7.1 |
+| 25–40 s | Fixed per class | 0:01 / 0:08 / 2:18 | 0:01 / 0:25 | - | - |
+| | pumasi, both off | 0:07 / 0:21 / 1:00 | 0:08 / 0:35 | 4.5G | 0 |
+| | `ahead` only | 0:06 / 0:20 / 1:00 | 0:05 / 0:34 | 6.2G | 0.9 |
+| | `warm` only | 0:03 / 0:18 / 1:07 | 0:06 / 0:32 | 37.4G | 12.7 |
+| | Both (default) | 0:02 / 0:19 / 0:57 | 0:04 / 0:32 | 38.5G | 12.8 |
 
-앞질러 띄운 러너의 98 ~ 100% 가 그 잡을 받았다. `ahead` 만으로 `needs` 잡의 중앙값이 0:07 에서 0:02 로 줄고, 쥐는 메모리는 `warm` 의 8분의 1 이다. `warm` 이 있으면 더하는 것은 작다(p90 0:07 → 0:05, 최대 0:25 → 0:19). 하루 한 번의 deploy-web 은 `warm` 이 덮지 못해 평균 8.0초를 기다리고, 앞질러 띄우면 3.2 ~ 3.7초다.
-`needs` 잡의 p90 이 고정 러너만큼 줄지 않는 것은 두 가지 때문이다: 앞의 잡이 중앙값보다 일찍 끝나면 러너가 늦고, 러너가 뜨는 시간의 꼬리(12 ~ 36초)는 미리 알 수 없다. 앞당기는 폭을 늘려 봐도(3 ~ 18초 더, 실행 시간의 10% 분위로 끝을 잡기) p90 은 1 ~ 2초 안에서만 움직이고 쥐는 자리만 늘어 기본값은 그대로 두었다. 가장 바쁜 흐름의 p90 은 자리를 기다리는 시간이라 이것으로 줄지 않는다.
+98–100% of the runners started ahead got that job. `ahead` alone cuts the `needs` jobs' median from 0:07 to 0:02, and holds an eighth of the memory `warm` holds. With `warm` on, what it adds is small (p90 0:07 → 0:05, max 0:25 → 0:19). The once-a-day deploy-web, which `warm` cannot cover, waits 8.0 seconds on average, and 3.2–3.7 seconds when started ahead.
+The `needs` jobs' p90 does not drop as far as with fixed runners, for two reasons: when the earlier job ends sooner than its median, the runner is late, and the tail of boot time (12–36 seconds) cannot be known ahead. Starting earlier (3–18 seconds more, taking the end at the 10th percentile of run time) moved p90 only within 1–2 seconds and only held more room, so the default was left as it is. In the busiest flow, p90 is time spent waiting for room, which this does not cut.
 
-### 잡이 바뀌면: 한 번 맞춘 고정 러너와
+### When the jobs change: against fixed runners tuned once
 
-위의 per-class 고정 러너는 그 흐름을 미리 알고 맞춘 것이라, 같은 흐름에서는 이기기 어렵다. 하지만 CI 는 변한다. 그래서 고정 러너를 「바뀌기 전」의 흐름으로 맞추고, pumasi 는 바뀌기 전의 실행을 재 둔 채로, 바뀐 뒤의 흐름을 돌렸다(`race.DriftTable`).
-바꾼 것은 CI 가 흔히 겪는 네 가지이고, 돌리기 전에 정한 그대로다: 모든 잡이 30% 커짐(시간·CPU·메모리), 무거운 잡(webkit e2e, 이미지 빌드)이 매 push 마다, pr-checks 에 5 ~ 7G 짜리 새 잡, PR 이 반으로 줄고 nightly matrix(e2e 8 + 빌드 2)가 두 번.
-비교에 「다시 맞춘 per-class」(바뀐 흐름을 미리 알고 다시 맞춤)도 넣었다. 누가 알아채고 고친 경우다.
+The fixed per-class runners above were tuned knowing the flow in advance, so they are hard to beat on that same flow. But CI changes. So the fixed runners were tuned to the flow "before the change", and pumasi, with the runs before the change already measured, ran the flow after the change (`race.DriftTable`).
+The changes are four that CI often goes through, fixed before the runs: every job 30% bigger (time, CPU, memory), heavy jobs (webkit e2e, image build) on every push, a new 5–7G job in pr-checks, and PRs halved with a nightly matrix (8 e2e + 2 builds) twice.
+The comparison also includes "per-class, retuned" (retuned knowing the changed flow in advance): the case where someone noticed and fixed it.
 
-push 35 ~ 55초, 시드 10개 평균. 대기 중앙값 / p90 / 최대, 그리고 러너가 받은 메모리를 넘긴 잡 수(한 판):
+Pushes every 35–55 seconds, mean of 10 seeds. Wait median / p90 / max, and the number of jobs that went over the memory their runner got (per run):
 
-| 바뀐 것 | per-class, 바뀌기 전에 맞춤 | per-class, 다시 맞춤 | pumasi |
+| Change | Per-class, tuned before the change | Per-class, retuned | pumasi |
 |---|---|---|---|
-| 없음 | 0:01 / 0:02 / 1:42 | (같음) | 0:01 / 0:09 / 0:21 |
-| 잡이 30% 커짐 | 0:01 / 0:25 / 3:44, 44잡 넘김, 호스트 메모리 초과 83초 | 0:19 / 1:51 / 5:16 | 0:09 / 2:00 / 6:00 |
-| 무거운 잡이 매번 | 0:01 / 3:26 / 20:30 | 0:01 / 1:03 / 5:46 | 0:09 / 1:13 / 2:23 |
-| 새 5 ~ 7G 잡 | 0:02 / 0:21 / 4:03, 18잡 넘김 | 0:03 / 0:29 / 2:25 | 0:08 / 0:30 / 1:11 |
-| nightly | 0:01 / 2:53 / 8:33 | 0:59 / 2:57 / 5:17 | 0:18 / 2:41 / 3:48 |
+| None | 0:01 / 0:02 / 1:42 | (same) | 0:01 / 0:09 / 0:21 |
+| Jobs 30% bigger | 0:01 / 0:25 / 3:44, 44 jobs over, host memory exceeded for 83 s | 0:19 / 1:51 / 5:16 | 0:09 / 2:00 / 6:00 |
+| Heavy jobs every time | 0:01 / 3:26 / 20:30 | 0:01 / 1:03 / 5:46 | 0:09 / 1:13 / 2:23 |
+| New 5–7G job | 0:02 / 0:21 / 4:03, 18 jobs over | 0:03 / 0:29 / 2:25 | 0:08 / 0:30 / 1:11 |
+| Nightly | 0:01 / 2:53 / 8:33 | 0:59 / 2:57 / 5:17 | 0:18 / 2:41 / 3:48 |
 
-- 한 번 맞춘 고정 러너는 잡이 바뀌어도 느려지지 않는다. 대신 조용히 다른 것이 깨진다: 커진 잡과 새 잡이 러너의 메모리를 넘기고(그 러너에 메모리 한도가 있으면 잡이 죽고, 없으면 호스트가 넘친다), 크기를 맞춘 칸 수보다 자주 오는 클래스의 줄이 20분까지 길어진다.
-- pumasi 는 아무도 숫자를 고치지 않아도 어느 호스트도 메모리를 넘지 않았다(커진 잡이 처음 몇 번 추정을 넘겼지만, 놓을 때 지금 쓰는 양을 세서).
-  최대 대기는 두 속도 × 네 변화, 8가지 가운데 6가지에서 바뀌기 전에 맞춘 per-class 보다 짧았다(아닌 둘은 잡이 30% 커진 경우).
-  다섯 구성 모두 가운데 가장 짧은 것은 4가지(새 잡, nightly)이고, 나머지 4가지는 split 이 가장 짧았다 — 잡이 커진 경우의 split 은 한 판에 35잡이 러너의 메모리를 넘기면서다.
-- 지는 곳: 중앙값. 바뀐 흐름은 일이 더 많아 남는 자리가 줄고, 미리 띄울 곳이 없으니 기동 시간(8초)이 다시 보인다. 한 번 맞춘 per-class 는 메모리를 넘기면서 중앙값 0:01 을 지킨다. 다시 맞춘 per-class 보다는 pumasi 의 중앙값이 짧다.
-- 잡이 30% 커진 경우 pumasi 의 최대(6:00)는 다시 맞춘 per-class(5:16)보다 길다. 메모리를 지키는 쪽끼리는 비슷하고, 메모리를 넘기는 쪽만 빠르다.
-- push 25 ~ 40초에서도 모양은 같다. 전체 표는 `go run ./internal/race/cmd` 의 마지막 표다.
+- Fixed runners tuned once do not get slower when jobs change. Instead something else breaks quietly: bigger jobs and new jobs go over their runner's memory (if that runner has a memory limit the job dies, otherwise the host overflows), and the line of a class that comes more often than the slots it was sized for grows to 20 minutes.
+- pumasi did not go over memory on any host even though nobody changed a number (bigger jobs went over their estimate the first few times, but placement counts current use).
+  Its max wait was shorter than per-class tuned before the change in 6 of the 8 cases (two speeds × four changes); the other two were jobs 30% bigger.
+  Among all five setups it was the shortest in 4 cases (new job, nightly), and in the other 4 split was the shortest; in the case of bigger jobs, split got there with 35 jobs per run going over their runner's memory.
+- Where it loses: the median. The changed flow has more work, so less room is left, and with nowhere to start runners ahead, boot time (8 seconds) shows again. Per-class tuned once keeps a 0:01 median while going over memory. pumasi's median is shorter than per-class retuned.
+- With jobs 30% bigger, pumasi's max (6:00) is longer than per-class retuned (5:16). The setups that keep to memory are similar to each other; only those that go over memory are faster.
+- With pushes every 25–40 seconds the shape is the same. The full table is the last table printed by `go run ./internal/race/cmd`.
 
-## 호스트가 붙는 법
+## How hosts join
 
-**호스트가 controller 로 연결을 연다.** 길은 이것 하나다. controller 는 `listen` 포트 하나를 열고, 에이전트는 어떤 포트도 열지 않는다.
+**The host opens the connection to the controller.** That is the only path. The controller opens one `listen` port, and the agent opens no ports.
 
-- **연결 하나.** 호스트가 TLS 로 붙고 그 위에 스트림을 여러 개 얹는다(yamux). controller 는 그 스트림으로 에이전트의 HTTP 계약(`/v1/snapshot`, `/v1/runners`)을 부른다.
-- **끊기면 호스트가 다시 건다**, 1초부터 30초까지 늘려 가며. keepalive 10초, 20초 응답이 없으면 양쪽이 버린다. controller 가 내려가 있어도 러너와 잡은 그대로 돈다.
-- **초대 줄**이 하는 일: controller 에서 자기 OS 의 바이너리를 받아 `~/.local/bin/pumasi` 에 두고, 붙기 전 확인을 하고, 에이전트를 그 사용자의 서비스로 올린다.
-  호스트가 말하는 것은 이름·예산·종류뿐이다(기본: hostname, 상한 없음 = 비어 있는 만큼, Mac·Windows·화면 세션이 있는 Linux 는 desktop).
-- **`hosts: - ssh: X`** 는 같은 일을 controller 가 대신 한다: ssh 로 들어가 초대 줄을 그 호스트의 이름·예산·종류로 실행한다(스크립트는 stdin 으로).
-  ssh 는 그때와, 안 붙어 있는 그 호스트를 `down` 이 치울 때(`pumasi leave` 실행)만 쓴다. 그 호스트의 에이전트가 계속 안 붙으면 1분마다 초대 줄을 다시 실행한다.
-- **판 맞추기.** 호스트는 붙을 때 자기 판(바이너리 sha256)을 말한다. 다르면 controller 의 판을 받아 sha 를 확인하고 자기 자신을 바꿔 실행한다. 러너는 건드리지 않는다.
-  못 바꾸면 이유를 말하며 옛 판으로 붙고 `agent version` 사건이 열린다.
+- **One connection.** The host connects over TLS and opens several streams on it (yamux). The controller calls the agent's HTTP contract (`/v1/snapshot`, `/v1/runners`) over those streams.
+- **When it drops, the host dials again**, backing off from 1 second to 30 seconds. Keepalive every 10 seconds; after 20 seconds with no answer, both sides drop the connection. While the controller is down, runners and jobs keep running.
+- What the **invite line** does: fetches the binary for its OS from the controller into `~/.local/bin/pumasi`, runs the checks before joining, and brings the agent up as a service of that user.
+  The host states only its name, budget and kind (defaults: hostname, no cap = whatever is free, desktop for Mac, Windows and Linux with a graphical session).
+- **`hosts: - ssh: X`** has the controller do the same: it logs in over ssh and runs the invite line with that host's name, budget and kind (the script goes on stdin).
+  ssh is used only then, and when `down` cleans up that host while it is not connected (running `pumasi leave`). If that host's agent keeps failing to connect, the invite line is run again every minute.
+- **Keeping versions in step.** A host states its version (the binary's sha256) when it joins. If it differs, the host fetches the controller's version, checks the sha, and replaces itself and runs that. Runners are not touched.
+  If it can't replace itself, it says why and joins with the old version, and an `agent version` incident opens.
 
-### 서로를 믿는 방법
+### How each side trusts the other
 
-- controller 는 처음 뜰 때 TLS 키와 인증서를 만든다(상태 디렉터리의 `join.key`·`join.crt`).
-- **호스트 → controller**: 초대 줄에 인증서의 공개키 지문이 있다(`--pinnedpubkey`). 에이전트도 그 지문으로만 붙는다. 호스트는 시키는 이미지를 실행하므로 이 확인이 필요하다.
-- **controller → 호스트**: 초대 토큰. `pumasi invite` 때마다 새로 만들고 기본은 호스트 하나·1시간이다. 인자가 아니라 환경(`PUMASI_TOKEN`)으로 가서 프로세스 목록에 남지 않는다.
-  호스트는 가입할 때 자기 id 와 비밀값을 만들어 보내고 controller 는 그 해시만 적는다(`hosts.json`). 그 뒤 연결은 id 와 비밀값으로 한다.
-- **이미 가입한 호스트는 토큰 없이 다시 가입한다**(이름·예산·종류를 바꿀 때). 토큰의 1회 제한은 새 호스트에만 걸린다.
-- 설정의 `hosts:` 에 있는 이름은 예약이다. 그 이름으로는 controller 가 그 호스트에게 준 토큰으로만 가입한다.
-- `listen` 포트는 가입·바이너리 내려받기·세션만 받는다. 대시보드와 status 는 loopback 에만 열린다.
-- **자격과 잡의 분리**: GitHub 토큰과 `join.key` 는 controller 머신에만 있고 호스트는 러너 하나의 JIT 설정만 받는다. 이 분리는 잡이 controller 의 사용자로 돌 수 있는 순간 깨진다 —
-  호스트가 controller 와 같은 머신이고 러너가 그 사용자의 프로세스(또는 docker 를 쓰는 사용자의 프로세스, privileged 컨테이너, 상태 디렉터리를 mount 한 컨테이너)일 때다.
-  에이전트는 스냅샷에 부팅 id 의 해시와 사용자 id 를 싣고, controller 는 자기 것과 같으면 클래스와 이유를 경고한다. 막지 않는 이유와 끄는 키는 README 「보안 모델」.
+- The controller makes a TLS key and certificate on first start (`join.key`, `join.crt` in the state directory).
+- **Host → controller**: the invite line carries the certificate's public key fingerprint (`--pinnedpubkey`). The agent also connects only with that fingerprint. The host runs the images it is told to, so this check is needed.
+- **Controller → host**: the invite token. A new one is made for each `pumasi invite`, by default for one host and one hour. It goes in the environment (`PUMASI_TOKEN`), not an argument, so it doesn't show in the process list.
+  When joining, the host makes its own id and secret and sends them, and the controller stores only the hash (`hosts.json`). After that, connections use the id and secret.
+- **A host that already joined can join again without a token** (to change its name, budget or kind). The token's one-time limit applies only to new hosts.
+- Names in the config's `hosts:` are reserved. A host can join under such a name only with the token the controller gave that host.
+- The `listen` port accepts only joining, binary downloads and sessions. The dashboard and status listen on loopback only.
+- **Keeping credentials apart from jobs**: the GitHub token and `join.key` are only on the controller machine, and hosts get only one runner's JIT config. This separation breaks the moment a job can run as the controller's user:
+  when the host is the controller's own machine and the runner is a process of that user (or a process of a user who can use docker, a privileged container, or a container that mounts the state directory).
+  The agent puts a hash of the boot id and the user id in its snapshot, and when they match the controller's own, the controller warns with the class and the reason. Why it does not block, and the key that turns the warning off: the README's "Security model".
 
-### OS 마다 다른 것
+### What differs by OS
 
 | | Linux | Mac | Windows |
 |---|---|---|---|
-| 초대 줄 | sh | sh (같은 줄) | PowerShell |
-| 붙기 전 확인 | docker, cgroup v2 | 러너 배포판 받기, 디스크, 로그인 세션 | 같음 |
-| 에이전트를 지키는 것 | systemd user unit (linger 일 때) | LaunchAgent `dev.pumasi.agent` | HKCU `Run` 값 — 로그온 때 뜨는 감독 프로세스 |
-| 그게 안 되면 | 스스로 다시 뜨는 프로세스(재부팅 뒤에는 안 올라온다 — 가입할 때 말한다) | 같음(화면에 로그인하지 않은 Mac) | — |
-| 판 교체 | 같은 pid 로 exec | 같은 pid 로 exec | 파일을 바꿔 두고 끝남 → 감독 프로세스가 새 판을 띄움 |
+| Invite line | sh | sh (the same line) | PowerShell |
+| Checks before joining | docker, cgroup v2 | fetching the runner release, disk, login session | same |
+| What keeps the agent running | systemd user unit (with linger) | LaunchAgent `dev.pumasi.agent` | HKCU `Run` value: a supervisor process started at logon |
+| When that is not possible | a process that restarts itself (does not come back after a reboot; it says so when joining) | same (a Mac where no one is logged in to the screen) | — |
+| Version update | exec with the same pid | exec with the same pid | swaps the file and exits → the supervisor starts the new version |
 
-Mac·Windows 의 에이전트가 **로그인한 사용자의 세션**에서 도는 것은 잡 때문이다: 서명은 그 사용자의 키체인을, 브라우저 시험은 화면을 쓴다. 그래서 Windows 는 서비스(세션 0)가 아니다.
-ssh 세션에서 붙인 Windows 호스트는 그 세션이 끝날 때 에이전트도 죽는다 — 그 머신의 창에서 붙인다.
+The agent on Mac and Windows runs in **the logged-in user's session** because of jobs: signing uses that user's keychain, and browser tests use the screen. That is why on Windows it is not a service (session 0).
+A Windows host joined from an ssh session loses its agent when that session ends. Join from a window on that machine.
 
-### 떼기
+### Removing a host
 
-- 호스트에서 `pumasi leave`: 에이전트·러너(컨테이너, native 러너의 scope, 안쪽 docker 용 이미지)·`~/.cache/pumasi`·러너 루트·바이너리·서비스를 지우고 controller 에 알린다.
-  러너가 떠 있으면 목록을 보이고 거부한다(`--force`).
-- `pumasi down`: 붙어 있는 호스트에 같은 일을 시키고 scale set 을 지운다. 안 붙어 있는 호스트는 `hosts:` 의 것이면 ssh 로 `leave` 를 실행하고, 스스로 붙은 것이면 "거기서 `pumasi leave`" 라고 말한다.
-- controller 가 잊은 호스트의 러너는 장부에서 `host … is not configured` 로 닫힌다.
+- `pumasi leave` on the host: removes the agent, runners (containers, native runners' scopes, the image for inner docker), `~/.cache/pumasi`, the runner root, the binary and the service, and tells the controller.
+  If runners are up, it lists them and refuses (`--force`).
+- `pumasi down`: has the connected hosts do the same and deletes the scale sets. For a host that is not connected: if it is in `hosts:`, `leave` is run over ssh; if it joined on its own, pumasi says "run `pumasi leave` there".
+- Runners of a host the controller has forgotten are closed in the ledger with `host … is not configured`.
 
-## 러너
+## Runners
 
-러너는 잡 하나로 끝난다. 작업 디렉터리·도구 캐시도 그 러너의 것이다.
+A runner ends after one job. Its work directory and tool cache belong to that runner too.
 
-| | docker (Linux 기본) | native — Linux | native — Mac | native — Windows |
+| | docker (Linux default) | native — Linux | native — Mac | native — Windows |
 |---|---|---|---|---|
-| 러너 | 컨테이너 | systemd user scope 안의 프로세스 | 프로세스 그룹 + 자손 추적 | 이름 붙은 Job Object |
-| 한도(호스트 보호, 클래스의 `limit`) | cgroup: 메모리(`limit` 이 있으면 CPU 도) | 같음(`MemoryMax`, `CPUQuota`, swap 0) | **없다** | Job Object: 넘는 할당이 실패 |
-| 한도를 넘으면 | 그 프로세스만 죽고 OOM 사건 | 같음 | — | 거절 횟수를 세어 같은 사건 |
-| 추정을 넘으면 | 아무 일도 없다: 다음 실행이 크게 놓인다 | 같음 | 같음 | 같음 |
-| 수치 | cpu 초, 메모리 peak, I/O, 압박(PSI) | 같음(io 는 위임된 호스트만) | cpu 초, 메모리 peak(5초 샘플) | cpu 초, 메모리 peak, I/O |
-| 남은 자식 정리 | 컨테이너 삭제 | `cgroup.kill` | 그룹에 SIGTERM → SIGKILL, 벗어난 자식도 추적 | Job 종료 |
-| 에이전트가 죽어도 | 러너는 돈다. 새 에이전트가 이어받고 수치도 이어진다 | 같음(scope 는 systemd 의 것) | 같음 | 같음(같은 로그온 세션에서) |
-| 호스트의 것 | 안 보인다(`mounts` 로 붙인 것만) | 전부 보인다 | 전부 보인다 | 전부 보인다 |
+| Runner | container | a process in a systemd user scope | process group + tracking of descendants | a named Job Object |
+| Limits (host protection, the class's `limit`) | cgroup: memory (CPU too if `limit` is set) | same (`MemoryMax`, `CPUQuota`, swap 0) | **none** | Job Object: allocations past it fail |
+| Over the limit | only that process dies, and an OOM incident | same | — | counts the refusals, the same incident |
+| Over the estimate | nothing happens: the next run is placed bigger | same | same | same |
+| Metrics | cpu seconds, memory peak, I/O, pressure (PSI) | same (io only on hosts with delegation) | cpu seconds, memory peak (5-second samples) | cpu seconds, memory peak, I/O |
+| Cleaning up leftover children | container removal | `cgroup.kill` | SIGTERM → SIGKILL to the group, children that escaped it are tracked too | Job end |
+| If the agent dies | the runner keeps running; a new agent adopts it and the metrics continue | same (the scope belongs to systemd) | same | same (within the same logon session) |
+| The host's files | not visible (only what `mounts` adds) | all visible | all visible | all visible |
 
-- **러너가 잡을 받았는지는 에이전트가 먼저 안다.** 러너 출력의 `Running job` 줄을 읽어 busy 를 알린다(GitHub 의 메시지는 30초쯤 늦다).
-- **러너의 환경** = 에이전트의 환경(native; 자격처럼 보이는 이름은 뺀다) 또는 이미지의 환경(컨테이너) + 클래스의 `env`. native 는 `path` 를 `PATH` 앞에 붙인다. `env` 가 이긴다.
-  값의 `{runner}` 는 그 러너의 디렉터리다(native: `<러너 루트>/<이름>`, 컨테이너: `/home/runner`). 다른 변수 참조(`$PATH`)는 풀지 않는다 — 그래서 `path` 가 따로 있다.
-  에이전트의 환경은 서비스 관리자가 준 것이다: Mac 의 LaunchAgent 는 가입할 때의 `PATH` 만, Linux 의 systemd user unit 은 user manager 의 기본값.
-- **JIT 설정은 환경 변수로 넘긴다**(인자는 `ps` 에 보인다). 에이전트의 환경에서 자격처럼 보이는 것(`*TOKEN*`, `*SECRET*`, `PUMASI_*`)은 러너에 넘기지 않는다.
-- **러너 판**은 `image` 의 태그다(`ghcr.io/actions/actions-runner:2.338.2`). 컨테이너는 그 이미지를 쓰고, native 는 태그에서 판 번호를 읽어 같은 판의 배포판을
-  처음 한 번 받는다(`~/.cache/pumasi/dist`, sha256 을 GitHub release 의 digest 와 대조한 뒤에만 푼다). **태그가 `:latest` 면 native 러너는 뜨지 못한다.** 러너의 자체 업데이트는 꺼져 있어 판은 사람이 올린다.
+- **The agent knows first whether a runner got a job.** It reads the `Running job` line in the runner's output and reports busy (GitHub's message comes about 30 seconds later).
+- **Runner environment** = the agent's environment (native; names that look like credentials are dropped) or the image's environment (container) + the class's `env`. Native runners get `path` in front of `PATH`. `env` wins.
+  `{runner}` in a value is that runner's directory (native: `<runner root>/<name>`, container: `/home/runner`). Other variable references (`$PATH`) are not expanded, which is why `path` exists.
+  The agent's environment is what the service manager gives it: Mac's LaunchAgent only the `PATH` at join time, Linux's systemd user unit the user manager's defaults.
+- **The JIT config is passed in an environment variable** (arguments show in `ps`). Anything in the agent's environment that looks like a credential (`*TOKEN*`, `*SECRET*`, `PUMASI_*`) is not passed to runners.
+- **The runner version** is the tag of `image` (`ghcr.io/actions/actions-runner:2.338.2`). Containers use that image. Native runners read the version number from the tag and fetch the release of the same version
+  once (`~/.cache/pumasi/dist`, unpacked only after its sha256 matches the digest of the GitHub release). **If the tag is `:latest`, native runners cannot start.** The runner's self-update is off, so people bump the version.
 
-### 컨테이너 러너에 호스트를 붙이기
+### Giving a container runner parts of the host
 
-- **`mounts`** — `docker run --mount type=bind` 로 같은 경로에 붙인다(`:ro` = 읽기 전용; 없는 경로를 docker 가 root 로 만들지 않는다).
-  호스트는 물어 온 경로 중 있는 것을 답하고, 모두 있는 호스트에만 놓인다. 없으면 `no host has /srv/ci-cache`. 컨테이너 안의 사용자(`runner`, uid 1001)가 쓸 수 있게 하는 것은 호스트의 일이다.
-  native 클래스에 적으면 붙이지 않고(이미 보인다) 놓을 호스트만 가린다.
-- **작업 디렉터리는 첫 쓰기 가능 mount 안에 둔다**(`<mount>/.pumasi-work/<러너>`, 끝나면 지운다). 컨테이너의 overlay 와 mount, 서로 다른 mount 사이에서는
-  `link()` 가 `EXDEV` 라 pnpm·uv·ccache 의 hard link 가 조용히 복사로 바뀐다. mount 가 모두 `:ro` 면 컨테이너 안에 둔다.
-- **`docker: inside`** — 러너 컨테이너 안에 docker 데몬을 띄운다. 잡의 `docker run`·`services:`·compose 가 거기 생기므로 클래스 한도와 수치 안이고,
-  잡이 남긴 컨테이너·볼륨·네트워크·이미지는 러너와 함께 사라진다. 대가는 둘이다. 러너 컨테이너가 **privileged** 다 — 컨테이너 격리를 믿고 낯선 레포를 받는 클래스에는 쓰지 않는다.
-  그리고 **이미지를 러너마다 새로 받는다**(안쪽 저장소는 러너와 함께 지우는 볼륨). 러너 사이에 저장소를 남기면 잡마다 10초쯤 아끼지만 앞 잡의 것이 다음 잡에 보이고 디스크 정리 규칙이 따로 든다 — 남기지 않는다.
-  기본 러너 이미지에 iptables 가 없어서 호스트마다 처음 한 번 얹은 이미지를 짓는다(`pumasi-inner-docker:<판>`). compose 플러그인은 잡이 받는다. native 클래스에는 못 적는다.
+- **`mounts`**: attached at the same path with `docker run --mount type=bind` (`:ro` = read-only; docker does not create a missing path as root).
+  The host answers which of the asked paths it has, and the class is placed only on hosts that have them all. Otherwise `no host has /srv/ci-cache`. Making them writable for the user inside the container (`runner`, uid 1001) is the host's job.
+  Written on a native class, nothing is attached (it is already visible); it only picks the hosts to place on.
+- **The work directory goes inside the first writable mount** (`<mount>/.pumasi-work/<runner>`, removed at the end). Between the container's overlay and a mount, and between different mounts,
+  `link()` fails with `EXDEV`, so the hard links of pnpm, uv and ccache quietly turn into copies. If every mount is `:ro`, it goes inside the container.
+- **`docker: inside`**: starts a docker daemon inside the runner container. The job's `docker run`, `services:` and compose land there, so they are inside the class limit and the metrics,
+  and the containers, volumes, networks and images the job leaves go away with the runner. There are two costs. The runner container is **privileged**: don't use it for a class that takes unfamiliar repos and relies on container isolation.
+  And **images are pulled again for every runner** (the inner store is a volume removed with the runner). Keeping the store between runners would save about 10 seconds per job, but one job's things would be visible to the next, and disk cleanup would need its own rules, so it is not kept.
+  The default runner image has no iptables, so each host builds an image with it added, once (`pumasi-inner-docker:<version>`). The job installs the compose plugin. Not allowed on native classes.
 
-### native 러너
+### Native runners
 
-- **Linux**: `systemd-run --user --scope --unit=pumasi-<러너>` 안의 `run.sh`. systemd-run 이 자신을 scope 에 넣고 나서 러너의 셸이 되므로 러너는 무엇을 띄우기 전부터 한도 아래다.
-  띄울 수 없는 호스트는 스스로 말한다(systemd user 세션 없음, cpu·memory 미위임, linger 꺼짐, 러너가 읽는 라이브러리 없음 — `ldconfig -p` 에 묻는다) — 그 호스트에는 native 클래스를 놓지 않고 대기 사유에 그 말이 나온다.
-  잡이 호스트 docker 로 띄운 컨테이너는 이 cgroup 밖이다.
-- **러너 루트는 홈 밖이다**: Linux `/var/tmp/pumasi-<uid>`, Mac `/Users/Shared/pumasi-<uid>`, Windows `C:\pm\<SID 끝자리>`. 잡 로그에 호스트 사용자의 홈 경로가 나오지 않고
-  Windows 에서는 경로가 짧다(260자 한계). 그 자리가 이미 남의 것이면 `~/.cache/pumasi/runners` 를 쓴다.
-- **배포판은 복제한다**: Mac 은 APFS clone, Linux·Windows 는 읽기 전용 하드 링크(다른 파일시스템이면 복사). 러너들이 파일을 함께 쓰므로 쓰기 권한을 떼어 두고,
-  쓰기 가능으로 돌아와 있으면 손댄 것으로 보고 새로 받는다.
-- **지우지 못한 것은 치워 두고 알린다.** 잡이 쓰기 권한을 뗀 디렉터리는 권한을 되돌려 지운다. 잡이 컨테이너로 남긴 root 의 파일처럼 그 사용자가 못 지우는 것은
-  러너 디렉터리째 `<러너 루트>/.trash/` 로 옮기고 `leftover` 사건이 경로와 이유를 말한다. 지우는 것은 사람이 한다.
-- **Mac 의 호스트 여유**: 남이 쓰는 CPU 는 Mach `host_statistics`, 메모리는 `kern.memorystatus_level`. 커널의 memory pressure 가 warning 이상이면 호스트가 스스로 닫는다.
-- **Windows**: Job 에 이름을 붙이고 러너의 셸이 Job 핸들을 물려받는다 — 에이전트가 죽어도 Job 이 살고 새 에이전트가 이름으로 다시 연다. 이름은 로그온 세션 안의 것이라 다른 세션의 에이전트는 못 찾는다.
-  `shell: bash` 는 WSL 이 깔린 머신에서 WSL 의 bash 로 풀리고, `shell: powershell` 은 실행 정책 `Restricted` 에 막힌다(`shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}`) — pumasi 가 아니라 Windows 러너의 성질이다.
-- **재부팅 판정**은 호스트의 boot id 로 한다(Linux boot_id, Mac `kern.bootsessionuuid`, Windows 커널 시작 시각). **Windows 의 빠른 시작(fast startup)으로 껐다 켠 것은 새 부팅이 아니다** — 그때 끝난 러너는 `rebooted` 가 아니라 `died` 로 나온다.
+- **Linux**: `run.sh` inside `systemd-run --user --scope --unit=pumasi-<runner>`. systemd-run puts itself in the scope and then becomes the runner's shell, so the runner is under the limits before it starts anything.
+  A host that can't start them says so itself (no systemd user session, cpu/memory not delegated, linger off, libraries the runner reads missing; it asks `ldconfig -p`). No native class is placed on that host, and the wait reason shows what it said.
+  Containers a job starts with the host's docker are outside this cgroup.
+- **The runner root is outside the home directory**: Linux `/var/tmp/pumasi-<uid>`, Mac `/Users/Shared/pumasi-<uid>`, Windows `C:\pm\<last part of the SID>`. Job logs don't show the host user's home path,
+  and on Windows the path stays short (the 260-character limit). If that place already belongs to someone else, `~/.cache/pumasi/runners` is used.
+- **The release is cloned**: APFS clone on Mac, read-only hard links on Linux and Windows (a copy on a different filesystem). Runners share the files, so write permission is removed,
+  and if it has come back to writable, it is taken as tampered with and fetched again.
+- **What can't be removed is moved aside and reported.** Directories where the job removed write permission get it back and are removed. What that user can't remove, like root's files a job left through a container,
+  is moved with the whole runner directory to `<runner root>/.trash/`, and a `leftover` incident states the path and the reason. Removing it is left to people.
+- **Mac's free room**: CPU used by others from Mach `host_statistics`, memory from `kern.memorystatus_level`. When the kernel's memory pressure is warning or above, the host closes itself.
+- **Windows**: the Job gets a name and the runner's shell inherits the Job handle, so if the agent dies the Job lives on and the new agent reopens it by name. The name is scoped to the logon session, so an agent in another session can't find it.
+  `shell: bash` resolves to WSL's bash on a machine with WSL installed, and `shell: powershell` is blocked by the `Restricted` execution policy (`shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}`). This is how Windows runners behave, not pumasi.
+- **Reboots are detected** by the host's boot id (Linux boot_id, Mac `kern.bootsessionuuid`, Windows kernel start time). **Turning Windows off and on with fast startup is not a new boot**: runners that ended then show as `died`, not `rebooted`.
 
-### `{slot}`: 남는 자리
+### `{slot}`: places that stay
 
-클래스의 `env`·`path` 값에서 `{runner}` 는 러너와 함께 지워지는 디렉터리, `{slot}` 은 번호다. 고정 러너가 러너마다 두던 홈·gradle home 같은 **지속 디렉터리**를
-일회용 러너에 「한 번에 한 러너만 쓰는 자리」로 준다(`HOME: /srv/ci-home/{slot}`).
+In a class's `env` and `path` values, `{runner}` is a directory removed with the runner, and `{slot}` is a number. It gives ephemeral runners the **persistent directories** fixed runners kept per runner, such as a home or a gradle home,
+as "places only one runner uses at a time" (`HOME: /srv/ci-home/{slot}`).
 
-- 번호는 **에이전트**가 준다: 그 호스트에서 에이전트가 아는 같은 클래스 러너들이 안 쓰는 가장 작은 수. 호스트 안의 일이라 controller 가 몰라도 맞고,
-  러너 기록과 함께 상태 파일에 남아 에이전트·controller 가 다시 떠도 도는 러너의 번호가 그대로다.
-- 번호는 러너가 **지워질 때** 풀린다. 끝났지만 아직 안 지운 러너도 번호를 쥔다 — 그 러너가 남긴 프로세스가 아직 그 자리를 쓰고 있을 수 있다.
-- native 러너는 번호가 든 경로 요소까지(`/srv/ci-home/3`)를 없으면 만든다. 그 아래(`.gradle`)는 잡의 몫이다. 미리 만들어 두게 하지 않는 이유: 동시에 몇 개가 뜰지는 호스트의 여유가 정하므로
-  사람이 호스트마다 디렉터리 개수를 맞춰 두게 하면 그 숫자가 또 틀린다. 같은 사용자가 빈 디렉터리를 만드는 것이라 새로 열리는 권한은 없다. 못 만들면 러너를 띄우지 않고 이유를 말한다. 지우지 않는다.
-- 컨테이너 러너에서는 `env` 값만 바뀐다(mounts 는 호스트마다 고정이다).
+- The **agent** gives the number: the smallest number not used by the runners of the same class the agent knows on that host. It is a matter within the host, so it is right even if the controller doesn't know,
+  and it is stored in the state file with the runner record, so a running runner keeps its number when the agent or the controller restarts.
+- A number is released when its runner is **removed**. A runner that finished but isn't removed yet still holds its number: processes it left may still be using that place.
+- Native runners create the path up to the element with the number (`/srv/ci-home/3`) if it is missing. What is below it (`.gradle`) is up to the job. Why people aren't asked to create them in advance: how many runners start at once is decided by the host's free room,
+  so having people match the number of directories on each host would be one more number that goes wrong. It is the same user creating an empty directory, so no new permission opens. If it can't be created, the runner is not started and the reason is given. It is never removed.
+- On container runners only the `env` value changes (mounts are fixed per host).
 
-### `overflow`: 받을 수 있는 만큼만
+### `overflow`: taking only what fits
 
-메시지를 묻는 요청의 `maxCapacity` 는 그 scale set 에 배정되는 잡 수의 상한이다(도는 잡도 센다). 기본은 이 값을 한껏 크게 보내 라벨의 잡을 전부 받는다 — 그래야 대기가 보이고 줄을 세울 수 있다.
-`overflow: true` 인 클래스는 이 값을 실제 자리로 보낸다.
+The `maxCapacity` in the request that asks for messages is the cap on jobs assigned to that scale set (running jobs count). By default it is sent as large as possible, so the class takes every job of its labels: that is what makes waits visible and lets jobs be put in line.
+A class with `overflow: true` sends its real room instead.
 
-- **받는 수** = 쥐고 있는 잡(받았지만 아직 러너가 안 잡은 잡 + 잡을 돌리는 러너) + 더 놓을 수 있는 수.
-  「더 놓을 수 있는 수」는 배치 계획을 세운 뒤 남은 자리에, 그 클래스가 최근에 돌린 잡 20개의 추정 중 가장 큰 것이 몇 개 들어가는지다(`decide` 의 `Room`). 이 클래스의 잡이 자리를 기다리는 중이면 그만큼 뺀다.
-  가장 큰 것으로 세는 이유: 하나 더 받으면 그 잡은 다른 러너가 받을 수 있었는데 여기서 기다린다. 덜 받으면 다른 러너가 받을 뿐이다.
-  재 본 잡이 없는 클래스는 다음 잡을 「모르는 잡」으로 센다(호스트마다 첫 추정으로 하나, 그다음은 3배가 빌 때).
-- **수가 바뀌면 다시 묻는다.** GitHub 은 물음을 50초쯤 쥐고 있으므로, 그 사이 자리가 났거나 없어진 것을 전하려면 묻던 것을 거두고 새 수로 다시 묻는다(`measuredPoll`). 메시지는 지울 때까지 GitHub 에 남으므로 거둔 물음이 잃는 것은 없다.
-- **`after`** 는 수를 0 으로 누르는 것뿐이다: 앞 클래스에 더 놓을 자리가 있는 동안 뒤 클래스는 쥐고 있는 수만 보낸다. scale set 사이의 순서를 GitHub 에 말할 길은 없어서, 한쪽이 받지 않는 것으로 순서를 만든다.
-- **안 하는 것.** 받은 잡을 돌려보내기(길이 없다), controller 가 꺼졌을 때 바로 넘기기(세션이 없는 동안 GitHub 은 잡을 5분 쥐고 있다가 다른 러너에 준다 — verified 의 실측).
+- **Number taken** = jobs held (taken but not yet picked up by a runner + runners running jobs) + how many more can be placed.
+  "How many more can be placed" is how many of the largest estimate among the class's last 20 jobs fit in the room left after the placement plan (`Room` in `decide`). If jobs of this class are waiting for room, that many are subtracted.
+  Why count with the largest: take one too many, and that job waits here when another runner could have taken it. Take too few, and another runner just takes it.
+  A class with no measured jobs counts its next job as an "unknown job" (one per host at the first estimate, then more when 3× is free).
+- **When the number changes, it asks again.** GitHub holds a request for about 50 seconds, so to pass on room that freed up or ran out meanwhile, it withdraws the request and asks again with the new number (`measuredPoll`). Messages stay on GitHub until deleted, so a withdrawn request loses nothing.
+- **`after`** only pushes the number to 0: while the earlier class has room to place more, the later class sends only the number it holds. There is no way to tell GitHub an order between scale sets, so the order comes from one side not taking jobs.
+- **What it does not do.** Send back jobs it took (there is no way to), or hand jobs over at once when the controller is off (while there is no session, GitHub holds a job for 5 minutes and then gives it to another runner, as measured in verified).
 
-### 고정 러너에서 옮길 때 달라지는 것
+### What changes when moving off fixed runners
 
-- 워크스페이스에 남겨 둔 것(`clean: false`, `node_modules`)에 기대던 잡은 매번 처음부터 한다.
-- `setup-node`·`setup-java` 는 러너마다 다시 받는다.
-- 러너 이름이 매번 다르다. 러너 이름으로 캐시 디렉터리를 나누던 워크플로우는 클래스나 잡 이름으로 나눈다.
-- GitHub API 로 센 빈 러너 수는 늘 0 이다.
-- 순서: 라벨 하나 = `driver: native` + `hosts:` 클래스 하나로 시작(`labels` 에 옛 라벨을 그대로 적으면 워크플로우는 안 바뀐다) → 잡 사이에 넘기는 것이 없는 클래스부터 `hosts:` 를 푼다 → 호스트를 안 쓰는 잡은 컨테이너 클래스로.
+- Jobs that relied on what was left in the workspace (`clean: false`, `node_modules`) start from scratch every time.
+- `setup-node` and `setup-java` download again for every runner.
+- The runner name differs every time. Workflows that split cache directories by runner name should split them by class or job name.
+- The idle runner count from GitHub's API is always 0.
+- Order: start with one label set = one `driver: native` + `hosts:` class (write the old labels in `labels` and workflows don't change) → lift `hosts:` first on classes that pass nothing between jobs → move jobs that don't use the host to container classes.
 
-## 사람 우선
+## People first
 
-데스크톱은 누군가의 책상이다. 그 사람이 앉아 있는 동안에는 새 러너를 받지 않는다. 도는 잡은 건드리지 않는다.
+A desktop is someone's desk. While that person is sitting there, it takes no new runners. Running jobs are not touched.
 
-- 에이전트는 "마지막 키보드·마우스 입력이 몇 초 전인가"만 말한다. Mac 은 `HIDIdleTime`, Windows 는 `GetLastInputInfo`(사용자 세션 안에서만 읽힌다),
-  Linux 는 logind 화면 세션의 `IdleHint`. 알 수 없으면 비우고, 신호를 모르는 호스트는 열려 있다.
-- `desktop` 호스트의 마지막 입력이 **15분** 안이면 그 호스트는 닫힌다(STATE 와 대기 사유에 `in use`). server 는 닫지 않는다. 설정은 없다.
-- Mac 에이전트는 사람이 있는 동안 러너의 프로세스를 background 대역으로 내린다(`PRIO_DARWIN_BG`). Mac 은 CPU 를 묶을 수단이 없어서 이것이 유일한 수단이다. Linux·Windows 에서는 하지 않는다.
-- 남이 쓰는 CPU·메모리는 사람 여부와 무관하게 빈 자리 계산에서 빠진다.
+- The agent reports only "how many seconds ago was the last keyboard or mouse input". Mac `HIDIdleTime`, Windows `GetLastInputInfo` (readable only inside the user session),
+  Linux the `IdleHint` of the logind graphical session. If it is unknown it is left empty, and a host whose signal is unknown is open.
+- When a `desktop` host's last input is within **15 minutes**, the host is closed (`in use` in STATE and in the wait reason). Servers are not closed. There is no setting.
+- While a person is there, the Mac agent moves runner processes to the background band (`PRIO_DARWIN_BG`). Mac has no way to limit CPU, so this is the only means. It is not done on Linux or Windows.
+- CPU and memory used by others are taken out of free room whether a person is there or not.
 
-## 견고함
+## Robustness
 
-원칙 셋.
+Three principles.
 
-1. **상태는 다시 만들 수 있다.** 진실은 호스트의 러너(에이전트가 본다)와 GitHub 이다. 장부는 그 둘에서 복원된다. controller 는 언제 죽어도 된다.
-2. **도는 잡은 건드리지 않는다.** 예외는 사용자가 명시한 것(`down --force`, `leave --force`, 클래스의 `maxDuration`)뿐이다.
-   떠 있는 러너를 지우는 모든 경로(idle timeout, 기동 시간 초과, 장부에 없는 러너, Ctrl-C)는 **GitHub 에 그 러너의 등록 삭제를 먼저 청한다.** GitHub 은 잡을 든 러너의 삭제를 거절하므로,
-   방금 잡을 받아 아직 idle 로 보이는 러너도 지워지지 않는다. 거절되면 그 러너를 busy 로 되살리고, GitHub 에 물을 수 없으면 그 회차에는 지우지 않는다.
-3. **조용히 실패하지 않는다.** 스스로 고친 것도 못 고친 것도 사건으로 남기고 알린다.
+1. **State can be rebuilt.** The truth is the runners on the hosts (the agents see them) and GitHub. The ledger is restored from those two. The controller may die at any time.
+2. **Running jobs are not touched.** The only exceptions are what the user asked for explicitly (`down --force`, `leave --force`, a class's `maxDuration`).
+   Every path that removes a runner that is up (idle timeout, boot timeout, a runner not in the ledger, Ctrl-C) **first asks GitHub to delete that runner's registration.** GitHub refuses to delete a runner holding a job,
+   so a runner that just got a job and still looks idle is not removed. If refused, the runner is brought back as busy; if GitHub can't be asked, it is not removed that round.
+3. **It does not fail silently.** What it fixed on its own and what it couldn't are both recorded as incidents and reported.
 
-**사건**은 장부의 한 행이고 `key` 가 같으면 같은 사건이다(`host-unreachable/server1`). 열릴 때, 30분마다, 닫힐 때 알린다. 5분 안에 열렸다 닫히기를 세 번 넘기면 flapping 한 번으로 묶는다.
-알림 전송이 실패해도 배치는 멈추지 않고 다음 회차에 다시 보낸다.
+An **incident** is a row in the ledger, and the same `key` means the same incident (`host-unreachable/server1`). It is reported when it opens, every 30 minutes, and when it closes. More than three opens and closes within 5 minutes are grouped into one flapping incident.
+If sending a notice fails, placement doesn't stop, and the notice is sent again the next round.
 
-| 장애 | 감지 | 하는 것 | 알림 |
+| Failure | Detection | What it does | Notice |
 |---|---|---|---|
-| controller 죽음 | 서비스 관리자 | 다시 떠서 잠금 → 호스트를 기다림 → 러너 이어받기. 놓친 메시지는 스냅샷과 GitHub 잡 상태로 메운다 | `controller is back: was down …, adopted N runners, N jobs finished meanwhile` |
-| 에이전트 죽음 | 세션 끊김 | 호스트의 서비스가 다시 올린다. 러너는 그대로, 수치는 디스크에 있어 이어진다 | 2분 넘게 안 붙으면 사건 |
-| 호스트 연결 끊김 | keepalive·스냅샷 실패 | 새 배치 중단, 러너는 용량에 그대로 계산, 돌아오면 스냅샷으로 맞춤 | `hostLostAfter`(2분) 넘으면 사건(끊긴 이유와 함께), 돌아오면 해제 |
-| 호스트 재부팅 | boot id 가 바뀜 | 그 러너를 lost 로 닫고 등록 삭제. 돌던 잡은 인프라 실패 | 사건 + 잃은 잡 목록 |
-| 러너가 못 뜸 | `provisionTimeout`(3분), 조기 종료 | 등록 삭제를 청한 뒤 지우고 다시 배치 | 같은 호스트에서 연속 3번이면 격리 |
-| 호스트 격리 | 연속 기동 실패 3번 | 새 배치 중단, 5분마다 점검, 통과하면 복귀 | 격리·복귀 각각 |
-| 잡 도중 러너가 죽음 | 종료 코드 ≠ 0 인데 잡 완료 없음 | 등록 삭제(GitHub 이 놓을 때까지 재시도). 인프라 실패 | 사건 + 잡·호스트·종료 코드 |
-| 메모리 한도 | cgroup `oom_kill`, Job Object 거절 | 다시 돌리지 않는다. 그 잡의 다음 추정이 한도 위로 올라간다 | `hit the memory limit that protects the host` 또는 `hit class <클래스>'s memory limit` |
-| 잡이 오래 기다림 | 처음 본 시각 + `waitAlert`(10분) | 재평가는 계속 | 사건 + 사유, 시작되면 해제 |
-| 잡이 오래 돎 | 클래스 `maxDuration` | 설정했을 때만 러너 정지 | 넘는 순간 사건 |
-| 디스크 부족 | 러너가 사는 파일시스템 중 가장 찬 것의 여유 < `diskMinFree`(10%) — 아래 「디스크를 재는 곳」 | 새 배치 중단, 끝난 pumasi 컨테이너·안 쓰는 러너 이미지 정리 | 사건, 회복되면 해제 |
-| 지우지 못한 파일 | 러너를 지울 때 | 러너 디렉터리를 `.trash/` 로 | `leftover` 사건 |
-| GitHub API 실패 | 호출 오류 | 백오프로 재시도. 401·403 은 멈춤 | 2분 넘으면 사건, 401·403 은 즉시 |
-| 장부가 깨짐 | 열기·무결성 검사 | 옆으로 치우고 빈 장부에서 시작, 스냅샷과 GitHub 으로 복원 | 사건(이력은 잃는다) |
-| 주인 없는 러너 | 장부에 없는 pumasi 러너 | 등록 삭제가 받아들여진 것만 지움 | 로그 |
-| controller 둘 | 상태 디렉터리 잠금 | 두 번째가 바로 끝남 | 오류 한 줄 |
+| Controller dies | service manager | restarts and takes the lock → waits for hosts → adopts runners. Missed messages are filled in from snapshots and GitHub job status | `controller is back: was down …, adopted N runners, N jobs finished meanwhile` |
+| Agent dies | session lost | the host's service brings it back. Runners stay; metrics are on disk and continue | incident if not connected for over 2 minutes |
+| Host connection lost | keepalive or snapshot failure | stops new placement, its runners still count in capacity, reconciled from the snapshot when it is back | incident past `hostLostAfter` (2 minutes) (with the reason it dropped), cleared when back |
+| Host reboot | the boot id changed | closes its runners as lost and deletes their registrations. Jobs that were running are infrastructure failures | incident + list of lost jobs |
+| Runner fails to start | `provisionTimeout` (3 minutes), early exit | asks to delete the registration, then removes it and places again | quarantine after 3 in a row on the same host |
+| Host quarantine | 3 boot failures in a row | stops new placement, checks every 5 minutes, back when it passes | on quarantine and on return |
+| Runner dies mid-job | exit code ≠ 0 with no job completion | deletes the registration (retrying until GitHub lets go). Infrastructure failure | incident + job, host, exit code |
+| Memory limit | cgroup `oom_kill`, Job Object refusal | not rerun. That job's next estimate goes above the limit | `hit the memory limit that protects the host` or `hit class <class>'s memory limit` |
+| Job waits long | first seen + `waitAlert` (10 minutes) | keeps re-evaluating | incident + reason, cleared when it starts |
+| Job runs long | the class's `maxDuration` | stops the runner, only if set | incident the moment it passes |
+| Low disk | free space on the fullest filesystem runners live on < `diskMinFree` (10%), see "Where disk is measured" below | stops new placement, cleans up finished pumasi containers and unused runner images | incident, cleared on recovery |
+| Files that can't be removed | when removing a runner | moves the runner directory to `.trash/` | `leftover` incident |
+| GitHub API failure | call error | retries with backoff. Stops on 401/403 | incident after 2 minutes, at once for 401/403 |
+| Ledger corrupt | on open, integrity check | moves it aside and starts with an empty ledger, restored from snapshots and GitHub | incident (history is lost) |
+| Orphan runner | a pumasi runner not in the ledger | removes only those whose registration deletion was accepted | log |
+| Two controllers | state directory lock | the second exits at once | one error line |
 
-**다시 돌리기** — 실패의 원인이 우리 쪽이면(호스트 재부팅, 러너가 밖에서 죽음) `rerun: 1` 일 때 그 run 의 실패한 잡을 한 번 다시 돌린다(기본 0 = 알리기만).
-코드 실패·메모리 한도·`maxDuration` 초과는 다시 돌리지 않는다.
+**Reruns**: if the cause of a failure is on our side (host reboot, runner killed from outside), with `rerun: 1` the run's failed jobs are rerun once (default 0 = report only).
+Code failures, memory limits and runs past `maxDuration` are not rerun.
 
-**알림** — `notify.webhook`(JSON POST, Slack·Teams 수신 웹훅이면 그 형식) 또는 `notify.command`(같은 JSON 을 stdin 으로). `level`: `problem`(기본) · `recovered`(스스로 고친 것도) · `all`.
+**Notices**: `notify.webhook` (a JSON POST; for a Slack or Teams incoming webhook, in that format) or `notify.command` (the same JSON on stdin). `level`: `problem` (default) · `recovered` (also what it fixed on its own) · `all`.
 
-**controller 의 부재** — controller 는 자기가 죽은 것을 말할 수 없다. 아는 것은 호스트다: 연결이 안 돌아온다. 그래서 호스트가 말한다.
+**The controller's absence**: the controller cannot report its own death. The hosts know: their connection does not come back. So the hosts report it.
 
-- **둘만.** 모든 호스트가 같은 분에 같은 말을 하면 소음이고, 호스트끼리는 서로를 모르니(모두 controller 로만 건다) 누가 이미 말했는지 맞출 수 없다.
-  그래서 말할 호스트를 controller 가 미리 정한다: 붙어 있는 호스트 가운데 둘(서버 먼저, 한 번 정한 호스트는 붙어 있는 동안 그대로), 첫째는 `away` 뒤, 둘째는 그 두 배 뒤.
-  하나면 그 호스트가 controller 와 함께 내려간 경우에 조용하다. 둘째의 말은 반복이 아니라 다른 자리에서 본 확인이다.
-- **웹훅 주소는 그 둘에게만** 간다(`PUT /v1/away`, 연결할 때마다와 배정이 바뀔 때). 나머지 호스트는 빈 값을 받는다. `notify.command` 는 보내지 않는다 — controller 머신의 명령을 호스트에서 실행할 이유가 없다.
-- **한 번씩.** 호스트는 「말했다」와 「언제부터」를 파일에 둔다(`away.json`). 에이전트가 그 사이에 다시 떠도 다시 말하지 않고, 돌아왔을 때의 해제는 말했던 곳으로 간다(그 사이 배정이 바뀌어도).
-  한 번도 전하지 못한 부재는 해제도 없다.
-- 시간은 에이전트가 깨어 있던 시간으로 잰다. 노트북 호스트가 자다 깬 것은 부재가 아니다.
+- **Only two.** If every host said the same thing in the same minute it would be noise, and hosts don't know each other (they all dial only the controller), so they can't agree on who already spoke.
+  So the controller picks in advance which hosts speak: two of the connected hosts (servers first; a host once picked stays picked while it is connected), the first after `away`, the second after twice that.
+  With only one, nothing would be said when that host goes down with the controller. The second one's message is not a repeat but a confirmation from another place.
+- **The webhook URL goes only to those two** (`PUT /v1/away`, on every connection and when the picks change). The other hosts get an empty value. `notify.command` is not sent: there is no reason to run a command of the controller machine on a host.
+- **Once each.** The host keeps "spoke" and "since when" in a file (`away.json`). If the agent restarts meanwhile it doesn't speak again, and the all-clear on return goes where it spoke (even if the picks changed meanwhile).
+  An absence that was never delivered has no all-clear either.
+- Time is measured as time the agent was awake. A laptop host waking from sleep is not an absence.
 
-장애 표의 행은 `make chaos`(`scripts/chaos.sh`)가 실제 호스트에서 일으켜 본다.
+The rows of the failure table are triggered on real hosts by `make chaos` (`scripts/chaos.sh`).
 
-## 운영
+## Operation
 
-- **상태 디렉터리** `~/.local/state/pumasi/`: 장부(`pumasi.db`), 이벤트 로그, TLS 키, 가입한 호스트, 초대 토큰. 한 디렉터리에 controller 하나.
-- **대시보드**: controller 가 loopback 에 내는 한 페이지(정적 파일 셋을 바이너리에 넣었다). 5초마다 `/api/state`·`/api/jobs`·`/api/series` 를 읽는다. 읽기는 누구나, 쓰기(잡 세우기·모드·지금 규칙)는 loopback 에서만 — 밖에 열었으면 `dashboardToken` 을 든 요청만(guide.md 「대시보드」). `/metrics` 는 Prometheus 용.
-- **status 의 호스트 열**: `SEEN`(마지막 응답), `RTT`(스냅샷 왕복), `AGENT`(에이전트의 판), `LAST DROP`(마지막으로 끊긴 이유: `keepalive timeout`, `connection reset`, `agent exited`).
-- **`diskMinFree`** 기본 10%. 디스크가 늘 차 있는 머신(노트북)을 호스트로 쓰면 이 값에 걸려 러너가 놓이지 않는다 — 사건이 그렇게 말한다. 설정에서 낮출 수 있다.
-- **디스크를 재는 곳.** 에이전트는 러너가 사는 파일시스템을 모두 잰다: 도커의 데이터 루트(도커 드라이버), 에이전트의 디렉터리, native 러너 루트(그 호스트가 native 러너를 돌릴 수 있을 때), 그리고 지금 있는(띄웠거나 이어받은) 러너마다 그 작업 디렉터리(클래스의 `work`, 컨테이너 러너는 라벨에 적힌 것)와 `{slot}` 디렉터리(`env`·`path` 의 `{slot}` — 예: 슬롯마다의 `HOME`). 아직 없는 디렉터리는 만들어질 부모에서 잰다.
-  같은 파일시스템(장치 번호, Windows 는 볼륨)은 한 번만 세고, **여유 비율이 가장 낮은 것**을 보고한다(같으면 바이트가 적은 쪽). 그 경로가 `diskPath` 로 함께 가서 닫힘 사유와 사건이 `disk 2% free on /nvme/ci/work/1` 처럼 어디인지 말한다.
-  왜: 실물에서 에이전트 디렉터리는 큰 HDD(81% 여유)에, 러너와 작업 디렉터리는 98% 찬 NVMe(6.5G)에 있었는데 에이전트가 HDD 만 재서 계속 놓았다.
-  `env` 로만 정해지는 다른 경로(슬롯 번호가 없는 `HOME` 등)는 알 수 없어 재지 않는다. 러너가 하나도 없는 동안에는 작업 디렉터리를 모른다 — 첫 러너가 뜬 뒤의 샘플부터 그 디스크가 들어간다. 전 판 에이전트가 띄운 native 러너는 `pumasi.json` 에 디렉터리가 없어 그 러너가 끝날 때까지 빠진다.
+- **State directory** `~/.local/state/pumasi/`: the ledger (`pumasi.db`), the event log, the TLS key, joined hosts, invite tokens. One controller per directory.
+- **Dashboard**: one page the controller serves on loopback (three static files built into the binary). It reads `/api/state`, `/api/jobs` and `/api/series` every 5 seconds. Anyone can read; writes (expedite, mode, runtime rules) are taken only from loopback, or, if it is opened to the outside, only from requests carrying `dashboardToken` (guide.md, "Dashboard"). `/metrics` is for Prometheus.
+- **Host columns of status**: `SEEN` (last answer), `RTT` (snapshot round trip), `AGENT` (the agent's version), `LAST DROP` (why it last dropped: `keepalive timeout`, `connection reset`, `agent exited`).
+- **`diskMinFree`**, default 10%. A machine whose disk is always full (a laptop) used as a host hits this value and gets no runners; the incident says so. It can be lowered in the config.
+- **Where disk is measured.** The agent measures every filesystem runners live on: docker's data root (docker driver), the agent's directory, the native runner root (when the host can run native runners), and, for each runner there now (started or adopted), its work directory (the class's `work`; for container runners, the one recorded in its label) and its `{slot}` directories (`{slot}` in `env` and `path`, e.g. a per-slot `HOME`). A directory that doesn't exist yet is measured at the parent it would be created in.
+  The same filesystem (device number; volume on Windows) is counted once, and **the one with the lowest free ratio** is reported (on a tie, the one with fewer bytes free). That path goes along as `diskPath`, so close reasons and incidents say where, like `disk 2% free on /nvme/ci/work/1`.
+  Why: in a real case, the agent directory was on a large HDD (81% free) and the runners and work directories on an NVMe that was 98% full (6.5G), but the agent measured only the HDD and kept placing.
+  Other paths set only through `env` (a `HOME` without a slot number, and so on) can't be known and are not measured. While there are no runners, the work directory is unknown; that disk is included from the samples after the first runner starts. Native runners started by an agent of an earlier version have no directory in `pumasi.json`, so they are left out until they end.
 
-### controller 를 상시로 띄우기
+### Keeping the controller running
 
-`pumasi service install` 이 `up` 을 서비스 관리자에게 맡긴다. 새 장치는 없다 — `up` 은 죽었다 다시 떠도 이어받으므로 "죽으면 다시 띄워라"만 시키면 된다.
+`pumasi service install` hands `up` to the service manager. There is no new mechanism: `up` adopts everything when it comes back after dying, so the only instruction needed is "restart it when it dies".
 
-- **사용자의 서비스로**(systemd user unit, LaunchAgent). root 가 필요 없고, controller 가 쓰는 것(상태 디렉터리, ssh 키)이 모두 그 사용자의 것이다.
-  대가는 OS 마다 다르다: Linux 는 linger 가 꺼져 있으면 로그아웃 때 멈추고 부팅 때 안 뜬다(`install` 과 `status` 가 말한다). Mac 의 LaunchAgent 는 그 사용자가 화면에 로그인해 있을 때만 돈다.
-- **토큰은 파일 하나**(`<상태 디렉터리>/github-token`, 600). 유닛과 plist 는 누구나 읽을 수 있는 자리에 있으므로 거기에는 적지 않는다. `up` 은 환경 변수가 없으면 이 파일을 읽고, 읽은 뒤에는 자기 환경에서 변수를 지운다(ssh·알림 명령이 물려받지 않게).
-  파일은 처음부터 600 으로 만든다. 남이 읽을 수 있는 모드인 파일은 쓰지 않는다 — 손으로 만든 파일이 그렇게 놓이는 일이 가장 흔한 사고다.
-- **`Restart=always` / `KeepAlive`**: `up` 은 신호를 받으면 0 으로 끝나므로 "실패했을 때만"으로는 누가 실수로 멈춘 controller 가 돌아오지 않는다. 멈추는 길은 `service remove` 하나다.
-- Mac 의 `ProcessType` 은 `Interactive`. 안 적으면 launchd 가 바쁜 머신에서 CPU·IO 를 뒤로 미룰 수 있다.
-- 죽은 controller 의 메시지 세션은 GitHub 쪽에서 30 ~ 90초 뒤에 풀린다. 세션 id 를 아는 것은 죽은 프로세스뿐이고 라이브러리에 남의 세션을 닫는 길이 없어서, 다시 뜬 controller 는 15초마다 다시 물으며 기다린다.
+- **As a user service** (systemd user unit, LaunchAgent). No root is needed, and everything the controller uses (the state directory, ssh keys) belongs to that user.
+  The costs differ by OS: on Linux with linger off, it stops at logout and doesn't start at boot (`install` and `status` say so). Mac's LaunchAgent runs only while that user is logged in to the screen.
+- **The token is one file** (`<state directory>/github-token`, 600). Units and plists sit where anyone can read them, so it is not written there. `up` reads this file when the environment variable is absent, and after reading removes the variable from its own environment (so ssh and notify commands don't inherit it).
+  The file is created as 600 from the start. A file in a mode others can read is not used: a hand-made file left like that is the most common accident.
+- **`Restart=always` / `KeepAlive`**: `up` exits with 0 on a signal, so with "only on failure", a controller someone stopped by mistake would not come back. The only way to stop it is `service remove`.
+- Mac's `ProcessType` is `Interactive`. Without it, launchd may push CPU and IO back on a busy machine.
+- A dead controller's message session is released on GitHub's side after 30–90 seconds. Only the dead process knows the session id, and the library has no way to close someone else's session, so the restarted controller waits, asking again every 15 seconds.
 
-## 하지 않는 것
+## What it does not do
 
-- NAT 를 뚫는 중계. 호스트가 `listen` 주소에 닿아야 한다.
-- 호스트가 클래스나 이미지를 정하는 것.
-- 웹에서 호스트를 붙이고 떼는 버튼, 클래스별 러너 수 상한.
-- 자리를 만들려고 도는 잡을 멈추기(세운 잡도 도는 잡이 끝나기를 기다린다), 추정 크기를 무시하고 놓기(어느 호스트도 빌려줄 수 없는 크기만 예외: 빈 호스트에 혼자 놓는다).
-- 잡을 다른 호스트로 옮기기, 사람이 돌아왔다고 도는 잡을 멈추기.
-- 러너 사이에 도구 캐시·docker 이미지 저장소를 남기기.
-- VM 드라이버(Tart, microVM), GitHub 이외의 CI, 클라우드 인스턴스 만들기.
+- A relay through NAT. Hosts must reach the `listen` address.
+- Hosts choosing classes or images.
+- Buttons on the web to join or remove hosts, or a per-class cap on runners.
+- Stopping running jobs to make room (an expedited job also waits for running jobs to end), or placing while ignoring the estimated size (the only exception is a size no host can lend: it is placed alone on an empty host).
+- Moving jobs to another host, or stopping running jobs because a person came back.
+- Keeping tool caches or docker image stores between runners.
+- VM drivers (Tart, microVMs), CI systems other than GitHub, or creating cloud instances.
