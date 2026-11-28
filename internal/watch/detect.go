@@ -167,6 +167,9 @@ type Change struct {
 	// (host and class), and the runs on a machine it ran on before and after
 	// do not show the step: it moved to another kind of machine.
 	Moved *Move `json:"moved,omitempty"`
+	// Parts: the steps this change is, when the same number of the job
+	// stepped the same way more than once around one run (0 = one).
+	Parts int `json:"parts,omitempty"`
 	// SpanBefore and SpanAfter: how long the runs on each side span.
 	SpanBefore time.Duration `json:"-"`
 	SpanAfter  time.Duration `json:"-"`
@@ -212,7 +215,7 @@ func find(runs []ledger.JobRun, o Options) []Change {
 				job = append(job, c)
 			}
 		}
-		job = agree(job)
+		job = joinSteps(agree(job))
 		// The runs on main between the last before and the first after that
 		// were left out (a busy host, a failure): the change may be theirs.
 		when := map[string]time.Time{}
@@ -256,6 +259,34 @@ func agree(cs []Change) []Change {
 		}
 	}
 	return cs
+}
+
+// joinSteps: steps of one number of a job, the same way, that agree named
+// by one run are one change, from the level before the first to the level
+// after the last ("memory -60% in 2 steps", not memory twice). The larger
+// step says whether it crept, which steps of the job grew and where.
+func joinSteps(cs []Change) []Change {
+	var out []Change
+	for _, c := range cs {
+		if n := len(out); n > 0 {
+			p := &out[n-1]
+			if p.Metric == c.Metric && p.Slower() == c.Slower() && p.First.Runner == c.First.Runner && p.First.At.Equal(c.First.At) {
+				parts := max(p.Parts, 1) + max(c.Parts, 1)
+				j := c
+				if math.Abs(p.Ratio) >= math.Abs(c.Ratio) {
+					j = *p
+				}
+				j.Before, j.After, j.Ratio = p.Before, c.After, c.After/p.Before-1
+				j.RunsBefore, j.RunsAfter, j.Z = p.RunsBefore, c.RunsAfter, math.Copysign(math.Max(math.Abs(p.Z), math.Abs(c.Z)), p.Z)
+				j.Now, j.Holds, j.Parts = c.Now, p.Holds, parts
+				j.SpanBefore, j.SpanAfter = p.SpanBefore, c.SpanAfter
+				*p = j
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // codeTime orders runs by when their code was taken: when the job was first

@@ -64,7 +64,7 @@ A ledger younger than two days says so once, at the top, instead of listing step
 
 1. Values are put on one scale across machines (each machine's median against the job's), as logs. A machine is a host *and* a runner class: a class sets the cores, memory and disk a runner gets, so one host in two classes is two machines.
 2. The series is split where its median level moves (binary segmentation on L1 cost), and each split is kept only when the two sides differ by 10% or more and a rank test (Mann–Whitney) gives z ≥ 3.5, with at least 8 runs on each side. A move that goes back within three days is dropped as transient. A level held for less than a day between two steps is not a level: the later step is dropped and the levels are measured again, so a regression that a slow spell hid at first becomes one step from its start.
-3. The commit: the best split among the main branch's own runs near it. Main's runs that were not counted there (contended or failed) are named as possible too ("or 85f834f just before it").
+3. The commit: the best split among the main branch's own runs near it. Main's runs that were not counted there (contended or failed) are named as possible too ("or 85f834f just before it"). Steps of one job within three days of each other, the same way, are named by the clearest of them, and are one line; two steps of the same number become one change from the level before the first to the level after the last ("memory -60% (2.0G -> 0.8G, in 2 steps)").
 4. The pull request: one whose runs before the change were all at the new level, at least two of them, the last within two days before it. When more than one fits, none is named.
 5. A step that turns out to be part of a slow climb (the drift around it is half the step or more) is shown as crept ("no single commit"), not pinned on whichever commit happened to cross the line.
 6. Like with like: the step is measured again on the runs of the machines the job used both before and after it. If a third or more of a side's runs were on other machines and the shared ones do not show the step, the job *moved* to another kind of machine, and the step is not the job's.
@@ -87,7 +87,7 @@ Measured with `go run ./internal/watch/cmd/watcheval -shift -n 100`. Each histor
 | a host 0.7× (caches cleared) | shared | 5.31 → 0.65 | 66% → 65% | 7% → 2% | 93% |
 | | pinned | 3.50 → 0.08 | 95% → 93% | 59% → 46% | 89% |
 | a host 2× for 6 hours (a neighbour) | shared | 0.00 → 0.00 | 97% → 95% | 94% → 91% | 0% |
-| | pinned | 0.01 → 0.01 | 97% → 95% | 95% → 95% | 0% |
+| | pinned | 0.01 → 0.01 | 97% → 94% | 95% → 95% | 0% |
 | every host 1.3× (a slow mirror) | shared | 6.80 → 2.11 | 87% → 87% | 98% → 37% | 88% |
 | | pinned | 6.77 → 0.57 | 87% → 87% | 97% → 27% | 95% |
 
@@ -107,9 +107,9 @@ The price is time: a +20% (+40%) change merged in the third week, listed within
 
 | Each side spans | 1 day | 2 days | 3 days | 7 days |
 |---|---|---|---|---|
-| no rule | 84% (91%) | 92% (99%) | 92% (99%) | 93% (99%) |
-| **1d / 1d** | 27% (24%) | 92% (99%) | 92% (99%) | 93% (99%) |
-| 2d / 2d | 2% (0%) | 22% (26%) | 92% (99%) | 93% (99%) |
+| no rule | 84% (91%) | 92% (99%) | 91% (99%) | 93% (99%) |
+| **1d / 1d** | 27% (24%) | 92% (99%) | 91% (99%) | 93% (99%) |
+| 2d / 2d | 2% (0%) | 22% (26%) | 91% (99%) | 93% (99%) |
 
 The criterion was the shortest span that keeps false changes at 5% or less at every age up to a week. That is a day: 12 hours still leaves 8% at five days. Asking only the side before to be long does not help (2d / none: 11% at five days), because the false steps are mostly fresh ones at the young end of the history. Two days would hold every listing back three days. So a change, and its `ci-regression` notice, comes a day after its merge rather than within hours.
 
@@ -160,7 +160,7 @@ On made-up histories (`go run ./internal/watch/cmd/watcheval -why -n 100`): 28 d
 
 | Change in the culprit's job | Runs of it | `slower` | `maybe slower` | main's change shown as its own (only one that fits) | (one of several) | Answered | Neighbours wrongly shown as the cause |
 |---|---|---|---|---|---|---|---|
-| time +20% | 2.3 | 8% | 28% | 58% | 13% | **74%** | 0% (1% as one of several) |
+| time +20% | 2.3 | 8% | 28% | 58% | 12% | **74%** | 0% (1% as one of several) |
 | time +40% | 2.5 | 48% | 34% | 88% | 4% | **97%** | 0% |
 | one step +40% | 2.4 | 24% | 31% | 79% | 8% | **88%** | 0% (1%) |
 | memory +30% | 2.4 | 72% | 28% | 93% | 2% | **100%** | 0% |
@@ -256,6 +256,6 @@ Each crossed limit is an incident: it shows in `pumasi status` and the dashboard
 | creep +25% over 30 merges | 66% | (no single commit) | | | | 0.09 |
 | nothing injected | | | | | | 0.00 |
 
-"Commit among those named" counts the right commit given as the alternative ("or 85f834f just before it"), when the merge commit's own run was contended or failed. Of the creeps found, 64% were shown as crept; the rest were pinned on a commit, which is the error to expect from a slow climb. The `slope` alarm is the tool for creep: at 10% a week, checked daily, it caught 88% of these creeps within 7 days (5.4 days on average) and the steps in 3–4 days, with no false alarm in 100 histories with nothing injected.
+"Commit among those named" counts the right commit given as the alternative ("or 85f834f just before it"), when the merge commit's own run was contended or failed. Of the creeps found, 62% were shown as crept; the rest were pinned on a commit, which is the error to expect from a slow climb. The `slope` alarm is the tool for creep: at 10% a week, checked daily, it caught 88% of these creeps within 7 days (5.4 days on average) and the steps in 3–4 days, with no false alarm in 100 histories with nothing injected.
 
 How soon: a +20% change was listed in 27% of histories within 24 hours of its merge (84% without the one-day rule above) and 92% within 48. In a quiet repository (2 merges a weekday) recall for +20% is 82% and the commit exact 71%; the slope alarm caught steps 96–100% of the time but creep only 5%, with about 0.08 false alarms a week.

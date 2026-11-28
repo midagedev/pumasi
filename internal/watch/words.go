@@ -40,7 +40,7 @@ func ChangeLine(g []Change) string {
 	c := g[0]
 	var what []string
 	for _, m := range g {
-		what = append(what, fmt.Sprintf("%s %s (%s -> %s)", m.Metric, PctSigned(m.Ratio), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After)))
+		what = append(what, changeText(m))
 	}
 	line := fmt.Sprintf("%s / %s: %s", path.Base(c.Workflow), c.Job, strings.Join(what, ", "))
 	if c.Gradual {
@@ -55,6 +55,15 @@ func ChangeLine(g []Change) string {
 		return line + "; still so"
 	}
 	return line + "; now " + MetricText(c.Metric, c.Now)
+}
+
+// changeText: "memory -60% (2.0G -> 0.8G, in 2 steps)".
+func changeText(m Change) string {
+	in := ""
+	if m.Parts > 1 {
+		in = fmt.Sprintf(", in %d steps", m.Parts)
+	}
+	return fmt.Sprintf("%s %s (%s -> %s%s)", m.Metric, PctSigned(m.Ratio), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After), in)
 }
 
 func MetricText(metric string, v float64) string {
@@ -149,7 +158,7 @@ func ShiftLine(s Shift) string {
 			c := us[0].lead()
 			var what []string
 			for _, m := range us[0] {
-				what = append(what, fmt.Sprintf("%s %s (%s -> %s)", m.Metric, PctSigned(m.Ratio), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After)))
+				what = append(what, changeText(m))
 			}
 			return fmt.Sprintf("%s: %s when it moved from %s to %s, %s — another kind of machine, not the code",
 				JobName(c.Workflow, c.Job), strings.Join(what, ", "), strings.Join(c.Moved.From, ", "), strings.Join(c.Moved.To, ", "), at(c.First.At))
