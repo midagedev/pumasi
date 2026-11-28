@@ -30,18 +30,18 @@ pumasi trend --min-side 0          # list a job's change at once, not after a da
 CHANGED (newest first)
   ci.yml / build: memory +35% (11.1G -> 15.0G), since commit 2ed2250 on main, Thu Nov 19 19:27; still so
       or 85f834f just before it (not counted: busy host or failed); https://github.com/OWNER/REPO/commit/2ed2250…
-  ci.yml / typecheck: time -24% (1m33s -> 1m11s), cpu -25% (1m29s -> 1m07s), since commit 564563e on main, Tue Nov 17 19:33 (pull request #1162 ran at the new level before it); still so
-      step "Install" 28s -> 21s, step "Typecheck" 52s -> 40s; https://github.com/OWNER/REPO/commit/564563e…
-  ci.yml / unit-tests: time +39% (4m29s -> 6m14s), cpu +37% (8m25s -> 11m33s), since commit 9f3001a on main, Mon Nov 16 19:02 (pull request #1148 ran at the new level before it); still so
+  ci.yml / typecheck: time -24% (1m34s -> 1m11s), cpu -25% (1m30s -> 1m08s), since commit 564563e on main, Tue Nov 17 19:33 (pull request #1162 ran at the new level before it); still so
+      step "Install" 28s -> 21s, step "Typecheck" 53s -> 40s; https://github.com/OWNER/REPO/commit/564563e…
+  ci.yml / unit-tests: time +39% (4m30s -> 6m15s), cpu +37% (8m26s -> 11m33s), since commit 9f3001a on main, Mon Nov 16 19:02 (pull request #1148 ran at the new level before it); still so
       step "Run tests" 2m28s -> 4m01s; https://github.com/OWNER/REPO/commit/9f3001a…
-  ci.yml / e2e (chromium): slowly growing, time +28% over 28d along its trend (11m38s -> 14m55s, at least +21%), no single commit
+  ci.yml / e2e (chromium): slowly growing, time +29% over 28d along its trend (11m33s -> 14m50s, at least +21%), no single commit
 
 JOB                     RUNS  TIME p50  p90     CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
-ci.yml (workflow)       358   14m53s    20m29s  +10%    15.4G    2h15m    30s       ▇▅▂▁▃▄▆▂▂▃█▅▇▆▅
-  build                 358   5m42s     7m34s   -1%     15.4G    27m10s   28s       █▂▃▂▇▂▁▃▅▃▂▅▂▂▅
-  e2e (chromium)        358   14m18s    19m52s  +28%*   9.8G     43m38s   28s       ▅▃▁▁▃▅▇▃▃▄█▆▆▄▄
-  typecheck             358   1m22s     1m48s   -24%*   2.3G     1m18s    28s       ▇█▇▆▂▂▁▂▂▁▄▁▅▂▆
-  unit-tests            358   5m52s     8m09s   +39%*   3.4G     10m43s   28s       ▂▁▃▆▅▅█▆▄▅▅▅▅▅▆
+ci.yml (workflow)       358   14m53s    20m30s  +10%    15.4G    2h15m    30s       ▇▅▂▁▃▄▆▂▂▃█▅▇▆▅
+  build                 358   5m42s     7m34s   -1%     15.4G    27m11s   28s       █▂▃▂▇▂▁▃▅▃▂▅▂▂▅
+  e2e (chromium)        358   14m18s    19m52s  +29%*   9.8G     43m38s   28s       ▅▃▁▁▃▅▇▃▃▄█▆▆▄▄
+  typecheck             358   1m22s     1m48s   -24%*   2.3G     1m19s    28s       ▇█▇▆▂▂▁▂▂▁▄▁▅▂▆
+  unit-tests            358   5m52s     8m09s   +39%*   3.4G     10m44s   28s       ▂▁▃▆▅▅█▆▄▅▅▅▅▅▆
   …
 ```
 
@@ -146,6 +146,7 @@ Each job of the target is set against its last 20 runs on the main branch before
 | `slower` | it ran twice or more, the median of its runs is 10% or more over main's median, and even its fastest run is two robust standard deviations over main's usual |
 | `maybe slower` | the median is 10% or more over and z ≥ 2, with every run above main's p84; or it ran once and is three deviations over. One run is never more than maybe: a cold cache or a slow mirror makes a few percent of single runs far slower |
 | `usual` | neither |
+| `uneven` | (the table only; `usual` in JSON) neither, but the median is 10% or more off: a run of it was within main's usual spread, or too few ran to tell |
 | `unknown` | main has fewer than 5 usable runs of the job before it |
 
 The same words go the other way (`faster`), and for memory (`bigger`/`smaller`) and CPU (`more`/`less`).
@@ -206,7 +207,7 @@ What the replay leaves out, so real waits come **sooner** than it says: hosts ar
 | The mean wait for room doubles: off by (median) | 1.9 weeks (42%), 95 came | 2.3 weeks (52%), 63 came | 2.7 weeks (38%), 29 came |
 | Actual date inside the 80% range | 57% (full), 50% (double) | 66%, 54% | 60%, 63% |
 
-The replay gets today's waits about right (5 to 8 points under the queue). The dates are off by about two weeks, and most of that is the growth: eight weeks of a team whose merges come at random tell the growth only to within a few percent a week, and a date three or four weeks out moves by weeks with it. The 80% ranges hold the actual date only 50–66% of the time, because the actual weeks have their own luck as well. Read a forecast as "a month or two", not as a date. A first try with Erlang C (jobs coming one at a time at random) said 11% of the busiest hours' jobs waited where the queue had 53%.
+The replay gets today's waits about right (5 to 8 points under the queue). The dates are off by about two weeks, and most of that is the growth: eight weeks of a team whose merges come at random tell the growth only to within a few percent a week, and a date three or four weeks out moves by weeks with it. The 80% ranges hold the actual date only 50–66% of the time, because the actual weeks have their own luck as well. Read a forecast as "a month or two", not as a date. A fleet far from full is a longer reach: with the first week's busiest hours at 4% of the cores and merges growing 12% a week (`-forecast 0.12 -load 0.04 -weeks 42 -n 12`), the cores filled within the history in all 12, a median 20.4 weeks after the forecast; the forecast was off by 2.7 weeks (median, 13% of the time to it), late by 1.8 on average, and the 80% range held 75%. Before the replay scaled past eight times the runs, all 12 said "not within a year". A first try with Erlang C (jobs coming one at a time at random) said 11% of the busiest hours' jobs waited where the queue had 53%.
 
 ## Limits, budgets and alarms (`watch:`)
 

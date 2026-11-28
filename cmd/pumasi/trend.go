@@ -121,7 +121,7 @@ func runTrend(args []string) error {
 		return fmt.Errorf("--since: %q is not a span (14d, 6w, 36h)", *since)
 	}
 	now := time.Now()
-	from := dayStart(now.Add(-span))
+	from := watch.TrendFrom(now, span)
 	runs, now, err := src.runs(from.Add(-watch.Baseline))
 	if err != nil {
 		return err
@@ -151,10 +151,6 @@ func runTrend(args []string) error {
 	}
 	printTrend(os.Stdout, rep, src.web, *days, tableWidth())
 	return nil
-}
-
-func dayStart(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
 func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool, width int) {
@@ -228,15 +224,10 @@ func printDays(w io.Writer, s watch.Series) {
 }
 
 func secs(s float64) string {
-	switch {
-	case s <= 0:
+	if s <= 0 {
 		return "-"
-	case s < 60:
-		return fmt.Sprintf("%.0fs", s)
-	case s < 3600:
-		return fmt.Sprintf("%dm%02ds", int(s)/60, int(s)%60)
 	}
-	return fmt.Sprintf("%dh%02dm", int(s)/3600, int(s)%3600/60)
+	return watch.Secs(s)
 }
 
 func pctSigned(f float64) string {

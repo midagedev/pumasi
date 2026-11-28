@@ -143,3 +143,44 @@ func TestHostSpellBackIsOneLine(t *testing.T) {
 	}
 	t.Errorf("no spell line: %q", lines)
 }
+
+// A change on main says the same numbers in why-slow as in the trend: both
+// read the trend's span and the Baseline before it.
+func TestWhySlowSaysTrendsNumbers(t *testing.T) {
+	now := time.Now()
+	var runs []ledger.JobRun
+	for _, r := range synth.Demo(now).Runs {
+		if r.FinishedAt.Before(now) {
+			runs = append(runs, r)
+		}
+	}
+	from := watch.TrendFrom(now, watch.TrendSpan)
+	var trendRuns []ledger.JobRun
+	for _, r := range runs {
+		if !r.FinishedAt.Before(from.Add(-watch.Baseline)) {
+			trendRuns = append(trendRuns, r)
+		}
+	}
+	rep := watch.BuildTrend(trendRuns, watch.TrendQuery{From: from, To: now, Loc: time.Local}, watch.Options{})
+	checked := 0
+	for _, c := range rep.Changes {
+		if c.PR == 0 || c.Gradual {
+			continue
+		}
+		why, err := watch.WhySlow(runs, watch.Target{PR: c.PR})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range why.Own {
+			if o.Job == c.Job && o.Metric == c.Metric {
+				checked++
+				if watch.ChangeLine([]watch.Change{o}) != watch.ChangeLine([]watch.Change{c}) {
+					t.Errorf("why-slow: %s\ntrend:   %s", watch.ChangeLine([]watch.Change{o}), watch.ChangeLine([]watch.Change{c}))
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no change of a pull request to check")
+	}
+}
