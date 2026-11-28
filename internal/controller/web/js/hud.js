@@ -768,7 +768,7 @@ export function ciModel() {
   let fc = "";
   if (f && f.fullIn > 0 && isFinite(f.fullIn)) fc = `at this rate the cores fill in ~${Math.round(f.fullIn)} weeks` + (f.fullSoon && f.fullLate ? ` (${Math.round(f.fullSoon)}–${Math.round(f.fullLate)})` : "");
   else if (f && f.growth <= 0) fc = "CI is not growing: the cores do not fill at this rate";
-  const growth = f && f.fitted ? `CI ${f.growth >= 0 ? "+" : ""}${Math.round(f.growth * 100)}% a week` + (f.cores ? ` · busiest hours use ${Math.round(f.load * f.cores)} of ${Math.round(f.cores)} cores${f.lent ? " the hosts lend" : ""}` : "") : "";
+  const growth = f && f.fitted ? `CI ${f.growth >= 0 ? "+" : ""}${Math.round(f.growth * 100)}% a week` + (f.cores ? ` · busiest hours use ${Math.round(f.load * f.cores)} of ${Math.round(f.cores)} ${f.lent ? "real cores the hosts lend" : "cores"}` : "") : "";
   return { items, alarms, fc, growth };
 }
 const pctText = (r) => (isNaN(r) ? "-" : (r >= 0 ? "+" : "−") + Math.round(Math.abs(r) * 100) + "%");

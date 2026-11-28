@@ -246,7 +246,7 @@ func (r ForecastReport) growthSentence(n int) string {
 func (r ForecastReport) capacityWords() string {
 	cores := "cores"
 	if r.Lent {
-		cores = "cores the hosts lend"
+		cores = "real cores the hosts lend"
 	}
 	s := fmt.Sprintf("At the busiest hours it keeps %.0f of the %.0f %s busy (%.0f%%)", r.Weeks[len(r.Weeks)-1].PeakCores, r.Cores, cores, 100*r.Load)
 	switch {

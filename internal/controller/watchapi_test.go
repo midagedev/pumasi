@@ -175,7 +175,7 @@ func TestDemoForecast(t *testing.T) {
 	if DemoCores() != 66 || DemoCores() != synth.DemoFleetCores {
 		t.Fatalf("demo cores %.0f, the history's %d", DemoCores(), synth.DemoFleetCores)
 	}
-	if !rep.Lent || !strings.Contains(rep.Words, "of the 66 cores the hosts lend") {
+	if !rep.Lent || !strings.Contains(rep.Words, "of the 66 real cores the hosts lend") {
 		t.Fatalf("the demo's cores are those its hosts lend: %s", rep.Words)
 	}
 	if rep.Cores != DemoCores() || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
