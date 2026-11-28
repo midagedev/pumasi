@@ -279,9 +279,26 @@ func (l *Ledger) FinishedRuns(from, to time.Time) ([]JobRun, error) {
 // workflowFile for a query whose runners table is r.
 const workflowFileR = `CASE WHEN instr(COALESCE(r.workflow,''),'@')>0 THEN substr(r.workflow,1,instr(r.workflow,'@')-1) ELSE COALESCE(r.workflow,'') END`
 
-// PutRun writes a finished job as a whole: for the demo and for tests, which
-// make up a history instead of living through it.
-func (l *Ledger) PutRun(r JobRun) error {
+// PutRuns writes finished jobs as a whole, in one transaction: for the demo
+// and for tests, which make up a history instead of living through it.
+func (l *Ledger) PutRuns(rs ...JobRun) error {
+	tx, err := l.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range rs {
+		if err := putRun(tx, r); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PutRun is PutRuns of one job.
+func (l *Ledger) PutRun(r JobRun) error { return l.PutRuns(r) }
+
+func putRun(tx *sql.Tx, r JobRun) error {
 	ref := r.Repo + "/" + r.Workflow
 	switch {
 	case r.PR > 0:
@@ -290,11 +307,6 @@ func (l *Ledger) PutRun(r JobRun) error {
 		ref += "@refs/heads/" + r.Branch
 	}
 	jobID := "put-" + r.Runner
-	tx, err := l.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if !r.QueuedAt.IsZero() {
 		if _, err := tx.Exec(`INSERT OR REPLACE INTO demand(job_id, class, repo, workflow, job, run_id, event, first_seen, last_seen, served_by, closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 			jobID, r.Class, r.Repo, ref, r.Job, r.RunID, r.Event, ts(r.QueuedAt), ts(r.StartedAt), r.Runner, ts(r.StartedAt)); err != nil {
@@ -320,7 +332,7 @@ func (l *Ledger) PutRun(r JobRun) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // FactsStatus is every runner whose facts were asked for, with the outcome
