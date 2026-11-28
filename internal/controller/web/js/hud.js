@@ -355,9 +355,9 @@ function build(sel, actions) {
         el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? "expedited" : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
         el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + (row && /^behind /.test(whyText(row)) ? whyText(row) : plainReason((line && line.waitingFor) || j.reason)) }),
         j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners, j.job) }) : null,
-        section("Run it sooner", expediteBox(j, actions)),
+        row && row._go ? null : section("Run it sooner", expediteBox(j, actions)),
         facts([["class", j.class], ["repo", j.repo], ["workflow", j.workflow], ["run", run ? el("a", { href: run, target: "_blank", rel: "noopener", text: String(j.runId) }) : String(j.runId || "-")],
-          ["its place", j.ranked || (line && line.why) || "by its age"], ["placement says", (line && line.waitingFor) || j.reason || "-"]]),
+          ["its place", j.ranked || (line && line.why) || "by its age"], ...(row && row._go ? [] : [["placement says", (line && line.waitingFor) || j.reason || "-"]])]),
         section("What to do", copyable("pumasi priority", "on the controller", "the line, and the rule that put this job where it stands")));
     }
     case "done": {
@@ -500,11 +500,12 @@ function priorityPanel(actions) {
   const s = store.state, p = store.prio;
   const lineRows = (p && p.line) || (s.waitingJobs || []).map((j) => ({ name: j.job, class: j.class, level: j.expedited ? "expedite" : j.level || "normal", position: j.position, waited: dur(j.waitedSeconds), why: j.ranked || j.reason || "by its age", githubJobId: j.githubJobId, _j: j }));
   lineRows.sort((a, b) => (a.position || 1e9) - (b.position || 1e9));
-  // placement's reason is the class's: of its next job. One behind it in the class waits for that one
+  // placement's reason is the class's: of its next job. One behind it in the class, short of the
+  // same room, waits for that one (not one whose runner is coming up)
   const front = {};
   const whyRow = (r) => {
     const f = front[r.class] || (front[r.class] = r);
-    if (f !== r && r.waitingFor && r.waitingFor === f.waitingFor) return `behind ${f.name || "an older job"}, the next ${r.class} job`;
+    if (f !== r && r.waitingFor === f.waitingFor && parseReason(r.waitingFor)) return `behind ${f.name || "an older job"}, the next ${r.class} job`;
     return r.waitingFor ? plainReason(r.waitingFor) : "";
   };
   const rules = (p && p.rules) || [];
