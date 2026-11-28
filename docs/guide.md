@@ -340,7 +340,7 @@ The address is a free loopback port by default; to let other tools read it, fix 
 - Opened to the outside like `dashboard: 0.0.0.0:7420`, writing requires sending the config's `dashboardToken:` (16 characters or more) as `Authorization: Bearer <token>` (from this machine too). Without a token, writes from outside get 403. Reading stays open to anyone.
 - The CLI (`pumasi expedite` and others) asks the `up` on the same machine through `controller.addr` in the state directory, and sends the token along if there is one.
 
-To look without a controller, `pumasi open --demo` — runs a made-up shop (4 hosts · 8 classes) on the real placement code. The same `-seed` shows the same scenes, and `?at=<seconds>` after the address freezes one moment.
+To look without a controller, `pumasi open --demo` — runs a made-up shop (4 hosts · 9 classes) on the real placement code. The same `-seed` shows the same scenes, and `?at=<seconds>` after the address freezes one moment.
 
 ![The dashboard in motion: a waiting job says why it waits and when it starts, and it does; ready runners step aside; runners start ahead for the jobs that come next](img/demo.gif)
 

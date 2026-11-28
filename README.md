@@ -1,6 +1,6 @@
 # pumasi
 
-[![The pumasi dashboard: a waiting job says it needs 15 GB of memory, the most free on linux-server is 2.8 GB, and it starts in under a minute there when e2e (chromium) ends, and it does; ready runners step aside for a job that needs the room; runners start ahead for the jobs that come next](docs/img/demo.gif)](docs/img/demo.mp4)
+[![The pumasi dashboard: a waiting job says it needs 15 GB of memory, linux-server has under 3 GB free, and it starts in under a minute there when e2e (chromium) ends, and it does; ready runners step aside for a job that needs the room; runners start ahead for the jobs that come next](docs/img/demo.gif)](docs/img/demo.mp4)
 
 <sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 59-second tour (mp4)](docs/img/demo.mp4), in close-ups: why each job waits and when it starts, the forecast coming true, ready runners stepping aside, runners started ahead, job sizes nobody wrote, CI watch, a desktop someone sits at, deploys first.</sub>
 
@@ -14,7 +14,7 @@ pumasi starts one ephemeral runner per job, on the host that has room for it rig
 
 ## Try it in a minute
 
-Look at the dashboard first. The demo runs the real placement code on a made-up shop of four hosts and eight classes:
+Look at the dashboard first. The demo runs the real placement code on a made-up shop of four hosts and nine classes:
 
 ```sh
 git clone https://github.com/midagedev/pumasi && cd pumasi
@@ -84,7 +84,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 <table>
 <tr>
-<td width="50%"><img src="docs/img/dashboard-wait.webp" alt="A waiting job's panel: why it waits (needs 15 GB of memory, the most free is 2.8 GB on linux-server) and when it is expected to start (in under a minute on linux-server, when e2e (chromium) ends)"></td>
+<td width="50%"><img src="docs/img/dashboard-wait.webp" alt="A waiting job's panel: why it waits (needs 15 GB of memory, linux-server has 2.8 GB free) and when it is expected to start (in under a minute on linux-server, when e2e (chromium) ends)"></td>
 <td width="50%"><img src="docs/img/dashboard-ahead.webp" alt="Runners started ahead on linux-server, one of two, for the release packages that come when release-check ends"></td>
 </tr>
 <tr>
