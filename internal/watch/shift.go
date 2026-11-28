@@ -51,15 +51,16 @@ const shiftSlack = time.Hour
 
 // shiftPlace: a job whose runs before and after a step are further apart
 // than this cannot say when it stepped, so it is not set beside others. A
-// job that runs once a night still can.
-const shiftPlace = 36 * time.Hour
+// job that runs once a night still can, and jobs that did not run over a
+// (long) weekend all say "over the weekend".
+const shiftPlace = 4 * 24 * time.Hour
 
 // shiftJobs: this many jobs stepping together are a host's step.
 const shiftJobs = 3
 
 // FindAll looks for changes in every job of the runs, and tells the job's
-// from the machine's: jobs are the changes of the jobs whose sides span
-// long enough (Options.MinBefore, MinAfter), shifts the machines' steps.
+// from the machine's: jobs are the jobs' changes, shifts the machines'
+// steps, each once its sides span long enough (Options.MinBefore, MinAfter).
 func FindAll(runs []ledger.JobRun, o Options) (jobs []Change, shifts []Shift) {
 	o = o.withDefaults()
 	raw := find(runs, o)
@@ -78,13 +79,30 @@ func FindAll(runs []ledger.JobRun, o Options) (jobs []Change, shifts []Shift) {
 	shifts = append(shifts, moves(moved)...)
 	hostShifts, left := hostSteps(rest, runs)
 	shifts = append(shifts, hostShifts...)
+	long := func(c Change) bool { return c.SpanBefore >= o.MinBefore && c.SpanAfter >= o.MinAfter }
 	for _, u := range left {
 		for _, c := range u {
-			if c.SpanBefore >= o.MinBefore && c.SpanAfter >= o.MinAfter {
+			if long(c) {
 				jobs = append(jobs, c)
 			}
 		}
 	}
+	// A machine's step waits for the same history: half of its jobs or more
+	// with a day of runs on each side.
+	kept := shifts[:0]
+	for _, s := range shifts {
+		us := unitsOf(s.Changes)
+		n := 0
+		for _, u := range us {
+			if long(u.lead()) {
+				n++
+			}
+		}
+		if 2*n >= len(us) {
+			kept = append(kept, s)
+		}
+	}
+	shifts = kept
 	slices.SortFunc(jobs, func(a, b Change) int {
 		return cmp.Or(a.First.At.Compare(b.First.At), cmp.Compare(a.Job, b.Job), cmp.Compare(a.Metric, b.Metric))
 	})

@@ -3,7 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/midagedev/pumasi/internal/watch"
 )
 
 func TestShortNamesFitAndStayApart(t *testing.T) {
@@ -62,5 +65,34 @@ func TestShortNamesFitAndStayApart(t *testing.T) {
 	// At a roomy width, a matrix drops only the values its jobs share.
 	if s := shortNames(names, 60)[names[1]]; s != "deploy (web-app, …, web, true) / build-and-deploy" {
 		t.Errorf("roomy: %q", s)
+	}
+}
+
+// The printed table keeps to the width, every row, with long matrix names
+// (down to where the other columns leave a name 16 runes: about 95).
+func TestTableFitsWidth(t *testing.T) {
+	rep := watch.TrendReport{Grain: "day"}
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	add := func(wf, job string) {
+		s := watch.Series{Workflow: ".github/workflows/" + wf, Job: job}
+		for d := range 15 {
+			s.Buckets = append(s.Buckets, watch.Bucket{Start: start.AddDate(0, 0, d), Runs: 3, Succeeded: 3, Sec: watch.Stats{P50: float64(60 + 7*d)}})
+		}
+		s.All = watch.Bucket{Runs: 1234, Succeeded: 1200, Sec: watch.Stats{P50: 3725, P90: 7322}, MemBytes: watch.Stats{P90: 15 << 30},
+			CPUSec: watch.Stats{P50: 9000}, WaitSec: watch.Stats{P90: 4000}}
+		rep.Series = append(rep.Series, s)
+	}
+	add("a-very-long-workflow-file-name-for-deploys.yml", "")
+	for _, app := range []string{"web-app", "admin-app", "docs-site", "mobile-backend", "reports"} {
+		add("a-very-long-workflow-file-name-for-deploys.yml", "deploy ("+app+", dev, assets-bucket-0123456789abcdef, "+app+", true) / build-and-deploy")
+	}
+	for _, w := range []int{100, 120} {
+		var b strings.Builder
+		printTable(&b, rep, w)
+		for _, line := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+			if n := utf8.RuneCountInString(line); n > w {
+				t.Errorf("width %d: %d runes: %q", w, n, line)
+			}
+		}
 	}
 }

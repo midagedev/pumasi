@@ -58,7 +58,7 @@ MACHINES (steps of hosts, not of jobs; newest first)
   4 jobs 50–120% slower when they moved from server1/large, mac1/default to server2/medium, Thu Nov 19 13:25 to 14:45 — another kind of machine, not the code
 ```
 
-A ledger younger than two days says so once, at the top, instead of listing steps: `only 30h of history: a job's change is listed once the runs on each side of it span 1d, so not before Sat Nov 21 08:00`.
+A ledger younger than two days says so once, at the top, instead of listing steps: `only 30h of history: a change is listed once the runs on each side of it span 1d, so not before Sat Nov 21 08:00`.
 
 **How a change is found.** For each job and each of time, memory and CPU, on runs that succeeded and were not contended:
 
@@ -76,22 +76,22 @@ A ledger younger than two days says so once, at the top, instead of listing step
 - the job runs on several hosts, and the step showed on one host's runs (z ≥ 3, twice the 10% minimum or more) while another host's runs of the same days stayed flat (z < 1.5, a quarter of that step or less);
 - three or more jobs on one host (or, for jobs spread over hosts, on all of them) stepped the same way at the same moment, and something says it was not one commit. "The same moment" means the spans from each job's last run before to its first run after all overlap, give or take an hour. The evidence against a commit is any of: the jobs are from more than one workflow; their first runs at the new level belong to different runs; or jobs of the same workflow on other hosts ran before and after and did not step.
 
-Such steps are listed once under MACHINES, not as changes of each job, and are not announced as `ci-regression`. A host's step followed by one the other way, on most of the same jobs, is one spell: "slower from … to …, back since".
+Such steps are listed once under MACHINES, not as changes of each job, and are not announced as `ci-regression`. They wait for the same day of runs on each side as a job's change (below). A host's step followed by one the other way, on most of the same jobs, is one spell: "slower from … to …, back since".
 
 Measured with `go run ./internal/watch/cmd/watcheval -shift -n 100`. Each history has a host's change in the third week and one job made 20% slower: three days or more away from the host's change ("apart"), or within 12 hours of it ("inside"). "Shared" histories spread every job over both hosts (65/35). "Pinned" histories give each job one host, as runner classes do.
 
 | Host's change | Jobs | False job changes at it, per history (before → after) | +20% found, apart (before → after) | +20% found, inside | Shown as the host's |
 |---|---|---|---|---|---|
-| a host 1.5× slower (disk filling) | shared | 1.34 → 0.61 | 64% → 64% | 93% → 92% | 47% |
-| | pinned | 3.60 → 0.55 | 93% → 92% | 92% → 62% | 85% |
-| a host 0.7× (caches cleared) | shared | 5.31 → 0.73 | 66% → 65% | 7% → 2% | 91% |
-| | pinned | 3.50 → 0.32 | 95% → 93% | 59% → 46% | 82% |
+| a host 1.5× slower (disk filling) | shared | 1.34 → 0.58 | 64% → 64% | 93% → 92% | 47% |
+| | pinned | 3.60 → 0.21 | 93% → 92% | 92% → 62% | 93% |
+| a host 0.7× (caches cleared) | shared | 5.31 → 0.65 | 66% → 65% | 7% → 2% | 93% |
+| | pinned | 3.50 → 0.08 | 95% → 93% | 59% → 46% | 89% |
 | a host 2× for 6 hours (a neighbour) | shared | 0.00 → 0.00 | 97% → 95% | 94% → 91% | 0% |
 | | pinned | 0.01 → 0.01 | 97% → 95% | 95% → 95% | 0% |
-| every host 1.3× (a slow mirror) | shared | 6.80 → 2.37 | 87% → 87% | 98% → 50% | 82% |
-| | pinned | 6.77 → 0.97 | 87% → 87% | 97% → 39% | 87% |
+| every host 1.3× (a slow mirror) | shared | 6.80 → 2.11 | 87% → 87% | 98% → 37% | 88% |
+| | pinned | 6.77 → 0.57 | 87% → 87% | 97% → 27% | 95% |
 
-A spell of a few hours was already dropped as transient, before and after. The cost is a real regression on the same host within hours of the host's change: it is folded into the host's line. With pinned jobs and a host 1.5× slower, 62% of such regressions were still found instead of 92%. When every host changed, 39–50% were found instead of 97–98%. A regression days away is found as often as before, give or take two histories in a hundred. When every host changes at once and the first runs at the new level are all of one run, it cannot be told from a commit, and it is listed as the jobs' changes. The +20% found less often in the shared histories, before and after, is a host's change of 30–50% on a third of the job's runs, which blurs the search for the regression.
+A spell of a few hours was already dropped as transient, before and after: each job's search drops a step that comes back within three days, so only a spell longer than that reaches the "slower from … to …, back since" line. The cost is a real regression on the same host within hours of the host's change: it is folded into the host's line. With pinned jobs and a host 1.5× slower, 62% of such regressions were still found instead of 92%. When every host changed, 27–37% were found instead of 97–98%. A regression days away is found as often as before, give or take two histories in a hundred. When every host changes at once and the first runs at the new level are all of one run, it cannot be told from a commit, and it is listed as the jobs' changes. The +20% found less often in the shared histories, before and after, is a host's change of 30–50% on a third of the job's runs, which blurs the search for the regression. The made-up histories give each job one runner class, so machines keyed by class as well as host are not measured here. They were checked on a real ledger: a job that moved to a new class on the same host had shown as −56% by host alone, and with classes it is not a change.
 
 **Too little history.** A job's step is listed only once the runs on each side of it span a day (`--min-side`, default 1d). With less, a few hours of a host's mood (a slow spell, a busy afternoon) cannot be told from the job. A ledger younger than two days lists no job's change and says so once at the top. The day was picked from `watcheval -young -n 100`. Made-up histories with nothing injected were cut at each age, and each row shows the share with a false change listed:
 

@@ -37,7 +37,9 @@ type TrendReport struct {
 }
 
 const trendNote = "time, memory and cpu are of runs that succeeded (p50/p90, nearest rank); memory leaves page cache out; " +
-	"changes are steps that held across runs, found among runs whose host was not saturated by others, each set against what its host usually gives; " +
+	"changes are steps that held across runs, found among runs whose host was not saturated by others, each set against what its machine (host and runner class) usually gives, " +
+	"listed once the runs on each side span a day; " +
+	"shifts are steps of the machines, not the jobs: several jobs on a host stepping together, a step on one host's runs only, a job that moved to another kind of machine; " +
 	"creeping is a job's time that grew 12% or more along a trend over the span or the last 28 days, whichever is longer (Theil–Sen on its daily medians, the 95% interval above zero), with no step; " +
 	"a series' change is the time steps listed (and creep) together, or for one with none the median of its last third of days against its first"
 
@@ -266,7 +268,7 @@ func historyNotice(runs []ledger.JobRun, now time.Time, o Options) (time.Time, s
 	if first.IsZero() || o.Plain || need <= 0 || now.Sub(first) >= need {
 		return first, ""
 	}
-	return first, fmt.Sprintf("only %s of history: a job's change is listed once the runs on each side of it span %s, so not before %s",
+	return first, fmt.Sprintf("only %s of history: a change is listed once the runs on each side of it span %s, so not before %s",
 		Span(now.Sub(first)), Span(o.MinBefore), first.Add(need).Local().Format("Mon Jan 2 15:04"))
 }
 

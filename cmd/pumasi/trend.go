@@ -176,7 +176,7 @@ func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool, width
 	fmt.Fprintln(w, "CHANGED (newest first)")
 	if len(rep.Changes) == 0 && len(rep.Creeping) == 0 {
 		if rep.Notice != "" {
-			fmt.Fprintln(w, "  nothing yet: too little history to tell a job's step from a few hours of its host")
+			fmt.Fprintln(w, "  nothing yet: too little history to tell a step from a few hours of a host")
 		} else {
 			fmt.Fprintln(w, "  nothing: no job's time, memory or cpu stepped up or down and stayed there, or crept up")
 		}

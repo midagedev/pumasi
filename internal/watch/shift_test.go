@@ -119,3 +119,27 @@ func TestYoungLedgerSaysSo(t *testing.T) {
 		t.Errorf("the +60%% build step is not found even at once")
 	}
 }
+
+// A host slow for days and then back is one line, "slower from … to …,
+// back since". A spell shorter than three days is dropped as transient by
+// each job's search before, so it is not shown at all.
+func TestHostSpellBackIsOneLine(t *testing.T) {
+	start := synth.EvalStart
+	from := 14*24*time.Hour + 2*time.Hour
+	h := synth.Generate(synth.Config{Seed: 6, Start: start, Days: 28, Pinned: true,
+		HostShifts: []synth.HostShift{{Host: "linux-fast", After: from, For: 5 * 24 * time.Hour, Factor: 1.6}}})
+	_, shifts := watch.FindAll(h.Runs, watch.Options{})
+	var lines []string
+	for _, s := range shifts {
+		lines = append(lines, watch.ShiftLine(s))
+	}
+	for _, s := range shifts {
+		if s.Kind == "host" && s.Slower && s.Back && s.Until.Sub(s.At) > 4*24*time.Hour {
+			if l := watch.ShiftLine(s); !strings.Contains(l, "slower from") || !strings.Contains(l, "back since") {
+				t.Errorf("line: %s", l)
+			}
+			return
+		}
+	}
+	t.Errorf("no spell line: %q", lines)
+}
