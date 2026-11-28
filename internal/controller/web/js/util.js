@@ -165,7 +165,10 @@ export function hostLoad(h, runners = []) {
     const f = tot > lend ? lend / tot : 1; // held over what is lent: fit the bar
     const room = free + give;
     const taken = clamp(1 - room / lend, 0, 1), rawTaken = clamp(1 - free / lend, 0, 1);
-    return { lend, held, give, kept, other, free, used, room, f, taken, rawTaken, pct: Math.round(taken * 100),
+    // jobless: how taken it would be without the runners that hold room and
+    // run nothing yet (ready ones that keep it, and those starting)
+    const jobless = clamp(1 - (room + kept) / lend, 0, 1);
+    return { lend, held, give, kept, other, free, used, room, f, taken, rawTaken, jobless, pct: Math.round(taken * 100),
       // the bar, as shares of what is lent
       seg: { held: (held * f) / lend, give: (give * f) / lend, kept: (kept * f) / lend, other: (other * f) / lend, used: clamp(used / lend, 0, 1) } };
   };
@@ -186,6 +189,9 @@ export function hostLoad(h, runners = []) {
     else if (t >= 0.7) { word = "busy"; tone = "warn"; }
     else if (!h.runners) { word = "idle"; tone = "ok"; }
     else { word = "ok"; tone = "ok"; }
+    // HELD: as full as that only by runners that run no job yet (ready ones
+    // keeping their room, starting ones): nothing runs there, it is not busy
+    if ((word === "full" || word === "busy") && !mine.some((r) => r.job) && top("jobless") < 0.7) { word = "held"; tone = "warn"; }
   }
   return { mem, cpu, word, tone, why, lendMem, lendCpu, share, ready: ready.length, giving: giving.length };
 }

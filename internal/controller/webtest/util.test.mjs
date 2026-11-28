@@ -52,3 +52,14 @@ test("expressRow picks the job expedited by hand", () => {
   assert.equal(expressRow(p).job, "j9");
   assert.equal(expressRow({ ...p, expedited: [{ job: "j9", position: 0 }] }), null);
 });
+
+// A host as full as that only by runners with no job (ready ones keeping
+// their room, starting ones) runs nothing: it is HELD, not BUSY or FULL.
+test("a host whose room is held by runners with no job is held, not busy", () => {
+  const h = { name: "h1", reachable: true, memBytes: 32 * GiB, cpus: 16, freeMem: 6 * GiB, freeCpus: 10, runners: 2 };
+  const idle = { host: "h1", state: "idle", estMem: 12 * GiB, estCpus: 2 };
+  const starting = { host: "h1", state: "starting", estMem: 12 * GiB, estCpus: 2 };
+  assert.equal(hostLoad(h, [idle, starting]).word, "held");
+  // with a job running, the same room is busy
+  assert.equal(hostLoad(h, [{ ...idle, job: "e2e", state: "busy" }, starting]).word, "busy");
+});
