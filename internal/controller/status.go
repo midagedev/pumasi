@@ -42,6 +42,9 @@ type Status struct {
 	// Soon: per class, how many jobs are expected within the time a runner
 	// takes to come up, as the jobs they need end (decide.Soon).
 	Soon map[string]int `json:"soon,omitempty"`
+	// GiveWay: runners up without a job that would step aside for a job that
+	// comes, as the last round counted them (decide.Plan.GiveWay).
+	GiveWay []string `json:"giveWay,omitempty"`
 }
 
 // Expect is when a waiting job is expected to start, where, and whose end
@@ -72,7 +75,7 @@ type Waiting struct {
 func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan, expect map[string]Expect) {
 	defers := plan.Defer
 	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{},
-		Line: plan.Line, Covering: map[string]int{}, Expect: expect}
+		Line: plan.Line, Covering: map[string]int{}, Expect: expect, GiveWay: plan.GiveWay}
 	stopped := map[string]bool{}
 	for _, s := range plan.Stop {
 		stopped[s.Runner] = true

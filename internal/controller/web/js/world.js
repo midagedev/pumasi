@@ -7,7 +7,7 @@
 // A host is a hall whose floor is its memory: each runner claims floor in
 // proportion to what placement counts it as holding; then the free floor,
 // the floor kept free for the machine, others' use, and what is not lent.
-import { GiB, clamp, hash, ease, parseReason, CLASS_COLORS } from "./util.js";
+import { GiB, clamp, hash, ease, parseReason, CLASS_COLORS, hostLoad, isReady } from "./util.js";
 
 export const HALL_D = 8;          // hall depth in tiles
 export const GAP = 3.2;           // between halls
@@ -112,6 +112,7 @@ export class World {
     for (const h of s.hosts) {
       const hall = hallBy.get(h.name);
       hall.h = h;
+      hall.L = hostLoad(h, s.runners);
       hall.status = h.reachable === null || h.reachable === undefined ? "unknown" : !h.reachable ? "down" : h.closed ? "closed" : "ok";
       this.floor(hall, h, (runnersBy.get(h.name) || []).slice().sort((a, b) => b.ageSeconds - a.ageSeconds || (a.name < b.name ? -1 : 1)), classes);
     }
@@ -129,6 +130,15 @@ export class World {
           this.machines.set(r.name, m);
         }
         if (m.dying) m.dying = 0;
+        // a runner whose hold just shrank says from what, for a while: a ready
+        // runner holds its class's largest recent job until it knows its own,
+        // a watched one three times its guess until its size shows
+        if (m.r) {
+          const was = m.r.heldMem || m.r.estMem, now = r.heldMem || r.estMem;
+          if (was - now > GiB / 2 && r.job && (isReady(m.r) || m.r.state === "starting")) m.was = { mem: was, t, why: "ready" };
+          else if (was - now > GiB / 2 && m.r.watched && !r.watched) m.was = { mem: was, t, why: "watched" };
+        }
+        if (m.was && t - m.was.t > 40) m.was = null;
         m.r = r; m.hall = hall; m.cls = classes.find((k) => k.name === r.class) || classes[0];
         if (instant || m.tx === undefined) { m.x = c.cx; m.y = c.cy; }
         else if (m.tx !== c.cx || m.ty !== c.cy) { m.fx = m.x; m.fy = m.y; m.mt = t; }

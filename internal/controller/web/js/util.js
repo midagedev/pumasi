@@ -119,30 +119,60 @@ export const gb = (b) => gbn((b || 0) / GiB);
 export const cpus = (c) => { const v = +(c || 0); return num(v) + (Math.abs(v - 1) < 0.05 ? " CPU" : " CPUs"); };
 export const ago = (sec) => dur(sec).replace(/^(\d+m)00s$/, "$1").replace(/^(\d+h)00m$/, "$1");
 
-// hostLoad: how full a host is, of what it shares with runners (its budget,
-// else the whole machine). Taken is all a new runner cannot have: what runners
-// reserve, other programs, and what is kept for the machine itself.
-export function hostLoad(h) {
-  const lendMem = h.budgetMem || h.memBytes || 0, lendCpu = h.budgetCpus || h.cpus || 0;
-  const part = (used, free, lend) => {
+// ready: a runner up and listening with no job yet (kept warm for its
+// class's next job, or started ahead of a job that needs another to end).
+export const isReady = (r) => !r.job && r.state === "idle";
+
+// hostLoad: how full a host is, as a waiting job sees it. Of what the host
+// lends runners (its budget, else the machine; cores counted cpuShare times
+// where runners share them), each part is one of:
+//   held   — what its busy runners hold (their size, or more when they use more)
+//   give   — what its ready runners hold that they give up for a waiting job
+//   kept   — what ready runners hold that they keep (warmMin), and starting ones
+//   other  — other programs, and memory kept free for the machine
+//   free   — what a new runner could take now
+// used is measured: what the runners use now, inside what they hold.
+// The word counts give as room: a host full of ready runners is not FULL.
+export function hostLoad(h, runners = []) {
+  const share = h.cpuShare > 1 ? h.cpuShare : 1;
+  const lendMem = h.budgetMem || h.memBytes || 0;
+  const lendCpu = h.budgetCpus ? h.budgetCpus : (h.cpus || 0) * share;
+  const mine = runners.filter((r) => r.host === h.name);
+  const ready = mine.filter(isReady);
+  const sum = (rs, f) => rs.reduce((a, r) => a + (f(r) || 0), 0);
+  const giving = ready.filter((r) => r.givesWay);
+  const part = (k) => {
+    const heldOf = (r) => (k === "mem" ? r.heldMem || r.estMem : r.heldCpus || r.estCpus);
+    const lend = k === "mem" ? lendMem : lendCpu;
     if (!lend) return null;
-    const taken = clamp((lend - (free || 0)) / lend, 0, 1);
-    const mine = Math.min(taken, Math.max(0, (used || 0) / lend));
-    return { pct: Math.round(taken * 100), taken, mine, other: taken - mine };
+    const free = (k === "mem" ? h.freeMem : h.freeCpus) || 0;
+    const busy = mine.filter((r) => r.job);
+    const held = sum(busy, heldOf), give = sum(giving, heldOf), kept = sum(mine.filter((r) => !r.job && !r.givesWay), heldOf);
+    const used = sum(mine, (r) => (k === "mem" ? r.memBytes : r.cpuNow));
+    let other = Math.max(0, lend - held - give - kept - free);
+    const tot = held + give + kept + other + free;
+    const f = tot > lend ? lend / tot : 1; // held over what is lent: fit the bar
+    const room = free + give;
+    const taken = clamp(1 - room / lend, 0, 1), rawTaken = clamp(1 - free / lend, 0, 1);
+    return { lend, held, give, kept, other, free, used, room, f, taken, rawTaken, pct: Math.round(taken * 100),
+      // the bar, as shares of what is lent
+      seg: { held: (held * f) / lend, give: (give * f) / lend, kept: (kept * f) / lend, other: (other * f) / lend, used: clamp(used / lend, 0, 1) } };
   };
-  const mem = part(h.usedMem, h.freeMem, lendMem), cpu = part(h.usedCpus, h.freeCpus, lendCpu);
+  const mem = part("mem"), cpu = part("cpu");
   let word, tone, why = "";
+  const top = (k) => Math.max(mem ? mem[k] : 0, cpu ? cpu[k] : 0);
   if (h.reachable === null || h.reachable === undefined) { word = "no data"; tone = "off"; }
   else if (!h.reachable) { word = "offline"; tone = "bad"; why = h.seenSeconds ? "no signal for " + ago(h.seenSeconds) : "no signal"; }
   else if (h.closed) { word = "closed"; tone = "warn"; why = h.closed; }
   else {
-    const top = Math.max(mem ? mem.pct : 0, cpu ? cpu.pct : 0);
-    if (top >= 90) { word = "full"; tone = "bad"; }
-    else if (top >= 70) { word = "busy"; tone = "warn"; }
+    const t = top("taken");
+    if (t >= 0.9) { word = "full"; tone = "bad"; }
+    else if (top("rawTaken") >= 0.7 && giving.length) { word = giving.length + " ready"; tone = "ready"; }
+    else if (t >= 0.7) { word = "busy"; tone = "warn"; }
     else if (!h.runners) { word = "idle"; tone = "ok"; }
     else { word = "ok"; tone = "ok"; }
   }
-  return { mem, cpu, word, tone, why, lendMem, lendCpu };
+  return { mem, cpu, word, tone, why, lendMem, lendCpu, share, ready: ready.length, giving: giving.length };
 }
 
 // plainReason: why a class's next job waits, in one sentence. Placement says
@@ -152,7 +182,10 @@ export function hostLoad(h) {
 // show the host now. Hosts it names that are up are read from the latest state
 // (setLive), so the sentence and the card never disagree.
 let live = new Map();
-export const setLive = (hosts) => { live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, h])); };
+// With runners, each host also knows the memory its ready runners give way.
+export const setLive = (hosts, runners = []) => {
+  live = new Map((hosts || []).filter((h) => h.reachable && !h.closed && h.memBytes).map((h) => [h.name, { h, give: ((hostLoad(h, runners).mem || {}).give || 0) / GiB }]));
+};
 export function plainReason(reason) {
   const r = reason || "";
   if (!r) return "a runner is starting for it";
@@ -162,27 +195,53 @@ export function plainReason(reason) {
   const open = p.hosts.filter((h) => !h.closed);
   for (const h of p.hosts) {
     const now = !h.closed && live.get(h.name);
-    if (now) { h.cpu = +(now.freeCpus || 0).toFixed(1); h.mem = +((now.freeMem || 0) / GiB).toFixed(1); }
+    if (now) { h.cpu = now.h.freeCpus || 0; h.mem = (now.h.freeMem || 0) / GiB; h.give = now.give; }
   }
   const shut = p.hosts.filter((h) => h.closed).map((h) => `${h.name} ${plainNote(h.note)}`);
   // a host that is closed or reserved is often the whole story: always said
   const tail = shut.length ? `; ${shut.join("; ")}` : "";
   if (!open.length) return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; no host takes jobs now${tail}`;
-  const memOK = open.filter((h) => h.mem >= p.needMem);
+  // the need is rounded to 0.1 by placement: a host within that of it may
+  // still be short, and two numbers that read the same say "just short"
+  const memOK = open.filter((h) => h.mem >= p.needMem + 0.05);
   if (!memOK.length) {
     const best = open.slice().sort((a, b) => b.mem - a.mem)[0];
-    return `needs ${gbn(p.needMem)} memory, the most free${shut.length ? " elsewhere" : ""} is ${gbn(best.mem)} (${best.name})${tail}`;
+    const [need, have] = apart(p.needMem, best.mem, gbn);
+    // a host whose ready runners give way makes more than its free memory
+    const most = open.slice().sort((a, b) => b.mem + (b.give || 0) - a.mem - (a.give || 0))[0];
+    const more = most.give > 0.05 && most.mem + most.give > best.mem + 0.05 ? `; ${most.name} makes ${gbn(most.mem + most.give)} with its ready runners giving way` : "";
+    if (need === have) return `needs ${need} memory, ${best.name} is just short of it${more}${tail}`;
+    return `needs ${need} memory, the most free${shut.length ? " elsewhere" : ""} is ${have} (${best.name})${more}${tail}`;
   }
   const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
-  if (best.cpu < p.needCpu) return `needs ${cpus(p.needCpu)}, ${best.name} has the memory but only ${cpus(best.cpu)} free${tail}`;
+  if (best.cpu < p.needCpu + 0.05) {
+    const [need, have] = apart(p.needCpu, best.cpu, cpus);
+    if (need === have) return `needs ${need}, ${best.name} has the memory but is just short of the CPU${tail}`;
+    return `needs ${need}, ${best.name} has the memory but only ${have} free${tail}`;
+  }
   return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; room is opening on ${best.name}${tail}`;
 }
+// apart writes a need and what a host has so that they read differently when
+// they differ: one more decimal, as far as two.
+function apart(need, have, fmt) {
+  let a = fmt(need), b = fmt(have);
+  for (const d of [1, 2]) {
+    if (a !== b) break;
+    const unit = fmt(need).replace(/^[\d.]+/, "");
+    const u = unit === " CPU" && Math.abs(have - 1) >= 0.05 ? " CPUs" : unit;
+    a = need.toFixed(d) + unit; b = have.toFixed(d) + u;
+  }
+  return a === b ? [fmt(need), fmt(need)] : [a, b];
+}
 // expectText: when a waiting job is expected to start (state's expect), in a few words.
-export function expectText(e) {
+// With runners, a job that ends on another host says where it runs.
+export function expectText(e, runners = []) {
   if (!e) return "";
+  const at = e.after && runners.find((r) => r.job === e.after);
+  const where = at && at.host !== e.host ? ` on ${at.host}` : "";
   const s = e.inSeconds || 0;
   const inw = s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
-  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${e.after} ends` : "");
+  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${e.after}${where} ends` : "");
 }
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
 

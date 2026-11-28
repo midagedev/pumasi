@@ -229,6 +229,9 @@ type Plan struct {
 	// Line: each job that waited for room at the start of the plan, in the
 	// order it was given room, and what came of it.
 	Line []Lined
+	// GiveWay: the runners up without a job, after this plan, that would
+	// step aside for a job that comes: their room counts as free for it.
+	GiveWay []string
 }
 
 // Lined is one job in the line and what the plan did for it.
@@ -573,6 +576,9 @@ func Decide(s Snapshot) Plan {
 
 	// 4. What is left over for classes that take only what fits. Spare
 	// runners make way for a job the class takes as for any other.
+	for _, r := range sp.giving(classes) {
+		p.GiveWay = append(p.GiveWay, r.Name)
+	}
 	alloc = sp.without(alloc, classes)
 	waiting := map[string]int{}
 	for _, d := range p.Defer {
@@ -901,6 +907,21 @@ func (s Snapshot) free(h Host, a [2]float64) (cpu, mem float64) {
 		cpu = math.Max(0, h.CPUs*s.CPUOvercommit-h.NonRunnerCPU-a[0])
 	}
 	return cpu, mem
+}
+
+// HostFree is free for a host whose runners hold cpus and mem, as placement
+// counts it: the cores CPUOvercommit times where they are shared.
+func (s Snapshot) HostFree(h Host, cpus, mem float64) (float64, float64) {
+	return s.free(h, [2]float64{cpus, mem})
+}
+
+// CPUShare is how many times placement counts h's cores: CPUOvercommit
+// where they are shared (see cpuShared), else 1.
+func (s Snapshot) CPUShare(h Host) float64 {
+	if s.cpuShared(h) {
+		return s.CPUOvercommit
+	}
+	return 1
 }
 
 // cpuShared reports whether runners on h may hold more cpu than its cores.

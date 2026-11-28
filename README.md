@@ -22,7 +22,7 @@ make                          # Go 1.27; builds ./dist/pumasi and the per-OS bui
 ./dist/pumasi open --demo     # opens a browser; -seed N picks another shop, ?at=<seconds> freezes a moment
 ```
 
-The demo doesn't connect to anything. The same `-seed` always shows the same scenes, and every ten minutes they repeat: someone working at a desktop, a nightly batch that waits, a deploy that goes first, a job killed at its class's memory limit, a host that drops off and comes back, a Mac short of disk.
+The demo doesn't connect to anything. The same `-seed` always shows the same scenes, and every ten minutes they repeat: someone working at a desktop, a nightly batch that waits, a deploy that goes first, a job the kernel kills at the memory limit its class sets, a host that drops off and comes back, a Mac short of disk.
 
 ## Real setup
 
@@ -84,7 +84,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 **Any mix of machines.** Linux servers run container runners (or `driver: native`, a process of the host user). Macs and Windows PCs run native runners. A host marked `desktop` is used after the servers fill up, and gets no new runner while someone is using it (input in the last 15 minutes).
 
-**Running jobs are never stopped by placement.** Not when they outgrow their estimate, not when the controller dies or restarts, not when a host's connection drops. What pumasi fixes on its own and what it can't are both recorded as incidents, which can go to a webhook or a command. With `rerun: 1`, a run that failed because of pumasi is rerun once.
+**pumasi never stops a running job to make room.** Not when it outgrows its estimate, not for a job with higher priority or expedited, not when the controller dies or restarts, not when a host's connection drops. A runner with no job yet may step aside for a waiting job. Only limits you set end a job early: a class's memory `limit` (the kernel kills the process over it, and the incident says so) and `maxDuration`. What pumasi fixes on its own and what it can't are both recorded as incidents, which can go to a webhook or a command. With `rerun: 1`, a run that failed because of pumasi is rerun once.
 
 <table>
 <tr>

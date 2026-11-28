@@ -4,8 +4,8 @@
 import { View, TW, TH, TZ } from "./iso.js";
 import { World, HALL_D } from "./world.js";
 import { Scene } from "./draw.js";
-import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, jobKey, atParam, subjectOf, waitRows } from "./hud.js";
-import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive } from "./util.js";
+import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, renderCI, jobKey, atParam, subjectOf, waitRows } from "./hud.js";
+import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive, isReady } from "./util.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -69,11 +69,18 @@ async function refresh() {
 }
 async function refreshSeries() {
   try { store.series = await getJSON("api/series"); renderTimeline(select); if (ui.view === "list") renderList(actions); } catch (e) { /* keep the last */ }
+  // CI watch: once a minute is enough, the trend moves by the day
+  const api = (store.state && store.state.api) || [];
+  const [trend, forecast] = await Promise.all([api.includes("trend") ? getJSON("api/trend").catch(() => null) : null, api.includes("forecast") ? getJSON("api/forecast").catch(() => null) : null]);
+  if (trend) store.trend = trend;
+  if (forecast) store.forecast = forecast;
+  renderCI();
+  if (ui.view === "list") renderList(actions);
 }
 
 function apply() {
   const s = store.state;
-  setLive(s.hosts);
+  setLive(s.hosts, s.runners);
   // a job whose runner is already starting says so on its crate too, as in the list
   const going = new Set(waitRows(s).filter((r) => r._go).map(jobKey));
   for (const j of s.waitingJobs || []) j._go = going.has(jobKey(j));
@@ -85,6 +92,7 @@ function apply() {
   if (ui.sel) renderPanel(ui.sel, actions, { poll: true });
   if (ui.view === "list") renderList(actions);
   renderTimeline(select);
+  renderCI();
   dirty = true;
   if (deep) { const d = deep; deep = null; select(d, true); }
 }
@@ -282,7 +290,15 @@ function hover(x, y) {
 }
 function tipText(h) {
   const s = store.state;
-  if (h.kind === "runner") { const r = s.runners.find((x) => x.name === h.id); return r && [r.job || (r.state === "starting" ? "a runner starting" : r.name), r.state === "starting" ? `class ${r.class} on ${r.host}` : `running ${ago(r.ageSeconds)} on ${r.host} · using ${cpus(r.cpuNow || 0)} and ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)} reserved`]; }
+  if (h.kind === "runner") {
+    const r = s.runners.find((x) => x.name === h.id);
+    if (!r) return null;
+    const m = world.machines.get(r.name), held = r.heldMem || r.estMem;
+    if (r.state === "starting") return ["a runner starting", `class ${r.class} on ${r.host}`];
+    if (isReady(r)) return [`ready: ${r.class}`, `up with no job yet on ${r.host}; holds ${gb(held)}, the largest recent ${r.class} job` + (r.givesWay ? "; steps aside for a waiting job of another class" : "; kept whatever waits")];
+    const was = m && m.was ? ` (held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while its size was watched"}, until its job's size was known)` : "";
+    return [r.job || r.name, `running ${ago(r.ageSeconds)} on ${r.host} · uses ${cpus(r.cpuNow || 0)} and ${gb(r.memBytes || 0)} · holds ${gb(held)}${was}`];
+  }
   if (h.kind === "job") { const c = world.crates.get(h.id); return c && c.j && [c.j.job || "a job", `waiting ${ago(c.j.waitedSeconds)}${c.j.position ? " · " + c.j.position + ". in line" : ""}${c.j.expedited ? " · expedited" : c.j.level ? " · " + c.j.level : ""} — ${plainReason(c.j.reason)}`]; }
   if (h.kind === "done") { const c = world.crates.get(h.id); return c && c.j && [c.j.job, `${{ ok: "finished ok", fail: "failed", oom: "out of memory", cancel: "cancelled" }[c.result] || c.result} · on ${c.j.host}`]; }
   if (h.kind === "host") return [h.id, "a host: click for how full it is and what runs there"];
