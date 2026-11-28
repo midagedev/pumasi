@@ -178,10 +178,11 @@ export function hostLoad(h, runners = []) {
   else {
     // FULL: 90% or more taken even counting what ready runners give way.
     // N READY: it would be FULL by its free room alone, and ready runners
-    // give way the rest: a waiting job of another class still gets in.
+    // give way the rest: a waiting job of another class still gets in. N is
+    // all its ready runners, as the header and the hosts list count them.
     const t = top("taken");
     if (t >= 0.9) { word = "full"; tone = "bad"; }
-    else if (top("rawTaken") >= 0.9 && giving.length) { word = giving.length + " ready"; tone = "ready"; }
+    else if (top("rawTaken") >= 0.9 && giving.length) { word = ready.length + " ready"; tone = "ready"; }
     else if (t >= 0.7) { word = "busy"; tone = "warn"; }
     else if (!h.runners) { word = "idle"; tone = "ok"; }
     else { word = "ok"; tone = "ok"; }
@@ -189,6 +190,15 @@ export function hostLoad(h, runners = []) {
   return { mem, cpu, word, tone, why, lendMem, lendCpu, share, ready: ready.length, giving: giving.length };
 }
 
+// readyLine: a host's ready runners, as many as the header counts there, and
+// the part of them that gives way to another class's waiting job.
+export function readyLine(L) {
+  if (!L.ready) return "";
+  const give = `${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
+  if (L.giving === L.ready) return `${L.ready} ready ${L.ready === 1 ? "runner gives" : "runners give"} way: ${give}`;
+  if (L.giving) return `${L.ready} ready; ${L.giving} ${L.giving === 1 ? "gives" : "give"} way: ${give}`;
+  return `${L.ready} ready ${L.ready === 1 ? "runner keeps its" : "runners keep their"} room`;
+}
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
 // of the two is short and the most there is anywhere.

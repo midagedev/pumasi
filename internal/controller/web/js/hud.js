@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -10,6 +10,12 @@ const aheadText = (r, held) => {
   const A = aheadOf(r);
   return `Started ahead: ${A.job} needs ${A.after || "another job"} (its workflow's needs:), so GitHub asks for its runner only once that one ends. `
     + `This one was started as it was about to end, to be up when the job comes instead of after. It holds ${gb(held)}, that job's size; if the job does not come it goes at the idle timeout.`;
+};
+// offJobs: what an offline host was last seen running: its jobs, as the map
+// card counts them, and its ready runners, as the header does.
+const offJobs = (h, rs, L) => {
+  const n = rs.filter((r) => r.host === h.name && r.job).length;
+  return `${n} ${n === 1 ? "job" : "jobs"} still running` + (L.ready ? ` · ${L.ready} ready` : "");
 };
 const runCount = (rs) => [`${rs.filter((r) => r.job).length} running`, ...(rs.some(isReady) ? [`${rs.filter(isReady).length} ready`] : [])].join(" · ");
 export const store = { state: null, jobs: [], findings: [], explainText: "", prio: null, prioMissing: false, series: null, base: "" };
@@ -127,14 +133,14 @@ export function renderChrome(onSelect) {
         el("b", { class: "used", style: `width:${(p.seg.used * 100).toFixed(1)}%` })] : null),
       el("span", { class: "gp" + (p && p.free <= 0.05 * p.lend ? (p.room <= 0.05 * p.lend ? " short" : " ready") : ""), text: p ? free + " free" : "-" }));
     const off = L.word === "offline" || L.word === "no data";
-    const ready = L.giving ? `${L.giving} ready ${L.giving === 1 ? "runner gives" : "runners give"} way: ${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}` : "";
+    const ready = readyLine(L);
     const shared = L.share > 1 ? `cores shared ×${L.share}: ${h.cpus} cores count as ${short(L.cpu ? L.cpu.lend : 0)}` : "";
     return el("li", {}, el("button", {
       type: "button", "data-host": h.name, "data-state": L.word, "aria-current": sel.kind === "host" && sel.id === h.name ? "true" : "false",
       "aria-label": `host ${h.name}: ${L.word}${L.why ? " (" + L.why + ")" : ""}, ${L.cpu ? cpus(L.cpu.free) : "-"} and ${L.mem ? gb(L.mem.free) : "-"} free, ${h.runners} runners${ready ? ", " + ready : ""}`,
       onclick: () => onSelect({ kind: "host", id: h.name }),
     }, el("span", { class: "dot " + L.tone }), el("span", { class: "name", text: h.name }), el("span", { class: "word " + L.tone, text: off ? L.word : L.word + (L.why ? ": " + L.why : "") }),
-      off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${h.runners} ${h.runners === 1 ? "job" : "jobs"} still running` })
+      off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${offJobs(h, s.runners, L)}` })
         : el("span", { class: "gauges" }, gauge("CPU", L.cpu, L.cpu ? short(L.cpu.free) : ""), gauge("Mem", L.mem, L.mem ? short(L.mem.free / GiB) + "G" : "")),
       ready && !off ? el("span", { class: "sub ready", text: ready }) : null, shared && !off ? el("span", { class: "sub", text: shared }) : null));
   }));
