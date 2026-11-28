@@ -5,7 +5,7 @@ import { View, TW, TH, TZ } from "./iso.js";
 import { World, HALL_D } from "./world.js";
 import { Scene } from "./draw.js";
 import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, renderCI, jobKey, atParam, subjectOf, waitRows } from "./hud.js";
-import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive, isReady } from "./util.js";
+import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive, isReady, aheadOf } from "./util.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -294,6 +294,8 @@ function tipText(h) {
     const r = s.runners.find((x) => x.name === h.id);
     if (!r) return null;
     const m = world.machines.get(r.name), held = r.heldMem || r.estMem;
+    const A = aheadOf(r);
+    if (A) return [`ahead: ${A.job}`, `started for it on ${r.host}${A.after ? `, as ${A.after} (the job it needs) ends` : ""}: up before the job comes, so it need not wait for a runner; holds ${gb(held)}, that job's size`];
     if (r.state === "starting") return ["a runner starting", `class ${r.class} on ${r.host}`];
     if (isReady(r)) return [`ready: ${r.class}`, `up with no job yet on ${r.host}; holds ${gb(held)}, the largest recent ${r.class} job` + (r.givesWay ? "; steps aside for a waiting job of another class" : "; kept whatever waits")];
     const was = m && m.was ? ` (held ${gb(m.was.mem)} ${m.was.why === "ready" ? "while ready" : "while its size was watched"}, until its job's size was known)` : "";

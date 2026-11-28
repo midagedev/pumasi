@@ -70,9 +70,9 @@
     <aside id="legend" class="panelish" aria-label="How to read the map" hidden>
       <div class="lg-head"><b>How to read the map</b><button id="legend-close" type="button" aria-label="Hide the legend">Got it</button></div>
       <ul>
-        <li><i class="ic hall"></i><span><b>Hall</b> = a host. Card bars: <b>held</b> (solid), <b>gives way</b> (blue stripes), others (grey), free; white line = <b>used</b> now. CPU×1.5 = cores shared.</span></li>
+        <li><i class="ic hall"></i><span><b>Hall</b> = a host. Card bars: what runners <b>hold</b>, solid and striped together; the blue stripes are the part ready runners <b>give way</b> to a waiting job; others (grey); free. White line = <b>used</b> now. CPU×1.5 = cores shared.</span></li>
         <li><i class="ic mach"></i><span><b>Machine</b> = a runner doing one job; its floor is what it <i>holds</i>, its tank what it <i>uses</i> now.</span></li>
-        <li><i class="ic ready"></i><span><b>Blue, READY</b> = a runner up with no job yet. It takes its class's next job at once; striped floor = room it gives up for another class's waiting job.</span></li>
+        <li><i class="ic ready"></i><span><b>Blue, READY</b> = a runner up with no job yet. It takes its class's next job at once; striped floor = room it gives up for another class's waiting job. <b>AHEAD</b> = one started for a job that needs another: up as that one ends, before the job comes.</span></li>
         <li><i class="ic crate"></i><span><b>Crate</b> = a waiting job. Redder = longer; pink = expedited.</span></li>
         <li><i class="ic belt"></i><span><b>Belt</b> = a class (one <code>runs-on</code> label); its jobs queue there.</span></li>
         <li><i class="ic done"></i><span><b>Pallets</b> = finished: green ok, red failed.</span></li>

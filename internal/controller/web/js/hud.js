@@ -1,10 +1,16 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
 // runCount: "3 running · 2 ready", the header chip's words for a few runners.
+// aheadText: what a runner started ahead of a job is for, in a sentence.
+const aheadText = (r, held) => {
+  const A = aheadOf(r);
+  return `Started ahead: ${A.job} needs ${A.after || "another job"} (its workflow's needs:), so GitHub asks for its runner only once that one ends. `
+    + `This one was started as it was about to end, to be up when the job comes instead of after. It holds ${gb(held)}, that job's size; if the job does not come it goes at the idle timeout.`;
+};
 const runCount = (rs) => [`${rs.filter((r) => r.job).length} running`, ...(rs.some(isReady) ? [`${rs.filter(isReady).length} ready`] : [])].join(" · ");
 export const store = { state: null, jobs: [], findings: [], explainText: "", prio: null, prioMissing: false, series: null, base: "" };
 
@@ -109,8 +115,8 @@ export function renderChrome(onSelect) {
   $("counts").replaceChildren(
     el("span", { class: "chip" + (down ? " bad" : "") }, el("b", { text: s.hosts.length }), " hosts" + (down ? ` · ${down} offline` : "")),
     el("span", { class: "chip" }, el("b", { text: s.runners.filter((r) => r.job).length }), " running" + (s.runners.some(isReady) ? ` · ${s.runners.filter(isReady).length} ready` : "")),
-    el("span", { class: "chip" + (waiting ? " warn" : "") }, el("b", { text: waiting }), " waiting" + (starting ? ` · ${starting} starting` : "")),
-    el("span", { class: "chip opt" + (problems ? " bad" : "") }, el("b", { text: problems }), problems === 1 ? " problem" : " problems"));
+    el("span", { class: "chip" + (waiting ? " warn" : "") }, el("b", { text: waiting }), " waiting" + (starting ? ` · ${starting} ${starting === 1 ? "job" : "jobs"} starting` : "")),
+    el("span", { class: "chip opt" + (problems ? " bad" : "") }, el("b", { text: problems }), problems === 1 ? " problem now" : " problems now"));
   document.querySelector("#scene").setAttribute("aria-label", `The plant: ${s.hosts.length} hosts as halls, ${s.runners.length} runners as machines, ${waiting} waiting jobs as crates on their belts, ${problems} open problems. The List view has the same as tables.`);
 
   const sel = onSelect.current || {};
@@ -137,7 +143,7 @@ export function renderChrome(onSelect) {
   const jobs = waitRows(s);
   const alert = (s.limits && s.limits.waitAlertSeconds) || 600;
   $("index-toggle").textContent = `Waiting (${waiting}) & hosts`;
-  $("waiting-title").replaceChildren(...["Waiting ", el("b", { text: waiting }), starting ? el("small", { text: `+${starting} starting` }) : null, el("small", { class: "hint", text: "first gets room first" })].filter(Boolean));
+  $("waiting-title").replaceChildren(...["Waiting ", el("b", { text: waiting }), starting ? el("small", { text: `+${starting} ${starting === 1 ? "job" : "jobs"} starting` }) : null, el("small", { class: "hint", text: "first gets room first" })].filter(Boolean));
   // jobs a runner is already starting for: one line, so what really waits stands out
   const going = jobs.filter((j) => j._go), held = jobs.filter((j) => !j._go);
   const show = held.slice(0, 7);
@@ -151,7 +157,8 @@ export function renderChrome(onSelect) {
       el("span", { class: "age", text: ago(j.waitedSeconds) }),
       el("span", { class: "why", text: whyText(j) }),
       j.expect ? el("span", { class: "eta", text: expectText(j.expect, store.state.runners) }) : null),
-      j.expedited ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
+      // the first in line gets room first already: nothing to put it before
+      j.expedited || i === 0 ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
   }), ...(held.length > show.length ? [el("li", { class: "more" }, el("button", { type: "button", onclick: () => onSelect({ kind: "priority" }) }, `+${held.length - show.length} more: open Priority`))] : []),
   ...(held.length ? [] : [el("li", { class: "none", text: "nothing waits for room" })]));
@@ -310,7 +317,7 @@ function build(sel, actions) {
         section(`Runners (${runCount(runners)})`, runnerRows(runners, actions)),
         facts([["os / driver", `${c.os || "linux"} / ${c.driver || "-"}` + (c.docker ? " · docker " + c.docker : "")],
           ["first size guess", c.cpus ? `${cpus(c.cpus)} · ${gb(c.memory)}` : null], ["memory limit", c.limitMem ? gb(c.limitMem) : null], ["hosts", c.hosts && c.hosts.length ? c.hosts.join(", ") : "any of its OS"],
-          ["kept ready", c.reserve ? c.reserve + " runner(s) kept room for" : null], ["overflow", ov ? `room for ${ov.take} now · has ${ov.held}${ov.after ? " · only after " + ov.after : ""}; the rest go to fixed runners` : null],
+          ["kept ready", c.reserve ? c.reserve + " runner(s) kept room for" : null], ["overflow", ov ? `${overflowWords(ov)}${ov.after ? " · only while " + ov.after + " has no room" : ""}; GitHub gives the rest to fixed runners` : null],
           ["left to fixed runners (1h)", back.length ? String(back.length) : null], ["max duration", c.maxDurationSeconds ? dur(c.maxDurationSeconds) : null]]),
         section("What to do", ...mine((f) => f.class === c.name), copyable("pumasi priority", "on the controller", "the rules and where they put the jobs waiting now")));
     }
@@ -322,10 +329,10 @@ function build(sel, actions) {
       const out = el("div", { "data-runner": r.name },
         el("div", { class: "kind", text: "runner · a machine on the map" }), el("h3", { text: r.job || (r.state === "starting" ? "starting…" : r.name) }),
         el("div", { class: "note", text: `on ${r.host} · class ${r.class} · ${r.state === "busy" ? "running for " + ago(r.ageSeconds) : isReady(r) ? "ready for " + ago(r.ageSeconds) : r.state}` }),
-        isReady(r) ? el("div", { class: "why-big ready", text: `Ready: up with no job yet. It holds ${gb(held)}, the largest recent ${r.class} job, so whichever comes fits; when it gets one it holds that job's size. ` + (r.givesWay ? "It steps aside for a waiting job of another class that needs its room." : "Its class keeps it up whatever waits (warmMin).") }) : null,
+        aheadOf(r) ? el("div", { class: "why-big ready", text: aheadText(r, held) }) : isReady(r) ? el("div", { class: "why-big ready", text: `Ready: up with no job yet. It holds ${gb(held)}, the largest recent ${r.class} job, so whichever comes fits; when it gets one it holds that job's size. ` + (r.givesWay ? "It steps aside for a waiting job of another class that needs its room." : "Its class keeps it up whatever waits (warmMin).") }) : null,
         facts([["CPU now / held", `${cpus(r.cpuNow || 0)} / ${cpus(r.heldCpus || r.estCpus)}`],
           ["memory now / held", `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(held)}`],
-          ["size from", isReady(r) ? "its class's largest recent job, until it has its own" : r.estRuns ? `its job's last ${r.estRuns} runs, largest + 20% (expects ${cpus(r.estCpus)} · ${gb(r.estMem)})` : r.watched ? "a first guess, watched: it holds 3× until its size shows" : "the class's first guess"],
+          ["size from", aheadOf(r) ? "the job it was started for" : isReady(r) ? "its class's largest recent job, until it has its own" : r.estRuns ? `its job's last ${r.estRuns} runs, largest + 20% (expects ${cpus(r.estCpus)} · ${gb(r.estMem)})` : r.watched ? "a first guess, watched: it holds 3× until its size shows" : "the class's first guess"],
           ["memory limit", r.memLimit ? gb(r.memLimit) + (r.memBytes > 0.9 * r.memLimit ? " — close" : "") : "-"],
           ["runner", r.name], ["slot", r.slot || "-"]]),
         r.memBytes > r.estMem && r.estMem ? el("div", { class: "note", text: "Using more than expected: it goes on, and its next run gets more room." }) : null,
@@ -395,7 +402,7 @@ const sz = (c, b) => `${cpus(c)} · ${gb(b)}`;
 function runnerRows(runners, actions) {
   if (!runners.length) return el("div", { class: "note", text: "none" });
   return el("ul", { class: "rows" }, runners.map((r) => el("li", {}, el("button", { type: "button", "data-runner": r.name, onclick: () => actions.select({ kind: "runner", id: r.name }) },
-    el("span", { text: r.job || (isReady(r) ? "ready" : r.state) }), el("span", { text: r.state === "starting" ? `${r.class} · starting` : isReady(r) ? `${r.class} · holds ${gb(r.heldMem || r.estMem)}${r.givesWay ? " · gives way" : ""}` : `${r.class} · uses ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)}` })))));
+    el("span", { text: r.job || (aheadOf(r) ? "ahead: " + aheadOf(r).job : isReady(r) ? "ready" : r.state) }), el("span", { text: r.state === "starting" ? `${r.class} · starting` : isReady(r) ? `${r.class} · holds ${gb(r.heldMem || r.estMem)}${r.givesWay ? " · gives way" : ""}` : `${r.class} · uses ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)}` })))));
 }
 function jobRows(jobs, actions) {
   return el("ul", { class: "rows" }, jobs.map((j) => el("li", {}, el("button", { type: "button", "data-job-id": j.githubJobId || null, "data-run-id": j.runId, onclick: () => actions.select({ kind: "job", id: jobKey(j) }) },
@@ -575,9 +582,9 @@ export function renderList(actions) {
       td(h.cpuPressure === null || h.cpuPressure === undefined ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"), td(h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(h.seenSeconds === null || h.seenSeconds === undefined ? "-" : dur(h.seenSeconds) + " ago", "num opt"), td(h.lastDrop || "-", "opt muted"));
   }));
-  fill("l-runners", s.runners.map((r) => el("tr", { "data-runner": r.name, "data-class": r.class, "data-host": r.host }, td(r.name), td(r.class), td(r.host), td(isReady(r) ? "ready" + (r.givesWay ? " · gives way" : "") : r.state, isReady(r) ? "ready" : "muted"), td(r.job || "-"),
+  fill("l-runners", s.runners.map((r) => el("tr", { "data-runner": r.name, "data-class": r.class, "data-host": r.host }, td(r.name), td(r.class), td(r.host), td(aheadOf(r) ? "ahead" + (r.state === "starting" ? " · starting" : "") : isReady(r) ? "ready" + (r.givesWay ? " · gives way" : "") : r.state, isReady(r) || aheadOf(r) ? "ready" : "muted"), td(r.job || (aheadOf(r) ? "for " + aheadOf(r).job : "-")),
     td(`${(r.cpuNow || 0).toFixed(1)} / ${(r.heldCpus || r.estCpus).toFixed(1)}`, "num"),
-    el("td", {}, mbar([[r.memBytes || 0, r.memBytes > r.estMem ? "#f0b429" : "#40c8be", r.heldMem || r.estMem]]), `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(r.heldMem || r.estMem)}` + (isReady(r) ? " (its class's largest recent job)" : r.state === "starting" ? "" : r.estRuns ? "" : r.watched ? " (first guess, watched: 3×)" : " (first guess)")),
+    el("td", {}, mbar([[r.memBytes || 0, r.memBytes > r.estMem ? "#f0b429" : "#40c8be", r.heldMem || r.estMem]]), `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(r.heldMem || r.estMem)}` + (aheadOf(r) ? " (the job it was started for)" : isReady(r) ? " (its class's largest recent job)" : r.state === "starting" ? "" : r.estRuns ? "" : r.watched ? " (first guess, watched: 3×)" : " (first guess)")),
     td(dur(r.ageSeconds), "num opt"))), "l-runners-empty");
   const back = (c) => (s.takenBack || []).filter((j) => j.class === c).length;
   fill("l-overflow", (s.overflow || []).map((o) => el("tr", { "data-class": o.class }, td(o.class), td(o.take, "num"), td(o.held, "num"), td(o.after || "-"), td(back(o.class), "num"))), "l-overflow-empty");
@@ -675,7 +682,7 @@ export function renderTimeline(onSelect) {
     kids.push(g);
   }
   svg.replaceChildren(...kids);
-  $("tl-legend").textContent = `waiting peak ${max} · ${all.length} problems`;
+  $("tl-legend").textContent = `waiting peak ${max} · ${all.length} ${all.length === 1 ? "problem" : "problems"} in 24h`;
 }
 
 export function atParam(sep) {

@@ -122,6 +122,17 @@ export const ago = (sec) => dur(sec).replace(/^(\d+m)00s$/, "$1").replace(/^(\d+
 // ready: a runner up and listening with no job yet (kept warm for its
 // class's next job, or started ahead of a job that needs another to end).
 export const isReady = (r) => !r.job && r.state === "idle";
+// overflowWords: an overflow class's take (jobs it takes from GitHub now:
+// those it holds that have room, and room for more) and what it holds.
+export const overflowWords = (ov) => `takes ${ov.take ? "up to " + ov.take + (ov.take === 1 ? " job" : " jobs") : "no jobs"} now, holds ${ov.held}`;
+// ahead: a runner with no job started for one expected to come, the job it
+// needs about to end (state's runner.ahead: "X expected in ~Ns, when Y
+// ends"). Its parts, or null.
+export function aheadOf(r) {
+  if (!r || r.job || !r.ahead) return null;
+  const m = /^(.*) expected in ~(\d+)s, when (.*) ends$/.exec(r.ahead);
+  return m ? { job: m[1], in: +m[2], after: m[3] } : { job: r.ahead, after: "" };
+}
 
 // hostLoad: how full a host is, as a waiting job sees it. Of what the host
 // lends runners (its budget, else the machine; cores counted cpuShare times
@@ -165,9 +176,12 @@ export function hostLoad(h, runners = []) {
   else if (!h.reachable) { word = "offline"; tone = "bad"; why = h.seenSeconds ? "no signal for " + ago(h.seenSeconds) : "no signal"; }
   else if (h.closed) { word = "closed"; tone = "warn"; why = h.closed; }
   else {
+    // FULL: 90% or more taken even counting what ready runners give way.
+    // N READY: it would be FULL by its free room alone, and ready runners
+    // give way the rest: a waiting job of another class still gets in.
     const t = top("taken");
     if (t >= 0.9) { word = "full"; tone = "bad"; }
-    else if (top("rawTaken") >= 0.7 && giving.length) { word = giving.length + " ready"; tone = "ready"; }
+    else if (top("rawTaken") >= 0.9 && giving.length) { word = giving.length + " ready"; tone = "ready"; }
     else if (t >= 0.7) { word = "busy"; tone = "warn"; }
     else if (!h.runners) { word = "idle"; tone = "ok"; }
     else { word = "ok"; tone = "ok"; }
