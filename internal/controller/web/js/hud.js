@@ -353,7 +353,7 @@ function build(sel, actions) {
       return el("div", { "data-job-id": j.githubJobId || null, "data-run-id": j.runId || null, "data-class": j.class },
         el("div", { class: "kind", text: "waiting job · a crate on the map" }), el("h3", { text: j.job || "(name not known yet)" }),
         el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? "expedited" : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
-        el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + plainReason((line && line.waitingFor) || j.reason) }),
+        el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + (row && /^behind /.test(whyText(row)) ? whyText(row) : plainReason((line && line.waitingFor) || j.reason)) }),
         j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners, j.job) }) : null,
         section("Run it sooner", expediteBox(j, actions)),
         facts([["class", j.class], ["repo", j.repo], ["workflow", j.workflow], ["run", run ? el("a", { href: run, target: "_blank", rel: "noopener", text: String(j.runId) }) : String(j.runId || "-")],
@@ -500,6 +500,13 @@ function priorityPanel(actions) {
   const s = store.state, p = store.prio;
   const lineRows = (p && p.line) || (s.waitingJobs || []).map((j) => ({ name: j.job, class: j.class, level: j.expedited ? "expedite" : j.level || "normal", position: j.position, waited: dur(j.waitedSeconds), why: j.ranked || j.reason || "by its age", githubJobId: j.githubJobId, _j: j }));
   lineRows.sort((a, b) => (a.position || 1e9) - (b.position || 1e9));
+  // placement's reason is the class's: of its next job. One behind it in the class waits for that one
+  const front = {};
+  const whyRow = (r) => {
+    const f = front[r.class] || (front[r.class] = r);
+    if (f !== r && r.waitingFor && r.waitingFor === f.waitingFor) return `behind ${f.name || "an older job"}, the next ${r.class} job`;
+    return r.waitingFor ? plainReason(r.waitingFor) : "";
+  };
   const rules = (p && p.rules) || [];
   const exp = (p && p.expedited) || [];
   const box = el("div", {});
@@ -510,7 +517,7 @@ function priorityPanel(actions) {
     section(`Waiting order (${lineRows.length})`, lineRows.length ? el("ol", { class: "rows", style: "list-style:none;padding:0;margin:0;display:grid;gap:4px" }, lineRows.map((r) => el("li", {},
       el("button", { type: "button", "data-job-id": r.githubJobId || null, "data-class": r.class, style: "width:100%;text-align:left;border:1px solid var(--line);background:var(--code);border-radius:6px;padding:5px 8px", onclick: () => actions.selectJobBy(r) },
         el("div", { style: "display:flex;gap:6px;align-items:baseline" }, el("b", { text: "#" + (r.position || "-") }), r.level && r.level !== "normal" ? el("span", { class: "lvl " + r.level, text: r.level === "expedite" ? "expedited" : r.level }) : null, el("span", { text: r.name || "-" }), el("span", { class: "note", style: "margin-left:auto", text: `${r.class} · ${r.waited || ""}` })),
-        el("div", { class: "note", text: [r.why, r.waitingFor ? plainReason(r.waitingFor) : ""].filter(Boolean).join(" · ") }))))) : el("div", { class: "note", text: "nothing waits" })),
+        el("div", { class: "note", text: [r.why, whyRow(r)].filter(Boolean).join(" · ") }))))) : el("div", { class: "note", text: "nothing waits" })),
     section("Mode", el("div", { class: "act" }, el("button", { type: "button", class: "secondary", onclick: () => actions.select({ kind: "mode" }) }, "Mode: " + ((p && p.mode && p.mode.name) || "normal") + " · change"))),
     section("Rules" + (p && p.headStart ? ` · high counts as ${p.headStart} earlier, low ${p.headStart} later` : ""),
       rules.length ? el("ul", { class: "rows" }, rules.map((r) => el("li", { "data-rule": r.id }, el("div", { style: "display:flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--code)" },
