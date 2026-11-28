@@ -1,8 +1,8 @@
 # pumasi
 
-[![The pumasi dashboard: each host's card says how full it is and what runs there, the list on the left says what waits and why; here a host goes offline and jobs start where there is room](docs/img/demo.gif)](docs/img/demo.mp4)
+[![The pumasi dashboard: a waiting job says it needs 30 GB of memory and starts in under a minute on linux-server when deploy-api ends, and it does; ready runners step aside for a job that needs the room; runners start ahead for the jobs that come next](docs/img/demo.gif)](docs/img/demo.mp4)
 
-<sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 53-second tour (mp4)](docs/img/demo.mp4), in close-ups: how full each host is, why each job waits, a host dropping off, jobs starting where they fit, expediting a job, high-only mode, the text view for agents.</sub>
+<sub>`pumasi open --demo`, no controller and no GitHub needed. ▶ [The 58-second tour (mp4)](docs/img/demo.mp4), in close-ups: why each job waits and when it starts, the forecast coming true, ready runners stepping aside, runners started ahead, job sizes nobody wrote, CI watch, a desktop someone sits at, deploys first.</sub>
 
 **Ephemeral GitHub Actions runners on the machines you already have, placed where the room is, by measured size, without Kubernetes.**
 
@@ -82,6 +82,17 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 **Placement by measured size.** A job is identified by its repo, workflow file and job name. Its next run is placed with the largest of its last 10 runs plus 20% (memory without page cache). A job never seen before starts at the class's first estimate (2 CPUs / 4 GB unless you set one), or at the size of other jobs in the same workflow. A host's room is measured live: what its runners hold, what other processes use, and a memory reserve. A host under memory pressure gets no new runners. An estimate is not a limit. A job that outgrows it keeps running and is placed bigger next time.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/img/dashboard-wait.webp" alt="A waiting job's panel: why it waits (needs 30 GB of memory, the most free is 24 GB) and when it is expected to start (in under a minute on linux-server, when deploy-api ends)"></td>
+<td width="50%"><img src="docs/img/dashboard-ahead.webp" alt="Two runners marked ahead: started for the release packages that come when release-check ends"></td>
+</tr>
+<tr>
+<td><b>Why it waits, and when it starts.</b> GitHub only says "Waiting for a runner". Each waiting job here says what it is short of and where, and when it is expected to start: <code>starts in under a minute on linux-server, when deploy-api ends</code>. The forecast runs placement forward over the jobs' usual run times; in the harness its median error was 2–16 seconds (<a href="docs/design.md">design</a>).</td>
+<td><b>Runners up before the job.</b> Each class keeps a few runners ready, as many as its jobs have come at once lately, and they give way to another class's job that needs the room. When a job ends that others usually follow (<code>needs:</code>), runners for those start before GitHub asks for them.</td>
+</tr>
+</table>
+
 **Any mix of machines.** Linux servers run container runners (or `driver: native`, a process of the host user). Macs and Windows PCs run native runners. A host marked `desktop` is used after the servers fill up, and gets no new runner while someone is using it (input in the last 15 minutes).
 
 **pumasi never stops a running job to make room.** Not when it outgrows its estimate, not for a job with higher priority or expedited, not when the controller dies or restarts, not when a host's connection drops. A runner with no job yet may step aside for a waiting job. Only limits you set end a job early: a class's memory `limit` (the kernel kills the process over it, and the incident says so) and `maxDuration`. What pumasi fixes on its own and what it can't are both recorded as incidents, which can go to a webhook or a command. With `rerun: 1`, a run that failed because of pumasi is rerun once.
@@ -110,6 +121,8 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 **Security in one line.** GitHub credentials stay on the controller. Hosts get one-time registrations. Container jobs see only their container. A native job sees what that host user sees, so use native classes only for repos you trust. The dashboard listens on loopback by default. Its write endpoints (expedite, mode, rules) take JSON only and, unless you set a dashboard token, only from this machine.
 
 **Watching CI.** From the same measurements: `pumasi trend` shows each job's time day by day and the commit, pull request and step where it got slower or faster, and jobs slowly growing; `pumasi why-slow <PR URL>` says whether a pull request made CI slower and where; `pumasi forecast` says when CI's growth fills the hosts. Limits on job time, memory, wait, deadlines and CPU-hours become incidents. All of it is JSON too (`/api/trend`, `/api/why-slow`, `/api/forecast`) for agents, with measured accuracy in [docs/watch.md](docs/watch.md).
+
+<img src="docs/img/dashboard-ci.webp" width="66%" alt="The CI watch panel: unit-tests 39% slower since PR #1148, step Run tests 2m28s to 4m01s; build memory up 35%; e2e slowly growing over 28 days; typecheck faster; a crossed limit; at this rate the cores fill in about 23 weeks">
 
 <p>
 <img src="docs/img/dashboard-light.webp" width="66%" alt="The dashboard in the light theme">
