@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -336,6 +337,16 @@ func parseReason(reason string, known map[string]HostState) (needCPU, needMem fl
 			s.freeCPU, _ = strconv.ParseFloat(f[1], 64)
 			s.freeMem, _ = strconv.ParseFloat(f[2], 64)
 			s.other = f[3]
+			// what the host has free now, as the hosts beside it say (the
+			// reason is placement's, a round old; the dashboard does the same),
+			// while that still falls short: room that came since, or that two
+			// roundings make look enough, is left to placement's numbers
+			if h := known[name]; h.Reachable != nil && *h.Reachable && h.Closed == "" {
+				c, m := math.Round(h.FreeCPUs*10)/10, math.Round(float64(h.FreeMem)/(1<<30)*10)/10
+				if needMem-m > 0.05 || needCPU-c > 0.05 {
+					s.freeCPU, s.freeMem = c, m
+				}
+			}
 		} else {
 			s.other = rest
 		}
@@ -362,6 +373,8 @@ func shortText(s shortage, needCPU, needMem float64) string {
 	text := fmt.Sprintf("%s has %.1fcpu/%.1fG free", s.host, s.freeCPU, s.freeMem)
 	if len(lack) > 0 {
 		text += ", " + strings.Join(lack, " and ") + " short"
+	} else if s.other == "" {
+		text += ", just short of it" // the need and the free read the same to a tenth (the dashboard says so too)
 	}
 	if m := watchesRE.FindStringSubmatch(s.other); m != nil {
 		text += fmt.Sprintf("; it watches %s unmeasured job there and takes the next with %s free or once that one has shown its size", m[1], m[2])
