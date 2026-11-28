@@ -349,3 +349,22 @@ func TestCPUOvercommit(t *testing.T) {
 		}
 	}
 }
+
+func TestWarm(t *testing.T) {
+	load := func(extra string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: [{name: a}]\nhosts: [{ssh: h}]\n"+extra), 0o600)
+		return Load(p)
+	}
+	for extra, want := range map[string]int{"": DefaultWarm, "warm: 0\n": 0, "warm: 3\n": 3} {
+		c, err := load(extra)
+		if err != nil || *c.Warm != want {
+			t.Errorf("%q: %v %v, want %d", extra, c, err, want)
+		}
+	}
+	for _, bad := range []string{"warm: -1\n", "warm: 33\n"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), "warm") {
+			t.Errorf("%q: err %v", bad, err)
+		}
+	}
+}

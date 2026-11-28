@@ -3,6 +3,7 @@
 package decide
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"math"
@@ -31,11 +32,20 @@ type Class struct {
 	// MaxDuration stops a runner whose job has run this long (0 = never).
 	MaxDuration time.Duration
 	// Overflow: the plan says how many more jobs of the class could be placed
-	// right now (Plan.Room), each taken to be NextCPUs/NextMem large (0 = the
-	// first estimate).
+	// right now (Plan.Room), each taken to be NextCPUs/NextMem large.
 	Overflow bool
+	// NextCPUs/NextMem: what the class's next job is taken to need before it
+	// is known which job that is: the largest of its recent jobs (0 = the
+	// first estimate). Room offered for it (Overflow) and a runner kept up
+	// for it (Warm) hold this much.
 	NextCPUs float64
 	NextMem  int64
+	// Warm: runners of the class kept up without a job, so that its next
+	// jobs need not wait for one to come up (see WarmCount). They are
+	// started only from room no waiting job wants, give it up to one that
+	// does, and leave a host that stops taking the class. Not for an
+	// overflow class.
+	Warm int
 	// MayBeHigh: some priority rule can make a job of the class high. While
 	// only high jobs are placed (Snapshot.HighOnly), an overflow class offers
 	// room only then, or for an expedited job of its own: a job it took
@@ -243,8 +253,9 @@ func Decide(s Snapshot) Plan {
 	covering := map[string]int{}     // class -> runners not yet matched to a job by GitHub
 	watched := map[string]int{}      // host -> runners of jobs nobody has measured, still watched
 	starting := map[string]int{}     // host -> runners coming up
+	warm := warmKept(s, runners, classes, hosts)
 	for _, r := range runners {
-		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r); ok {
+		if st, ok := stopRule(s, hosts[r.Host], classes[r.Class], r, warm[r.Name]); ok {
 			p.Stop = append(p.Stop, st)
 			continue
 		}
@@ -266,6 +277,27 @@ func Decide(s Snapshot) Plan {
 		}
 		if r.State == "starting" {
 			starting[r.Host]++
+		}
+	}
+
+	// Runners up or coming up without a job beyond the jobs GitHub holds for
+	// their class are spare: no job is theirs yet. A spare runner of a warm
+	// class on a host that has stopped taking the class leaves: GitHub would
+	// hand it the class's next job there, unasked.
+	sp := spares(s, runners, p.Stop, classes, covering)
+	drop := func(r Runner, reason string) {
+		p.Stop = append(p.Stop, Stop{Runner: r.Name, Host: r.Host, Reason: reason})
+		c := charged(r, classes)
+		a := alloc[r.Host]
+		alloc[r.Host] = [2]float64{a[0] - c[0], a[1] - c[1]}
+		live[r.Class]--
+		covering[r.Class]--
+		sp.take(r)
+	}
+	for _, r := range sp.all() {
+		h, c := hosts[r.Host], classes[r.Class]
+		if ok, why := takes(s, c, h); c.Warm > 0 && sp.n[r.Class] > 0 && !ok && why != "" && h.Up {
+			drop(r, "spare runner leaves: "+why+"; it would take the class's next job there unasked")
 		}
 	}
 
@@ -360,6 +392,7 @@ func Decide(s Snapshot) Plan {
 			return cpu, mem, hold, capped, ok
 		}
 		best, bestSlots := "", -1.0
+		var bestYield []Runner
 		var bestCPU, bestMem, bestHold float64
 		capped := false
 		var why, short []string
@@ -387,10 +420,30 @@ func Decide(s Snapshot) Plan {
 				continue
 			}
 			hCPU, hMem, hHold, hCapped, lends := on(h)
-			switch {
-			case !lends:
+			if !lends {
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				continue
+			}
+			needMem := hMem
+			if watched[hn] > 0 {
+				needMem = hHold
+			}
+			// Spare runners of other classes give up their room when the job
+			// fits with it: they have no job, it has waited for one.
+			var yield []Runner
+			if freeCPU+1e-9 < hCPU || freeMem < needMem {
+				yield = sp.yieldFor(s, h, alloc[hn], d.Class, hCPU, needMem, classes)
+				if yield != nil {
+					a := alloc[hn]
+					for _, r := range yield {
+						c := charged(r, classes)
+						a = [2]float64{a[0] - c[0], a[1] - c[1]}
+					}
+					freeCPU, freeMem = s.free(h, a)
+				}
+			}
+			switch {
+			case yield != nil:
 			case freeCPU+1e-9 < hCPU || (freeMem < hMem && (watched[hn] == 0 || hHold == hMem)):
 				why = append(why, fmt.Sprintf("%s %.1fcpu/%s", hn, freeCPU, gib(freeMem)))
 				short = append(short, hn)
@@ -413,8 +466,12 @@ func Decide(s Snapshot) Plan {
 			if hCapped {
 				slots = hMem + hCPU // it runs alone wherever it goes: the most room first
 			}
-			if best == "" || better(h, slots, hosts[best], bestSlots) {
-				best, bestSlots = hn, slots
+			// A host where nothing has to give way first.
+			switch {
+			case best != "" && yield != nil && bestYield == nil:
+				continue
+			case best == "" || yield == nil && bestYield != nil || better(h, slots, hosts[best], bestSlots):
+				best, bestSlots, bestYield = hn, slots, yield
 				bestCPU, bestMem, bestHold, capped = hCPU, hMem, hHold, hCapped
 			}
 		}
@@ -458,8 +515,14 @@ func Decide(s Snapshot) Plan {
 			continue
 		}
 		h := hosts[best]
+		for _, r := range bestYield {
+			drop(r, fmt.Sprintf("gives its room to %s of %s: it had no job", cmp.Or(d.Name, "a job"), d.Class))
+		}
 		freeCPU, freeMem := s.free(h, alloc[best])
 		reason := fmt.Sprintf("takes %.1fcpu/%s of the free %.1fcpu/%s", bestCPU, gib(bestMem), freeCPU, gib(freeMem))
+		if len(bestYield) > 0 {
+			reason += fmt.Sprintf(" once %d spare runner(s) without a job give it up", len(bestYield))
+		}
 		if d.Sized != "" {
 			reason += " " + d.Sized
 		}
@@ -486,7 +549,19 @@ func Decide(s Snapshot) Plan {
 		live[c.Name]++
 	}
 
-	// 4. What is left over for classes that take only what fits.
+	// 3b. Runners kept warm, from room no job waits for: not on a host kept
+	// for a job, nor for a class with a job that waits.
+	if s.HighOnly == "" {
+		closed := map[string]bool{}
+		for hn := range kept {
+			closed[hn] = true
+		}
+		p.Start = append(p.Start, warmStarts(s, hostNames, hosts, alloc, live, starting, sp, closed, behind)...)
+	}
+
+	// 4. What is left over for classes that take only what fits. Spare
+	// runners make way for a job the class takes as for any other.
+	alloc = sp.without(alloc, classes)
 	waiting := map[string]int{}
 	for _, d := range p.Defer {
 		waiting[d.Class] += d.Count
@@ -754,7 +829,8 @@ const (
 )
 
 // stopRule returns the removal of a runner that no longer serves a purpose.
-func stopRule(s Snapshot, h Host, c Class, r Runner) (Stop, bool) {
+// A runner kept warm (see warmKept) has no idle timeout.
+func stopRule(s Snapshot, h Host, c Class, r Runner, warm bool) (Stop, bool) {
 	stop := func(state, format string, args ...any) (Stop, bool) {
 		return Stop{Runner: r.Name, Host: r.Host, State: state, Reason: fmt.Sprintf(format, args...)}, true
 	}
@@ -788,7 +864,7 @@ func stopRule(s Snapshot, h Host, c Class, r Runner) (Stop, bool) {
 		return stop("failed", "%s%s", OverMaxDuration, c.MaxDuration)
 	case r.State == "starting" && r.ListeningAt.IsZero() && s.ProvisionTimeout > 0 && s.Now.Sub(r.CreatedAt) > s.ProvisionTimeout:
 		return stop("failed", "%s: not listening %s after start", ProvisionTimeout, s.ProvisionTimeout)
-	case r.State != "busy" && !r.ListeningAt.IsZero() && s.IdleTimeout > 0 && s.Now.Sub(r.ListeningAt) > s.IdleTimeout:
+	case r.State != "busy" && !r.ListeningAt.IsZero() && s.IdleTimeout > 0 && s.Now.Sub(r.ListeningAt) > s.IdleTimeout && !warm:
 		return stop("failed", "idle timeout: no job %s after listening", s.IdleTimeout)
 	}
 	return Stop{}, false

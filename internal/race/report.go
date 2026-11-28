@@ -24,8 +24,9 @@ type Report struct {
 	Runs     []Result   `json:"runs"`
 }
 
-// Run runs sc on the usual fixed runners, the tuned ones, and pumasi with
-// and without what it measured before.
+// Run runs sc on the usual fixed runners, the tuned ones, and pumasi: as
+// configured, without what it measured before, and without each of its
+// later steps.
 func Run(sc Scenario) Report {
 	jobs := Stream(sc)
 	r := Report{Scenario: sc, Jobs: jobs, Fixed: []Fixed{Uniform(), PerClass(jobs), Split(jobs)}}
@@ -36,9 +37,11 @@ func Run(sc Scenario) Report {
 	for _, f := range r.Fixed {
 		r.Runs = append(r.Runs, RunFixed(f, jobs))
 	}
-	strict, cold := sc, sc
-	strict.CPUOvercommit, cold.Cold = 1, true
-	r.Runs = append(r.Runs, RunPumasi(strict, jobs), RunPumasi(sc, jobs), RunPumasi(cold, jobs))
+	// Each step pumasi took, from the strict reservation on: cpu shared
+	// (cpuOvercommit), then runners kept warm (warm), as configured by default.
+	strict, nowarm, cold := sc, sc, sc
+	strict.CPUOvercommit, strict.Warm, nowarm.Warm, cold.Cold = 1, 0, 0, true
+	r.Runs = append(r.Runs, RunPumasi(strict, jobs), RunPumasi(nowarm, jobs), RunPumasi(sc, jobs), RunPumasi(cold, jobs))
 	return r
 }
 
@@ -150,5 +153,48 @@ func Sweep() string {
 	}
 	w.Flush()
 	b.WriteString("(each figure the average over seeds 1-10; busy: every job uses its cpu from start to end)\n")
+	return b.String()
+}
+
+// IdleTable is what pumasi's runners without a job cost, with runners kept
+// warm and without, at the sweep's paces: what they held on average (and
+// the share of all the hosts' room), the most memory at once, and per run
+// how many were started warm, how many of those a job took, and how many
+// runners went without ever having a job.
+func IdleTable() string {
+	var roomCPU, roomMem float64
+	for _, h := range Hosts {
+		c, m := h.Room()
+		roomCPU, roomMem = roomCPU+c, roomMem+float64(m)/gb
+	}
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintln(w, "pushes every\tsetup\tidle cpu held\tidle mem held\tmost idle mem\twarm started\ttaken by a job\tgone without a job\t")
+	for _, every := range [][2]float64{{25, 40}, {35, 55}, {50, 70}} {
+		for _, warm := range []int{0, Film.Warm} {
+			var st Idle
+			name := ""
+			for seed := uint64(1); seed <= 10; seed++ {
+				sc := Film
+				sc.Seed, sc.Every, sc.Warm = seed, every, warm
+				x := RunPumasi(sc, Stream(sc))
+				name = x.Name
+				st.WarmStarted += x.Idle.WarmStarted
+				st.WarmServed += x.Idle.WarmServed
+				st.Stopped += x.Idle.Stopped
+				st.HeldCPU += x.Idle.HeldCPU / 10
+				st.HeldMem += x.Idle.HeldMem / 10
+				st.PeakMem += x.Idle.PeakMem / 10
+			}
+			served := "-"
+			if st.WarmStarted > 0 {
+				served = fmt.Sprintf("%.0f%%", 100*float64(st.WarmServed)/float64(st.WarmStarted))
+			}
+			fmt.Fprintf(w, "%g-%gs\t%s\t%.1f (%.0f%%)\t%.1fG (%.0f%%)\t%.1fG\t%.1f\t%s\t%.1f\t\n", every[0], every[1], name, st.HeldCPU, 100*st.HeldCPU/roomCPU,
+				st.HeldMem, 100*st.HeldMem/roomMem, st.PeakMem, float64(st.WarmStarted)/10, served, float64(st.Stopped)/10)
+		}
+	}
+	w.Flush()
+	fmt.Fprintf(&b, "(seeds 1-10, figures per run; idle: runners coming up or listening without a job; the hosts' room is %.0fcpu/%.0fG)\n", roomCPU, roomMem)
 	return b.String()
 }

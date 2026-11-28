@@ -173,10 +173,13 @@ type Scenario struct {
 	Tails bool `json:"tails,omitempty"`
 	// CPUOvercommit is pumasi's cpuOvercommit (1 = none).
 	CPUOvercommit float64 `json:"cpuOvercommit"`
+	// Warm is pumasi's warm: the most runners a class keeps up without a
+	// job (0 = none), from its arrivals of the last decide.WarmWindow.
+	Warm int `json:"warm,omitempty"`
 }
 
 // Film is the scenario the film shows: a busy quarter hour.
-var Film = Scenario{Seed: 7, Pushes: 18, Every: [2]float64{35, 55}, Provision: 8, CPUOvercommit: config.DefaultCPUOvercommit}
+var Film = Scenario{Seed: 7, Pushes: 18, Every: [2]float64{35, 55}, Provision: 8, CPUOvercommit: config.DefaultCPUOvercommit, Warm: config.DefaultWarm}
 
 func (sc Scenario) draw(r *rand.Rand, at float64, kind string) Job {
 	k := kindOf(kind)
@@ -300,6 +303,25 @@ type Result struct {
 	Frames  []Frame   `json:"frames,omitempty"`
 	// Told: pumasi only, what it said of each job's start while it waited.
 	Told []Told `json:"told,omitempty"`
+	// Idle: pumasi only, what runners without a job cost.
+	Idle Idle `json:"idle,omitempty"`
+}
+
+// Idle is what pumasi's runners without a job cost: those coming up, those
+// listening for a job, and those kept warm.
+type Idle struct {
+	// WarmStarted: runners started for no job, to keep warm; WarmServed: of
+	// them, those a job took.
+	WarmStarted int `json:"warmStarted"`
+	WarmServed  int `json:"warmServed"`
+	// Stopped: runners stopped before any job took them (the idle timeout, a
+	// job of another class that needed the room, a host that closed).
+	Stopped int `json:"stopped"`
+	// What runners without a job held, on average over the run (cores, GiB),
+	// and the most memory at once.
+	HeldCPU float64 `json:"heldCpu"`
+	HeldMem float64 `json:"heldMem"`
+	PeakMem float64 `json:"peakMem"`
 }
 
 // Told is what pumasi said, at one moment, of when a waiting job would start.
@@ -764,6 +786,7 @@ type runner struct {
 	created, ready    float64
 	run               *run // nil = no job yet
 	est               size.Estimate
+	warm              bool // started for no job
 }
 
 // PSICPUThreshold is the controller's: cpu pressure at which a host gets no new runners.
@@ -816,11 +839,16 @@ func estimate(measured map[string][]size.Sample, kind string) size.Estimate {
 // A finished job's run is measured for the next.
 func RunPumasi(sc Scenario, jobs []Job) Result {
 	res := Result{Name: "pumasi", Setup: fmt.Sprintf("decide.Decide each %gs with sizes from size.Learn, cpuOvercommit %g; a runner takes %gs to come up", Tick, max(1, sc.CPUOvercommit), sc.Provision), Waits: make([]float64, len(jobs))}
+	if sc.Warm > 0 {
+		res.Setup += fmt.Sprintf("; up to %d runners a class kept warm", sc.Warm)
+	}
 	switch {
 	case sc.Cold:
 		res.Name, res.Setup = "pumasi-cold", res.Setup+"; nothing measured before"
 	case sc.CPUOvercommit <= 1:
 		res.Name = "pumasi-strict"
+	case sc.Warm <= 0:
+		res.Name = "pumasi-nowarm"
 	}
 	measured := history(sc)
 	told := map[int]bool{}
@@ -830,6 +858,7 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 	var demand []int
 	var runners []runner
 	next, done, seq := 0, 0, 0
+	ticks := 0.0
 	var classes []decide.Class
 	for _, c := range Classes {
 		classes = append(classes, decide.Class{Name: c.Name, OS: c.OS, CPUs: c.CPUs, MemBytes: c.Mem, Hosts: c.Hosts})
@@ -868,12 +897,16 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 				}
 				i := slices.IndexFunc(demand, func(ji int) bool { return kindOf(jobs[ji].Kind).Class == r.class })
 				if i < 0 {
-					continue // nothing left for it: it goes
+					keep = append(keep, r) // it listens until a job comes or pumasi stops it
+					continue
 				}
 				ji := demand[i]
 				demand = slices.Delete(demand, i, i+1)
 				r.run, r.est = start(ji, r.host, t, jobs), estimate(measured, jobs[ji].Kind)
 				res.Waits[ji] = math.Max(0, t-jobs[ji].At)
+				if r.warm {
+					res.Idle.WarmServed++
+				}
 				keep = append(keep, r)
 				continue
 			}
@@ -889,7 +922,7 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		}
 		runners = keep
 
-		s := decide.Snapshot{Now: at(t), Classes: classes, MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, CPUOvercommit: sc.CPUOvercommit,
+		s := decide.Snapshot{Now: at(t), Classes: warmed(classes, sc, jobs[:next], measured, t), MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, CPUOvercommit: sc.CPUOvercommit,
 			ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
 		for _, h := range Hosts {
 			dh := h.decide()
@@ -913,25 +946,50 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		for _, r := range runners {
 			dr := decide.Runner{Name: r.name, Class: r.class, Host: r.host, State: "starting", CreatedAt: at(r.created), Container: "running"}
 			dr.CPUs, dr.MemBytes = charge(r, t)
-			if r.run != nil {
+			switch {
+			case r.run != nil:
 				dr.State, dr.JobKnown, dr.Working, dr.JobStartedAt, dr.ListeningAt = "busy", true, true, at(r.run.started), at(r.ready)
 				dr.Watched = r.est.Watched(at(r.run.started), at(t))
+			case t >= r.ready:
+				dr.State, dr.ListeningAt = "idle", at(r.ready)
 			}
 			s.Runners = append(s.Runners, dr)
 		}
 		res.Told = append(res.Told, tell(s, runners, measured, jobs, sc, t, told)...)
-		for _, st := range decide.Decide(s).Start {
+		plan := decide.Decide(s)
+		for _, st := range plan.Stop {
+			i := slices.IndexFunc(runners, func(r runner) bool { return r.name == st.Runner })
+			if i < 0 || runners[i].run != nil {
+				continue // a job's runner goes when the job ends
+			}
+			runners = slices.Delete(runners, i, i+1)
+			res.Idle.Stopped++
+		}
+		for _, st := range plan.Start {
 			seq++
 			est := size.Estimate{CPUs: st.CPUs, MemBytes: st.MemBytes}
 			var ji int
 			if _, err := fmt.Sscan(st.Job, &ji); err == nil {
 				est = estimate(measured, jobs[ji].Kind)
 			}
-			runners = append(runners, runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.Provision, est: est})
+			runners = append(runners, runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.Provision, est: est, warm: st.Job == ""})
+			if st.Job == "" {
+				res.Idle.WarmStarted++
+			}
 		}
 
 		fr := newFrame(t, done, ids(jobs, demand))
 		m.frame(&fr, pace)
+		var idleCPU, idleMem float64
+		for _, r := range runners {
+			if r.run == nil {
+				c, mem := charge(r, t)
+				idleCPU, idleMem = idleCPU+c, idleMem+float64(mem)/gb
+			}
+		}
+		res.Idle.HeldCPU, res.Idle.HeldMem = res.Idle.HeldCPU+idleCPU, res.Idle.HeldMem+idleMem
+		res.Idle.PeakMem = math.Max(res.Idle.PeakMem, round2(idleMem))
+		ticks++
 		for _, r := range runners {
 			c, mem := charge(r, t)
 			x := Running{ResCPU: round2(c), ResMem: round2(float64(mem) / gb), Starting: r.run == nil}
@@ -943,8 +1001,33 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		}
 		res.Frames = append(res.Frames, fr)
 	}
+	res.Idle.HeldCPU, res.Idle.HeldMem = round2(res.Idle.HeldCPU/ticks), round2(res.Idle.HeldMem/ticks)
 	summarize(&res, jobs, ends)
 	return res
+}
+
+// warmed is the classes with how many runners each keeps warm at t
+// (decide.WarmCount of the arrivals of the last decide.WarmWindow) and the size of
+// its next job: the largest estimate of the kinds that arrived.
+func warmed(classes []decide.Class, sc Scenario, arrived []Job, measured map[string][]size.Sample, t float64) []decide.Class {
+	if sc.Warm <= 0 {
+		return classes
+	}
+	out := slices.Clone(classes)
+	for i := range out {
+		c := &out[i]
+		var ts []time.Time
+		for _, j := range arrived {
+			if kindOf(j.Kind).Class != c.Name || j.At < t-decide.WarmWindow.Seconds() {
+				continue
+			}
+			ts = append(ts, at(j.At))
+			e := estimate(measured, j.Kind)
+			c.NextCPUs, c.NextMem = math.Max(c.NextCPUs, e.CPUs), max(c.NextMem, e.MemBytes)
+		}
+		c.Warm = decide.WarmCount(ts, sc.Warm)
+	}
+	return out
 }
 
 // tell is what pumasi would say now of when each waiting job starts: the

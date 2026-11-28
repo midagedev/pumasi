@@ -69,6 +69,9 @@ type ClassState struct {
 	LimitMem  int64   `json:"limitMem,omitempty"`
 	// MaxDurationSeconds: a job running longer is stopped (0 = never).
 	MaxDurationSeconds int64 `json:"maxDurationSeconds,omitempty"`
+	// Warm: runners the class keeps up without a job now, learned from how
+	// its jobs came in the last 30 minutes (0 = none).
+	Warm int `json:"warm,omitempty"`
 }
 
 // StateLimits: a host over a pressure line or under diskMinFree takes no new
@@ -221,6 +224,9 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	out.Controller = ok
 	out.Warnings = append([]string{}, live.Warnings...)
 	out.Overflow = append([]Overflow{}, live.Overflow...)
+	for i := range out.Classes {
+		out.Classes[i].Warm = live.Warm[out.Classes[i].Name]
+	}
 	var err error
 
 	if out.Incidents, err = l.OpenIncidents(); err != nil {

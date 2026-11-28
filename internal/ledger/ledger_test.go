@@ -277,3 +277,33 @@ func TestJobRunAgainLaterStartsItsWaitAnew(t *testing.T) {
 		t.Fatalf("demand %+v (%v), want one first seen at %v", ds, err, again)
 	}
 }
+
+// Arrivals: when each class's jobs came, a job given back and offered
+// again once, and nothing from before the moment asked.
+func TestArrivals(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	t0 := time.Date(2026, 11, 27, 1, 0, 0, 0, time.UTC)
+	for _, err := range []error{
+		l.UpsertDemand(Job{ID: "old", Class: "c", RunID: 1, Name: "lint"}, t0.Add(-time.Hour)),
+		l.UpsertDemand(Job{ID: "a", Class: "c", RunID: 2, Name: "lint"}, t0),
+		l.UpsertDemand(Job{ID: "b", Class: "c", RunID: 2, Name: "test"}, t0.Add(time.Second)),
+		l.UpsertDemand(Job{ID: "x", Class: "big", RunID: 2, Name: "build"}, t0.Add(2*time.Second)),
+		l.CloseDemand("x", "unassigned-room", t0.Add(time.Minute)),
+		l.UpsertDemand(Job{ID: "y", Class: "big", RunID: 2, Name: "build"}, t0.Add(2*time.Minute)),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := l.Arrivals(t0.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["c"]) != 2 || len(got["big"]) != 1 || !got["big"][0].Equal(t0.Add(2*time.Second)) {
+		t.Fatalf("arrivals %v", got)
+	}
+}

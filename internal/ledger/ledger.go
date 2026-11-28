@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS incidents(
   action TEXT                      -- what pumasi did about it
 );
 CREATE INDEX IF NOT EXISTS incidents_open ON incidents(key) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS demand_first_seen ON demand(first_seen);
 CREATE TABLE IF NOT EXISTS outbox(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, payload TEXT NOT NULL,
@@ -543,6 +544,27 @@ func (l *Ledger) OpenIncidents() ([]Incident, error) { return l.incidents(`resol
 // ClosedIncidents are the incidents resolved since a moment, the oldest first.
 func (l *Ledger) ClosedIncidents(since time.Time) ([]Incident, error) {
 	return l.incidents(`resolved_at IS NOT NULL AND resolved_at >= ?`, ts(since))
+}
+
+// Arrivals is when each class's jobs first came since a moment, by class.
+// A job given back and offered again is one arrival.
+func (l *Ledger) Arrivals(since time.Time) (map[string][]time.Time, error) {
+	rows, err := l.db.Query(`SELECT class, MIN(first_seen) FROM demand WHERE first_seen >= ?
+	  GROUP BY class, CASE WHEN run_id IS NULL OR job IS NULL THEN job_id ELSE run_id || '/' || job END`, ts(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]time.Time{}
+	for rows.Next() {
+		var class string
+		var first sql.NullString
+		if err := rows.Scan(&class, &first); err != nil {
+			return nil, err
+		}
+		out[class] = append(out[class], parseTS(first))
+	}
+	return out, rows.Err()
 }
 
 // TakenBack are the jobs GitHub took back from their class before a runner

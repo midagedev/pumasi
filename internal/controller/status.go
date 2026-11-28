@@ -36,6 +36,9 @@ type Status struct {
 	// last round played it forward (decide.Forecast). A job without one waits
 	// for something no end in sight opens.
 	Expect map[string]Expect `json:"expect,omitempty"`
+	// Warm: per class, how many runners it keeps up without a job now
+	// (decide.WarmCount of how its jobs came lately).
+	Warm map[string]int `json:"warm,omitempty"`
 }
 
 // Expect is when a waiting job is expected to start, where, and whose end
@@ -85,6 +88,14 @@ func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan, expect ma
 	}
 	for _, d := range defers {
 		st.Waiting = append(st.Waiting, Waiting{Class: d.Class, Jobs: d.Count, Reason: d.Reason, Priority: d.Priority})
+	}
+	for _, cl := range snap.Classes {
+		if cl.Warm > 0 {
+			if st.Warm == nil {
+				st.Warm = map[string]int{}
+			}
+			st.Warm[cl.Name] = cl.Warm
+		}
 	}
 	st.Warnings = c.exposure()
 	for _, cl := range c.classes {

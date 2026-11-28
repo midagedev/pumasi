@@ -253,7 +253,7 @@ func jsonNum(n int64) string { b, _ := json.Marshal(n); return string(b) }
 // Waiting jobs say when they are expected to start, where, and whose end
 // makes the room; one waiting for a runner on a host that is down says nothing.
 func TestDemoWaitingJobsHaveAnExpectedStart(t *testing.T) {
-	st := NewDemo(1).view(400, time.Date(2026, 11, 27, 7, 0, 0, 0, time.UTC)).state()
+	st := NewDemo(1).view(250, time.Date(2026, 11, 27, 7, 0, 0, 0, time.UTC)).state()
 	var told int
 	for _, j := range st.WaitingJobs {
 		if j.Expect == nil {
@@ -281,5 +281,27 @@ func TestExpectText(t *testing.T) {
 		if got := c.e.Text(); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.e, got, c.want)
 		}
+	}
+}
+
+// Once the jobs have come a few times, the demo's busy classes keep runners
+// warm, and the state says how many.
+func TestDemoKeepsRunnersWarm(t *testing.T) {
+	st := NewDemo(1).view(575, time.Date(2026, 11, 27, 7, 0, 0, 0, time.UTC)).state()
+	warm := map[string]int{}
+	for _, c := range st.Classes {
+		warm[c.Name] = c.Warm
+	}
+	if warm["pr-checks"] == 0 || warm["light"] != 0 {
+		t.Fatalf("warm by class %v", warm)
+	}
+	idle := 0
+	for _, r := range st.Runners {
+		if r.State == "idle" {
+			idle++
+		}
+	}
+	if idle == 0 {
+		t.Fatalf("no runner up without a job: %+v", st.Runners)
 	}
 }

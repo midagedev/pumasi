@@ -19,6 +19,8 @@ func main() {
 	fmt.Println()
 	fmt.Print(race.Sweep())
 	fmt.Println()
+	fmt.Print(race.IdleTable())
+	fmt.Println()
 	fmt.Print(race.ETATable())
 	if *out != "" {
 		b, err := json.Marshal(r)

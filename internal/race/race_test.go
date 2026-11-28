@@ -17,8 +17,8 @@ func TestRunIsDeterministic(t *testing.T) {
 // Each setup runs every job once, never before it arrived, and ends with none waiting.
 func TestEverySetupRunsEveryJob(t *testing.T) {
 	r := Run(Film)
-	if len(r.Runs) != 6 {
-		t.Fatalf("%d runs, want 6", len(r.Runs))
+	if len(r.Runs) != 7 {
+		t.Fatalf("%d runs, want 7", len(r.Runs))
 	}
 	for _, x := range r.Runs {
 		last := x.Frames[len(x.Frames)-1]
@@ -137,5 +137,31 @@ func TestForecastOfTheWait(t *testing.T) {
 	}
 	if st.FirstMedian > 60 || st.InBand < 0.5 {
 		t.Fatalf("median error %.0fs, %.0f%% within 60s/30%%", st.FirstMedian, 100*st.InBand)
+	}
+}
+
+// Runners kept warm take most jobs the moment they come at a pace the hosts
+// keep up with: the median wait drops below the time a runner takes to come
+// up, most warm runners get a job, and few go without one.
+func TestWarmRunnersTakeJobsAsTheyCome(t *testing.T) {
+	var with, without []float64
+	var st Idle
+	for seed := uint64(1); seed <= 3; seed++ {
+		sc := Film
+		sc.Seed = seed
+		jobs := Stream(sc)
+		w := RunPumasi(sc, jobs)
+		sc.Warm = 0
+		n := RunPumasi(sc, jobs)
+		with, without = append(with, w.Summary.MedianWait), append(without, n.Summary.MedianWait)
+		st.WarmStarted, st.WarmServed, st.Stopped = st.WarmStarted+w.Idle.WarmStarted, st.WarmServed+w.Idle.WarmServed, st.Stopped+w.Idle.Stopped
+	}
+	for i := range with {
+		if with[i] >= Film.Provision || without[i] < Film.Provision {
+			t.Fatalf("median waits with warm %v, without %v", with, without)
+		}
+	}
+	if st.WarmStarted == 0 || float64(st.WarmServed) < 0.7*float64(st.WarmStarted) || st.Stopped > st.WarmStarted/10 {
+		t.Fatalf("warm runners: %+v", st)
 	}
 }

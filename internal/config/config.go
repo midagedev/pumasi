@@ -43,6 +43,12 @@ type Config struct {
 	// cpu pressure stops placing there when the cores are in fact short.
 	// Memory is never overcommitted. Default DefaultCPUOvercommit; 1 = off.
 	CPUOvercommit float64 `yaml:"cpuOvercommit"`
+	// Warm: the most runners a class keeps up without a job, so that its
+	// next jobs need not wait for one to come up. How many it keeps is
+	// learned from how its jobs came lately (decide.WarmCount); this is the
+	// cap. They hold room only no waiting job wants. Default DefaultWarm;
+	// 0 = off.
+	Warm *int `yaml:"warm"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -221,12 +227,22 @@ type Size struct {
 	Memory Bytes   `yaml:"memory"`
 }
 
+// WarmMax is Warm, 0 when it was never set (a Config not made by Load).
+func (c *Config) WarmMax() int {
+	if c.Warm == nil {
+		return 0
+	}
+	return *c.Warm
+}
+
 // The first estimate of a class that gives none.
 const (
 	// DefaultCPUOvercommit: see Config.CPUOvercommit and docs/design.md.
 	DefaultCPUOvercommit = 1.5
-	DefaultCPUs          = 2
-	DefaultMemory        = 4 << 30
+	// DefaultWarm: see Config.Warm and docs/design.md.
+	DefaultWarm   = 8
+	DefaultCPUs   = 2
+	DefaultMemory = 4 << 30
 )
 
 type Host struct {
@@ -328,6 +344,10 @@ func (c *Config) defaults() {
 	}
 	if c.CPUOvercommit == 0 {
 		c.CPUOvercommit = DefaultCPUOvercommit
+	}
+	if c.Warm == nil {
+		w := DefaultWarm
+		c.Warm = &w
 	}
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
@@ -451,6 +471,9 @@ func (c *Config) validate() error {
 	}
 	if c.CPUOvercommit < 1 || c.CPUOvercommit > 4 {
 		return fmt.Errorf("cpuOvercommit must be from 1 (off) to 4")
+	}
+	if *c.Warm < 0 || *c.Warm > 32 {
+		return fmt.Errorf("warm must be from 0 (off) to 32")
 	}
 	if len(c.Classes) == 0 {
 		return fmt.Errorf("at least one class is required")

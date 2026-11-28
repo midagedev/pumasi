@@ -60,6 +60,12 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 	cur.Runners = slices.Clone(s.Runners)
 	cur.Demand = slices.Clone(s.Demand)
 	cur.Hosts = slices.Clone(s.Hosts)
+	// A runner kept warm takes no job of its own: the jobs that are waiting
+	// are what it plays forward.
+	cur.Classes = slices.Clone(s.Classes)
+	for i := range cur.Classes {
+		cur.Classes[i].Warm = 0
+	}
 	ends := map[string]Busy{}
 	for name, b := range busy {
 		ends[name] = b

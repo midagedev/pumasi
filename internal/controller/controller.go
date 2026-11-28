@@ -884,14 +884,23 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			perClass[dd.Class]++
 		}
 	}
+	var arrived map[string][]time.Time
+	if c.cfg.WarmMax() > 0 {
+		if arrived, err = c.ledger.Arrivals(now.Add(-decide.WarmWindow)); err != nil {
+			c.log.Error("ledger arrivals", "err", err)
+		}
+	}
 	for _, cl := range c.classes {
 		dc := decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
 			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve,
 			MayBeHigh: config.MayBeHigh(rules, cl.cfg.Name)}
-		if cl.cfg.Overflow {
+		if !cl.cfg.Overflow {
+			dc.Warm = decide.WarmCount(arrived[cl.cfg.Name], c.cfg.WarmMax())
+		}
+		if cl.cfg.Overflow || dc.Warm > 0 {
 			next := c.nextSize(cl.cfg)
-			dc.Overflow, dc.NextCPUs, dc.NextMem = true, next.CPUs, next.MemBytes
+			dc.Overflow, dc.NextCPUs, dc.NextMem = cl.cfg.Overflow, next.CPUs, next.MemBytes
 		}
 		s.Classes = append(s.Classes, dc)
 		// Jobs the statistics count but the ledger never saw (for example after a fresh ledger).

@@ -140,6 +140,8 @@ func demoConfig() *config.Config {
 	c := &config.Config{URL: "https://github.com/example/app", WaitAlert: 4 * time.Minute, PriorityHeadStart: config.DefaultHeadStart,
 		DiskMinFree: 10, CPUOvercommit: config.DefaultCPUOvercommit, PSICPUThreshold: 40, PSIMemThreshold: 10, PSIIOThreshold: 50, MaxStarting: 4,
 		EvaluateEvery: 2 * time.Second, ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
+	warm := config.DefaultWarm
+	c.Warm = &warm
 	cls := []config.Class{
 		{Name: "pr-checks"},
 		{Name: "e2e", CPUs: 4, Memory: 12 << 30, Docker: "inside", MaxDuration: 2 * time.Hour, Limit: config.Size{Memory: 20 << 30}},
@@ -567,7 +569,8 @@ func (d *Demo) progress(w *demoWorld, t float64) {
 			// Listening: GitHub hands it the class's oldest job.
 			i := slices.IndexFunc(w.demand, func(j demoJob) bool { return j.class == r.class })
 			if i < 0 {
-				continue // nothing left for it: it goes
+				keep = append(keep, r) // it listens until a job comes or pumasi stops it
+				continue
 			}
 			r.job, r.started = w.demand[i], t
 			w.demand = slices.Delete(w.demand, i, i+1)
@@ -785,6 +788,8 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 					dc.NextCPUs, dc.NextMem = math.Max(dc.NextCPUs, e.CPUs), max(dc.NextMem, e.MemBytes)
 				}
 			}
+		} else {
+			d.warm(w, &dc, t)
 		}
 		s.Classes = append(s.Classes, dc)
 	}
@@ -825,9 +830,12 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 		dr := decide.Runner{Name: r.name, Class: r.class, Host: r.host, State: "starting", CreatedAt: at(r.created), Container: "running"}
 		cpus, mem := d.charge(r, t)
 		dr.CPUs, dr.MemBytes = cpus, mem
-		if r.started > 0 {
+		switch {
+		case r.started > 0:
 			dr.State, dr.JobKnown, dr.Working, dr.JobStartedAt, dr.ListeningAt = "busy", true, true, at(r.started), at(r.created+r.prov)
 			dr.Watched = r.est.Watched(at(r.started), now)
+		case t >= r.created+r.prov:
+			dr.State, dr.ListeningAt = "idle", at(r.created+r.prov)
 		}
 		s.Runners = append(s.Runners, dr)
 	}
@@ -867,7 +875,34 @@ func (d *Demo) closed(h demoHost, n demoHostNow) string {
 	return ""
 }
 
+// warm is how many runners a class keeps warm at t and how large its next
+// job is taken to be, as the controller works them out: from the jobs that
+// arrived in the last decide.WarmWindow, the largest of their estimates.
+func (d *Demo) warm(w *demoWorld, dc *decide.Class, t float64) {
+	var arrived []time.Time
+	first := int(math.Floor(demoWarm / demoCycle))
+	for k := max(first, int(math.Floor((t-decide.WarmWindow.Seconds())/demoCycle))); float64(k)*demoCycle <= t; k++ {
+		for _, sp := range d.cycleSpecs(k) {
+			if sp.k().class != dc.Name || sp.at > t || sp.at < t-decide.WarmWindow.Seconds() {
+				continue
+			}
+			arrived = append(arrived, demoEpoch.Add(time.Duration(sp.at*float64(time.Second))))
+			if e := d.estimate(w, sp.kind, dc.Name); !e.Blind {
+				dc.NextCPUs, dc.NextMem = math.Max(dc.NextCPUs, e.CPUs), max(dc.NextMem, e.MemBytes)
+			}
+		}
+	}
+	dc.Warm = decide.WarmCount(arrived, d.cfg.WarmMax())
+}
+
 func (d *Demo) apply(w *demoWorld, t float64, p decide.Plan) {
+	for _, st := range p.Stop {
+		// A runner with a job goes when the job ends; one without leaves now.
+		if i := slices.IndexFunc(w.runners, func(r demoRunner) bool { return r.name == st.Runner }); i >= 0 && w.runners[i].started == 0 {
+			delete(w.starts, st.Runner)
+			w.runners = slices.Delete(w.runners, i, i+1)
+		}
+	}
 	for _, st := range p.Start {
 		w.seq++
 		hh := fnv.New32a()
@@ -1013,6 +1048,13 @@ func (v demoView) state() State {
 		}
 	}
 	slices.SortStableFunc(out.RecentIncidents, func(a, b ledger.Incident) int { return a.ResolvedAt.Compare(b.ResolvedAt) })
+	for i, cl := range out.Classes {
+		if !cl.Overflow {
+			dc := decide.Class{Name: cl.Name}
+			d.warm(w, &dc, t)
+			out.Classes[i].Warm = dc.Warm
+		}
+	}
 	hostIdx := map[string]int{}
 	for _, h := range demoHosts {
 		n := d.hostNow(w, h, t)
@@ -1044,6 +1086,9 @@ func (v demoView) state() State {
 		cl := d.class(r.class)
 		rs := RunnerState{Name: r.name, Class: r.class, Host: r.host, State: "starting", AgeSeconds: secs(t - r.created), Slot: r.slot,
 			EstCPUs: cmp.Or(r.est.CPUs, cl.CPUs), EstMem: cmp.Or(r.est.MemBytes, int64(cl.Memory)), EstRuns: r.est.Runs}
+		if r.started == 0 && t >= r.created+r.prov {
+			rs.State = "idle"
+		}
 		if r.started > 0 {
 			rs.State, rs.Job = "busy", r.job.spec.kind
 			rs.Watched = r.est.Watched(demoEpoch.Add(time.Duration(r.started*float64(time.Second))), demoEpoch.Add(time.Duration(t*float64(time.Second))))
