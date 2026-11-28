@@ -373,7 +373,7 @@ function build(sel, actions) {
       const pos = j.position || (line && line.position);
       return el("div", { "data-job-id": j.githubJobId || null, "data-run-id": j.runId || null, "data-class": j.class },
         el("div", { class: "kind", text: "waiting job · a crate on the map" }), el("h3", { text: j.job || "(name not known yet)" }),
-        el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? (j.expedited ? "expedited" : "with expedited") : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
+        el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? (j.expedited ? "expedited" : "with expedited") : level }), " ", el("span", { class: "note", text: row && row._go ? `starting now · waited ${ago(j.waitedSeconds)}` : `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
         el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + (row && /^behind /.test(whyText(row)) ? whyText(row) : plainReason((line && line.waitingFor) || j.reason)) }),
         j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners, j.job, store.state.waitingJobs || []) }) : null,
         row && row._go ? null : section("Run it sooner", expediteBox(j, actions)),
