@@ -866,6 +866,11 @@ func (d *Demo) hostIncidents(w *demoWorld, t float64) {
 
 // estimate is what the next run of a job is placed with, as the controller works it out.
 func (d *Demo) estimate(w *demoWorld, job, class string) size.Estimate {
+	return d.measured(w, job, class).AtLimit(int64(d.class(class).Limit.Memory))
+}
+
+// measured is estimate before the class's hard limit.
+func (d *Demo) measured(w *demoWorld, job, class string) size.Estimate {
 	cl := d.class(class)
 	first := size.Estimate{CPUs: cl.CPUs, MemBytes: int64(cl.Memory)}
 	if runs := w.measured[sizeKey(job, cl.Platform())]; len(runs) > 0 {
@@ -1442,6 +1447,7 @@ func (v demoView) state() State {
 		if e, ok := v.expect[j.id()]; ok {
 			jw.Expect = &JobExpect{InSeconds: int64(e.In.Seconds()), Host: e.Host, After: e.After}
 		}
+		jw.OverLimit = d.estimate(w, j.spec.kind, j.class).Over
 		out.WaitingJobs = append(out.WaitingJobs, jw)
 	}
 	pv := v.priority()

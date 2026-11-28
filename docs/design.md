@@ -411,7 +411,7 @@ If sending a notice fails, placement doesn't stop, and the notice is sent again 
 | Runner fails to start | `provisionTimeout` (3 minutes), early exit | asks to delete the registration, then removes it and places again | quarantine after 3 in a row on the same host |
 | Host quarantine | 3 boot failures in a row | stops new placement, checks every 5 minutes, back when it passes | on quarantine and on return |
 | Runner dies mid-job | exit code ≠ 0 with no job completion | deletes the registration (retrying until GitHub lets go). Infrastructure failure | incident + job, host, exit code |
-| Memory limit | cgroup `oom_kill`, Job Object refusal | not rerun. That job's next estimate goes above the limit | `hit the memory limit that protects the host` or `hit class <class>'s memory limit` |
+| Memory limit | cgroup `oom_kill`, Job Object refusal | not rerun. That job's next estimate goes above the limit; past a class's hard `limit` it is held at the limit (room past it would only be held: the job is killed there anyway), and Explain says to raise the limit | `hit the memory limit that protects the host` or `hit class <class>'s memory limit` |
 | Job waits long | first seen + `waitAlert` (10 minutes) | keeps re-evaluating | incident + reason, cleared when it starts |
 | Job runs long | the class's `maxDuration` | stops the runner, only if set | incident the moment it passes |
 | Low disk | free space on the fullest filesystem runners live on < `diskMinFree` (10%), see "Where disk is measured" below | stops new placement, cleans up finished pumasi containers and unused runner images | incident, cleared on recovery |

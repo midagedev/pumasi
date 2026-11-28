@@ -141,3 +141,26 @@ func TestRuntimeIsTheMedian(t *testing.T) {
 		t.Fatalf("even count: %v", d)
 	}
 }
+
+// A job past its class's hard memory limit is held at the limit: room past it
+// would only be held, since the job is killed at the limit anyway.
+func TestAtLimit(t *testing.T) {
+	e := Learn([]Sample{{CPUs: 1, MemBytes: 20 * gb, OOM: true}}, Estimate{})
+	if e.MemBytes <= 20*gb {
+		t.Fatalf("a run cut short at 20G should ask for more, got %d", e.MemBytes)
+	}
+	want := e.MemBytes
+	c := e.AtLimit(20 * gb)
+	if c.MemBytes != 20*gb || c.Over != want {
+		t.Fatalf("at a 20G limit: %d (over %d), want 20G (over %d)", c.MemBytes, c.Over, want)
+	}
+	if !strings.Contains(c.Source(), "held at its class's memory limit 20.0G") {
+		t.Errorf("source does not say so: %s", c.Source())
+	}
+	if n := e.AtLimit(0); n.MemBytes != want || n.Over != 0 {
+		t.Errorf("no limit: %d over %d", n.MemBytes, n.Over)
+	}
+	if n := e.AtLimit(64 * gb); n.MemBytes != want || n.Over != 0 {
+		t.Errorf("a limit above it: %d over %d", n.MemBytes, n.Over)
+	}
+}

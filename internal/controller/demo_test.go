@@ -313,12 +313,15 @@ func TestDemoKeepsRunnersWarm(t *testing.T) {
 }
 
 // A release's packages need its check: the placement learns that from the
-// jobs before, and starts their runners as the check ends.
+// jobs before, and starts their runners as the check ends. Not every
+// release: when the check ends sooner than it usually takes, the packages
+// come before their runners would have (as on real hosts), so a few
+// releases are looked at.
 func TestDemoStartsRunnersAhead(t *testing.T) {
 	d := NewDemo(1)
 	now := time.Now()
 	ahead, soon := 0, false
-	for at := 1700.0; at < 1800; at += 2 {
+	for _, at := range releaseMoments() {
 		s := d.view(at, now).state()
 		for _, r := range s.Runners {
 			if r.Ahead != "" && r.Job == "" {
@@ -356,4 +359,16 @@ func TestAheadOf(t *testing.T) {
 	if aheadOf("warm: kept up for the class's next job (1 of 1)") != "" {
 		t.Error("a warm runner is not ahead")
 	}
+}
+
+// releaseMoments are the seconds around the demo's first releases (every
+// fourth cycle from the second, its check at 470s into the cycle).
+func releaseMoments() []float64 {
+	var out []float64
+	for _, c := range []float64{2, 6, 10} {
+		for at := c*demoCycle + 460; at < c*demoCycle+620; at += 2 {
+			out = append(out, at)
+		}
+	}
+	return out
 }

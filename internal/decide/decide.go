@@ -142,6 +142,9 @@ type Demand struct {
 	CPUs     float64
 	MemBytes int64
 	Sized    string
+	// Over: what it would need past its class's hard memory limit, at
+	// which it is held instead (size.Estimate.Over). Not used to place.
+	Over int64
 	// Name is the job's name for people ("" = not known).
 	Name string
 	// Level is the job's place in line while room is short: 1 high, 0 normal,

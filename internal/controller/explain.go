@@ -371,8 +371,8 @@ func shortText(s shortage, needCPU, needMem float64) string {
 	return text
 }
 
-func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, classes map[string]ClassState, lim StateLimits) Finding {
-	f := Finding{Level: levelWait, Kind: "waiting", Subject: w.Class, Class: w.Class}
+func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, classes map[string]ClassState, lim StateLimits) (f Finding) {
+	f = Finding{Level: levelWait, Kind: "waiting", Subject: w.Class, Class: w.Class}
 	n := w.Jobs
 	head := fmt.Sprintf("%s: %d %s wait", w.Class, n, plural(n, "job", "jobs"))
 	if w.OldestSeconds > 0 {
@@ -391,6 +391,18 @@ func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, cla
 		f.Job = jobs[0].Job
 	}
 	f.Next = []Step{stepStatus, stepPriority}
+	defer func() {
+		// A job past its class's hard memory limit is held at the limit: room
+		// past it would only be held. It is cut short there again, whatever waits.
+		for _, j := range jobs {
+			if c, ok := classes[w.Class]; ok && j.OverLimit > 0 && c.LimitMem > 0 {
+				f.Text += fmt.Sprintf(". %s would need %s, over class %s's memory limit %s: it is held at the limit, and was cut short there before and will be again",
+					cmpOr(j.Job, "its next job"), gib(j.OverLimit), w.Class, gib(c.LimitMem))
+				f.Next = append(f.Next, Step{Config: "limit", Where: "pumasi.yaml classes[" + w.Class + "]", Why: "raise or drop the class's hard limit, or make the job smaller"})
+				break
+			}
+		}
+	}()
 	r := w.Reason
 	switch {
 	case r == "":
@@ -410,11 +422,6 @@ func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, cla
 			// The measured size no host could ever lend: placed at what one lends, alone.
 			f.Text += ". " + strings.ToUpper(alone[:1]) + alone[1:] + ": it is placed at what a host lends with no runner on it and starts once one is empty, alone there" +
 				" (a size near or above a whole machine may be a measurement that counted shared memory twice: see the job's runs under JOB SIZE in `pumasi status`)"
-		}
-		if c, ok := classes[w.Class]; ok && c.LimitMem > 0 && needMem*float64(gb) > float64(c.LimitMem) {
-			f.Text += fmt.Sprintf(". Its size %.1fG is over class %s's memory limit %s: it was cut short there before and will be again",
-				needMem, w.Class, gib(c.LimitMem))
-			f.Next = append(f.Next, Step{Config: "limit", Where: "pumasi.yaml classes[" + w.Class + "]", Why: "raise or drop the class's hard limit, or make the job smaller"})
 		}
 		f.Next = append(f.Next, Step{Config: "priority", Where: "pumasi.yaml", Why: "rules that give some jobs room first while room is short; no running job is stopped for them"})
 		for _, s := range per {
