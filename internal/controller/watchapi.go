@@ -10,7 +10,6 @@ import (
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/watch"
-	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
 // watchRoutes: the trend of every job and where it changed (GET /api/trend),
@@ -111,24 +110,40 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 }
 
 // hostCores: the cores CI has on the hosts now (each host's budget when it
-// has one), and where that came from.
+// has one, else its cores: what it lends runners, not counting cores shared
+// by placement), and where that came from. The demo's are its whole fleet's,
+// a host its story takes away for a while included, as the CLI's are.
 func hostCores(s dashSource) (float64, string) {
 	if s.demo() {
-		return synth.DemoCores, "the demo's hosts"
+		return DemoCores(), "the demo's hosts"
 	}
 	total := 0.0
 	for _, h := range s.live().Hosts {
 		if h == nil {
 			continue
 		}
-		if h.BudgetCPUs > 0 {
-			total += h.BudgetCPUs
-		} else {
-			total += h.CPUs
-		}
+		total += lendCores(h.BudgetCPUs, h.CPUs)
 	}
 	if total == 0 {
 		return 0, ""
 	}
 	return total, "the hosts joined now"
+}
+
+// lendCores: what a host lends runners, its budget or else its cores.
+func lendCores(budget, cpus float64) float64 {
+	if budget > 0 {
+		return budget
+	}
+	return cpus
+}
+
+// DemoCores are the cores the demo's hosts lend, what `pumasi forecast
+// --demo` and the demo's /api/forecast set its history against.
+func DemoCores() float64 {
+	total := 0.0
+	for _, h := range demoHosts {
+		total += lendCores(h.budgetCPUs, h.cpus)
+	}
+	return total
 }

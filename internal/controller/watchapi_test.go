@@ -166,7 +166,11 @@ func TestDemoForecast(t *testing.T) {
 	if code := getJSON(t, srv.URL+"/api/forecast", &rep); code != 200 {
 		t.Fatalf("status %d", code)
 	}
-	if rep.Cores != synth.DemoCores || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
+	// Each host's budget, else its cores: 32 + 8 + 10 + 16.
+	if DemoCores() != 66 {
+		t.Fatalf("demo cores %.0f", DemoCores())
+	}
+	if rep.Cores != DemoCores() || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
 		t.Fatalf("%+v", rep)
 	}
 	if code := getJSON(t, srv.URL+"/api/forecast?weeks=2", &rep); code != http.StatusBadRequest {

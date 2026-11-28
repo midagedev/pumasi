@@ -191,6 +191,14 @@ func Forecast(runs []ledger.JobRun, cores float64, now time.Time, weeks int) For
 	// the total), and its waits.
 	rp := newReplay(runs, now.Add(-7*24*time.Hour), now, cores)
 	full := rp.grow(func(r replayed) bool { return r.peak >= cores })
+	if math.IsInf(full, 1) {
+		// Past the replay's reach the hours are smooth and the busiest grow
+		// with the runs: scale them up from there (on the demo, within 3%
+		// of a replay run on to the full cores).
+		if p := rp.at(growMax).peak; p > 0 {
+			full = growMax * cores / p
+		}
+	}
 	rep.FullIn, rep.FullSoon, rep.FullLate = weeksAt(rep.Growth, full), weeksAt(rep.GrowthHigh, full), weeksAt(rep.GrowthLow, full)
 	now1 := rp.at(1)
 	rep.WaitNow, rep.WaitShare = now1.mean, now1.share
@@ -403,7 +411,10 @@ func (rp *replay) at(factor float64) replayed {
 	return r
 }
 
-// grow: the smallest factor (to 8x) at which done holds, or +Inf.
+// growMax is the most runs the replay tries, as a factor of the last week's.
+const growMax = 8
+
+// grow: the smallest factor (to growMax) at which done holds, or +Inf.
 func (rp *replay) grow(done func(replayed) bool) float64 {
 	if done(rp.at(1)) {
 		return 1
@@ -411,7 +422,7 @@ func (rp *replay) grow(done func(replayed) bool) float64 {
 	lo, hi := 1.0, 1.0
 	for {
 		hi *= 1.25
-		if hi > 8 {
+		if hi > growMax {
 			return math.Inf(1)
 		}
 		if done(rp.at(hi)) {

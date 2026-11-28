@@ -424,9 +424,6 @@ func sha(seed uint64, kind string, i int) string {
 	return hex.EncodeToString(s[:])
 }
 
-// DemoCores are the cores the demo's history ran on, for its forecast.
-const DemoCores = 24
-
 // Demo is the history `--demo` shows: six weeks of a repository, the last
 // of them the week of end, whose team grows a little each week, with a
 // typecheck made faster, an e2e job creeping up, a test step that got slower
