@@ -2,8 +2,10 @@ package controller
 
 import (
 	"cmp"
+	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -443,6 +445,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		for i, w := range live.Waiting {
 			out.Waiting = append(out.Waiting, WaitingState{Class: w.Class, Jobs: w.Jobs, Reason: w.Reason, Order: i + 1, Priority: w.Priority, OldestSeconds: oldest(w.Class)})
 		}
+		oldestWaiting(&out)
 		return out, nil
 	}
 	// No controller: every open job in the ledger waits, with the last reason recorded for its class.
@@ -461,6 +464,40 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 
 // hostFree is what a new runner could take on h as placement counts it, and
 // how many times it counts the cores (0 = once).
+// stillWaiting is a class's jobs that wait: placement defers the last n of
+// them in line, and starts runners for the ones before; a job with no place
+// (0) has a runner of its class up for it, and is first (the dashboard's
+// waitRows marks them the same way). jobs is the class's waiting jobs.
+func stillWaiting(jobs []JobWait, n int) []JobWait {
+	js := slices.Clone(jobs)
+	slices.SortStableFunc(js, func(a, b JobWait) int { return cmp.Compare(a.Position, b.Position) })
+	return js[max(0, len(js)-n):]
+}
+
+// waitKey tells a waiting job from the others of its class.
+func waitKey(j JobWait) string {
+	return fmt.Sprintf("%s|%d|%d|%s", j.ID, j.GithubJobID, j.RunID, j.Job)
+}
+
+// oldestWaiting makes each waiting class's oldest the oldest of its jobs that
+// wait, not of one a runner is already starting for.
+func oldestWaiting(out *State) {
+	by := map[string][]JobWait{}
+	for _, j := range out.WaitingJobs {
+		by[j.Class] = append(by[j.Class], j)
+	}
+	for i, w := range out.Waiting {
+		if len(by[w.Class]) == 0 {
+			continue
+		}
+		var m int64
+		for _, j := range stillWaiting(by[w.Class], w.Jobs) {
+			m = max(m, j.WaitedSeconds)
+		}
+		out.Waiting[i].OldestSeconds = m
+	}
+}
+
 func hostFree(cfg *config.Config, h decide.Host, cpus float64, mem int64) (float64, int64, float64) {
 	s := decide.Snapshot{CPUOvercommit: cfg.CPUOvercommit, PSICPUThreshold: cfg.PSICPUThreshold}
 	cpu, m := s.HostFree(h, cpus, float64(mem))

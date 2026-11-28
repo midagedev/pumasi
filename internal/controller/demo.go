@@ -1450,6 +1450,7 @@ func (v demoView) state() State {
 		jw.OverLimit = d.estimate(w, j.spec.kind, j.class).Over
 		out.WaitingJobs = append(out.WaitingJobs, jw)
 	}
+	oldestWaiting(&out)
 	pv := v.priority()
 	out.Mode, out.Expedited = pv.Mode, pv.Expedited
 	for _, b := range w.back {

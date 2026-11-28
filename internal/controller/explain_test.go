@@ -339,3 +339,33 @@ func TestExplainJobLargerThanAnyHost(t *testing.T) {
 		}
 	}
 }
+
+// Two e2e jobs are open and placement defers one: a runner is starting for the
+// first in line, so the class's oldest and the finding's job are the other's.
+func TestWaitingCountsOnlyJobsNoRunnerIsStartingFor(t *testing.T) {
+	s := State{Controller: true,
+		Waiting: []WaitingState{{Class: "e2e", Jobs: 1, Reason: "behind release", Order: 1, OldestSeconds: 84}},
+		WaitingJobs: []JobWait{
+			{Class: "e2e", Job: "e2e (webkit)", WaitedSeconds: 31, Position: 2},
+			{Class: "e2e", Job: "e2e (chromium)", WaitedSeconds: 84, Position: 1},
+		}}
+	oldestWaiting(&s)
+	if got := s.Waiting[0].OldestSeconds; got != 31 {
+		t.Fatalf("oldest = %d, want 31 (the job that waits)", got)
+	}
+	// a job with no place has a runner of its class up for it: it is the one starting
+	if js := stillWaiting([]JobWait{{Job: "b", Position: 1}, {Job: "a"}}, 1); len(js) != 1 || js[0].Job != "b" {
+		t.Errorf("still waiting = %+v, want b", js)
+	}
+	f, ok := findOf(Explain(s, nil, explainNow), "waiting")
+	if !ok || f.Job != "e2e (webkit)" || !strings.Contains(f.Text, "1 job waits, the oldest 31s") {
+		t.Fatalf("finding = %+v", f)
+	}
+	var b bytes.Buffer
+	WriteExplain(&b, s, Explain(s, nil, explainNow), nil, "", false, explainNow)
+	for _, want := range []string{"1 job waits (and 1 job's runner is starting)", "e2e (chromium) 1m24s (a runner is starting for it)"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("explain lacks %q:\n%s", want, b.String())
+		}
+	}
+}

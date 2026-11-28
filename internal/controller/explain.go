@@ -374,7 +374,7 @@ func shortText(s shortage, needCPU, needMem float64) string {
 func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, classes map[string]ClassState, lim StateLimits) (f Finding) {
 	f = Finding{Level: levelWait, Kind: "waiting", Subject: w.Class, Class: w.Class}
 	n := w.Jobs
-	head := fmt.Sprintf("%s: %d %s wait", w.Class, n, plural(n, "job", "jobs"))
+	head := fmt.Sprintf("%s: %d %s", w.Class, n, plural(n, "job waits", "jobs wait"))
 	if w.OldestSeconds > 0 {
 		head += ", the oldest " + dur(w.OldestSeconds)
 		if lim.WaitAlertSeconds > 0 && w.OldestSeconds >= lim.WaitAlertSeconds {
@@ -387,8 +387,8 @@ func waitFinding(w WaitingState, jobs []JobWait, hosts map[string]HostState, cla
 	if w.Priority != "" {
 		head += " (" + w.Priority + ")"
 	}
-	if len(jobs) > 0 && jobs[0].Job != "" {
-		f.Job = jobs[0].Job
+	if js := stillWaiting(jobs, n); len(js) > 0 && js[0].Job != "" {
+		f.Job = js[0].Job // the first that waits, not one a runner is starting for
 	}
 	f.Next = []Step{stepStatus, stepPriority}
 	defer func() {
@@ -640,7 +640,15 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 		head += " · " + url
 	}
 	p("%s", head)
-	p("%d hosts, %d runners, %d jobs waiting, %d open problems", len(s.Hosts), len(s.Runners), len(s.WaitingJobs), len(s.Incidents))
+	waiting := 0
+	for _, w := range s.Waiting {
+		waiting += w.Jobs
+	}
+	jobs := fmt.Sprintf("%d %s", waiting, plural(waiting, "job waits", "jobs wait"))
+	if n := len(s.WaitingJobs) - waiting; n > 0 {
+		jobs += fmt.Sprintf(" (and %d %s starting)", n, plural(n, "job's runner is", "jobs' runners are"))
+	}
+	p("%d hosts, %d runners, %s, %d open problems", len(s.Hosts), len(s.Runners), jobs, len(s.Incidents))
 
 	writeFindings := func(title string, level string) {
 		p("")
@@ -692,6 +700,12 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 	for _, j := range s.WaitingJobs {
 		byClass[j.Class] = append(byClass[j.Class], j)
 	}
+	waits := map[string]bool{} // the jobs that wait, not those a runner is starting for
+	for _, w := range s.Waiting {
+		for _, j := range stillWaiting(byClass[w.Class], w.Jobs) {
+			waits[waitKey(j)] = true
+		}
+	}
 	for _, f := range fs {
 		if f.Level != levelWait {
 			continue
@@ -710,7 +724,9 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 			if j.Position > 0 {
 				n = fmt.Sprintf("#%d %s", j.Position, n)
 			}
-			if j.Expect != nil {
+			if !waits[waitKey(j)] {
+				n += " (a runner is starting for it)"
+			} else if j.Expect != nil {
 				n += " (" + j.Expect.Text(j.Job, s.Runners, s.WaitingJobs) + ")"
 			}
 			names = append(names, n)

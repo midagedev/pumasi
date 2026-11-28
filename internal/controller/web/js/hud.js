@@ -206,8 +206,9 @@ export function renderChrome(onSelect) {
 // waitRows: the waiting jobs in line order, each marked go when a runner is
 // already being started for it. Placement defers a class's jobs as a count
 // (waiting[].jobs); the rest of its open jobs, the first in line, are starting.
+// A job with no place (0) has a runner of its class up for it: first.
 export function waitRows(s) {
-  const jobs = (s.waitingJobs || []).slice().sort((a, b) => (a.position || 1e9) - (b.position || 1e9));
+  const jobs = (s.waitingJobs || []).slice().sort((a, b) => (a.position || 0) - (b.position || 0));
   const deferred = new Map((s.waiting || []).map((w) => [w.class, w.jobs]));
   const seen = new Map();
   const total = new Map();
