@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -86,7 +86,7 @@ function memBar(parts) {
       parts.filter((p) => p[1] > 0).map((p) => el("i", { style: `width:${(100 * p[1]) / total}%;background:${p[2]}`, title: `${p[0]} ${p[3] || gib(p[1])}` }))),
     el("div", { class: "legend" }, parts.filter((p) => p[1] > 0).map((p) => el("span", {}, el("i", { style: "background:" + p[2] }), `${p[0]} ${p[3] || gib(p[1])}`))));
 }
-const ZC = { held: "#e0a42e", free: "#3fae74", reserve: "#9b7ef0", keep: "#8a7a3a", others: "#8d8d96", unlent: "#2a2e35" };
+const ZC = { held: "#e0a42e", kept: "#a07a30", give: "repeating-linear-gradient(-45deg,#60b0ff 0 3px,#35618c 3px 6px)", free: "#3fae74", reserve: "#9b7ef0", keep: "#8a7a3a", others: "#8d8d96", unlent: "#2a2e35" };
 
 export function hostState(h) {
   if (h.reachable === null || h.reachable === undefined) return ["unknown", "off"];
@@ -113,24 +113,28 @@ export function renderChrome(onSelect) {
 
   const sel = onSelect.current || {};
   $("index-hosts").replaceChildren(...s.hosts.map((h) => {
-    const L = hostLoad(h);
-    const gauge = (label, p) => el("span", { class: "g" }, el("span", { class: "gl", text: label }),
-      el("span", { class: "gbar" }, p ? [el("i", { class: "mine " + L.tone, style: `width:${(p.mine * 100).toFixed(1)}%` }), el("i", { class: "other", style: `width:${(p.other * 100).toFixed(1)}%` })] : null),
-      el("span", { class: "gp", text: p ? p.pct + "%" : "-" }));
+    const L = hostLoad(h, s.runners);
+    const gauge = (label, p, free) => el("span", { class: "g" }, el("span", { class: "gl", text: label }),
+      el("span", { class: "gbar" }, p ? [el("i", { class: "mine " + (L.tone === "ready" ? "warn" : L.tone), style: `width:${((p.seg.held + p.seg.kept) * 100).toFixed(1)}%` }), el("i", { class: "give", style: `width:${(p.seg.give * 100).toFixed(1)}%` }), el("i", { class: "other", style: `width:${(p.seg.other * 100).toFixed(1)}%` }),
+        el("b", { class: "used", style: `width:${(p.seg.used * 100).toFixed(1)}%` })] : null),
+      el("span", { class: "gp" + (p && p.free <= 0.05 * p.lend ? " short" : ""), text: p ? free + " free" : "-" }));
     const off = L.word === "offline" || L.word === "no data";
+    const ready = L.giving ? `${L.giving} ready ${L.giving === 1 ? "runner gives" : "runners give"} way: ${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}` : "";
+    const shared = L.share > 1 ? `cores shared ×${L.share}: ${h.cpus} cores count as ${short(L.cpu ? L.cpu.lend : 0)}` : "";
     return el("li", {}, el("button", {
       type: "button", "data-host": h.name, "data-state": L.word, "aria-current": sel.kind === "host" && sel.id === h.name ? "true" : "false",
-      "aria-label": `host ${h.name}: ${L.word}${L.why ? " (" + L.why + ")" : ""}, CPU ${L.cpu ? L.cpu.pct + "%" : "-"} taken, memory ${L.mem ? L.mem.pct + "%" : "-"} taken, ${h.runners} jobs running, ${h.memBytes ? gb(h.freeMem) + " free" : "no data"}`,
+      "aria-label": `host ${h.name}: ${L.word}${L.why ? " (" + L.why + ")" : ""}, ${L.cpu ? cpus(L.cpu.free) : "-"} and ${L.mem ? gb(L.mem.free) : "-"} free, ${h.runners} runners${ready ? ", " + ready : ""}`,
       onclick: () => onSelect({ kind: "host", id: h.name }),
     }, el("span", { class: "dot " + L.tone }), el("span", { class: "name", text: h.name }), el("span", { class: "word " + L.tone, text: off ? L.word : L.word + (L.why ? ": " + L.why : "") }),
       off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${h.runners} ${h.runners === 1 ? "job" : "jobs"} still running` })
-        : el("span", { class: "gauges" }, gauge("CPU", L.cpu), gauge("Mem", L.mem))));
+        : el("span", { class: "gauges" }, gauge("CPU", L.cpu, L.cpu ? short(L.cpu.free) : ""), gauge("Mem", L.mem, L.mem ? short(L.mem.free / GiB) + "G" : "")),
+      ready && !off ? el("span", { class: "sub ready", text: ready }) : null, shared && !off ? el("span", { class: "sub", text: shared }) : null));
   }));
 
   // the waiting jobs, in the order they get room, each with why in plain words
   const jobs = waitRows(s);
   const alert = (s.limits && s.limits.waitAlertSeconds) || 600;
-  $("index-toggle").textContent = `Hosts & waiting (${waiting})`;
+  $("index-toggle").textContent = `Waiting (${waiting}) & hosts`;
   $("waiting-title").replaceChildren(...["Waiting ", el("b", { text: waiting }), starting ? el("small", { text: `+${starting} starting` }) : null, el("small", { class: "hint", text: "first gets room first" })].filter(Boolean));
   // jobs a runner is already starting for: one line, so what really waits stands out
   const going = jobs.filter((j) => j._go), held = jobs.filter((j) => !j._go);
@@ -143,7 +147,7 @@ export function renderChrome(onSelect) {
       el("span", { class: "pos", text: i + 1, title: j.position ? ordinal(j.position) + " in the whole line, counting jobs already starting" : null }),
       el("span", { class: "jn" }, lw ? el("span", { class: "lvl " + (lw === "expedited" ? "expedite" : lw), text: lw }) : null, " ", j.job || "(name not known yet)"),
       el("span", { class: "age", text: ago(j.waitedSeconds) }),
-      el("span", { class: "why", text: plainReason(j.reason) }),
+      el("span", { class: "why", text: whyText(j) }),
       j.expect ? el("span", { class: "eta", text: expectText(j.expect) }) : null),
       j.expedited ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
@@ -187,12 +191,20 @@ export function waitRows(s) {
     seen.set(j.class, k);
     const go = k <= total.get(j.class) - (deferred.get(j.class) || 0);
     return { ...j, _go: go };
-  });
+  }).map((j, _, all) => ({ ...j, _front: all.find((x) => x.class === j.class && !x._go) }));
+}
+// whyText: why a waiting job waits. Placement's reason is about its class's
+// next job: the jobs behind that one say so instead of repeating its size.
+export function whyText(j) {
+  if (j._go) return "a runner is starting for it";
+  if (j._front && jobKey(j._front) !== jobKey(j) && j.reason === j._front.reason) return `behind ${j._front.job || "an older job"}, the next ${j.class} job`;
+  return plainReason(j.reason);
 }
 export function waitCounts(s) {
   const waiting = (s.waiting || []).reduce((a, w) => a + w.jobs, 0);
   return { waiting, starting: Math.max(0, (s.waitingJobs || []).length - waiting) };
 }
+const short = (v) => (v >= 9.95 || v < 0.05 ? String(Math.round(v)) : (+v).toFixed(1));
 const ordinal = (n) => (!n ? "-" : n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"));
 
 export function subjectOf(i) {
@@ -251,19 +263,22 @@ function build(sel, actions) {
     case "host": {
       const h = s.hosts.find((x) => x.name === sel.id);
       if (!h) return null;
-      const L = hostLoad(h);
+      const L = hostLoad(h, s.runners);
       const runners = s.runners.filter((r) => r.host === h.name);
       const mem = h.memBytes || 0;
-      const keep = h.keepMem || (mem ? Math.min(Math.max(mem / 10, GiB), 4 * GiB) : 0);
-      const others = h.otherMem !== undefined ? h.otherMem : Math.max(0, mem - h.usedMem - h.freeMem - keep);
-      const unlent = h.otherMem !== undefined ? Math.max(0, mem - h.usedMem - h.freeMem - keep - others) : 0;
+      const M = L.mem, C = L.cpu;
+      const parts = (p, f) => [["held by busy runners", p.held, ZC.held, f(p.held)], ["held by starting or kept runners", p.kept, ZC.kept, f(p.kept)], ["held by ready runners: gives way", p.give, ZC.give, f(p.give)],
+        ["other programs, kept for the machine", p.other, ZC.others, f(p.other)], ["free", p.free, ZC.free, f(p.free)]];
+      const readyN = runners.filter(isReady).length;
       return el("div", { "data-host": h.name },
         el("div", { class: "kind", text: "host · a hall on the map" }), el("h3", { text: h.name }),
         el("div", { class: "state " + L.tone }, el("span", { class: "dot " + L.tone }), " " + L.word + (L.why ? ": " + L.why : ""),
-          L.cpu && L.mem ? el("span", { class: "note", text: ` · CPU ${L.cpu.pct}% taken · memory ${L.mem.pct}% taken` }) : null),
-        mem ? section(`Memory · ${gb(h.freeMem)} free for a new job`, memBar([["reserved by runners", h.usedMem, ZC.held, gb(h.usedMem)], ["free", h.freeMem, ZC.free, gb(h.freeMem)], ["kept for the machine", keep, ZC.keep, gb(keep)], ["other programs", others, ZC.others, gb(others)], ["not shared", unlent, ZC.unlent, gb(unlent)]]),
-          el("div", { class: "note", text: `${gb(mem)} in the machine. A runner reserves what its job needed before (or what it uses now, when that is more); the floor of its hall is drawn the same way.` })) : null,
-        h.cpus ? section(`CPU · ${cpus(h.freeCpus)} free`, memBar([["reserved by runners", h.usedCpus, ZC.held, cpus(h.usedCpus)], ["free", h.freeCpus, ZC.free, cpus(h.freeCpus)], ["other programs", h.otherCpus || 0, ZC.others, cpus(h.otherCpus || 0)], ["not shared", Math.max(0, h.cpus - h.usedCpus - h.freeCpus - (h.otherCpus || 0)), ZC.unlent, ""]])) : null,
+          C && M ? el("span", { class: "note", text: ` · a waiting job finds ${cpus(C.room)} and ${gb(M.room)}` + (M.give || C.give ? " (counting what ready runners give up)" : "") }) : null),
+        M ? section(`Memory · ${gb(M.free)} free` + (M.give ? ` · ${gb(M.give)} more when ready runners give way` : ""), memBar(parts(M, gb)),
+          el("div", { class: "note", text: `Its runners use ${gb(M.used)} now, of the ${gb(M.held + M.kept + M.give)} they hold. A runner holds the largest of its job's last runs plus 20%, or what it uses when that is more, so a job never runs short; a ready runner holds its class's largest recent job until it knows its own. ${gb(mem)} in the machine${h.budgetMem ? ", " + gb(h.budgetMem) + " lent to runners" : ""}.` })) : null,
+        C ? section(`CPU · ${cpus(C.free)} free` + (C.give ? ` · ${cpus(C.give)} more when ready runners give way` : ""), memBar(parts(C, cpus)),
+          el("div", { class: "note", text: `Its runners use ${cpus(C.used)} now.` + (L.share > 1 ? ` Cores shared: placement counts the ${h.cpus} cores ${L.share}× (${cpus(C.lend)}), as jobs that share a core only take longer; it stops at cpu pressure ${(s.limits || {}).psiCpu || 40}%. Memory is never shared.` : "") })) : null,
+        readyN ? el("div", { class: "note ready-note", text: `${readyN} ready ${readyN === 1 ? "runner" : "runners"} (blue): up with no job yet, kept warm for their class's next job. Each takes a job of its own class at once${L.giving ? `; ${L.giving} step aside for a waiting job of another class that needs the room` : ""}.` }) : null,
         section(`Running here (${runners.length})`, runnerRows(runners, actions)),
         facts([["kind", h.kind], ["os", h.os || "-"], ["agent", h.agent || "-"], ["last heard", h.seenSeconds === null || h.seenSeconds === undefined ? "-" : ago(h.seenSeconds) + " ago · " + Math.round(h.rttMs) + "ms"], ["last dropped", h.lastDrop || "-"],
           ["shares", h.budgetCpus || h.budgetMem ? `at most ${h.budgetCpus ? cpus(h.budgetCpus) : "any CPU"} and ${h.budgetMem ? gb(h.budgetMem) : "any memory"}` : "whatever it has free"],
@@ -288,7 +303,7 @@ function build(sel, actions) {
           el("div", { class: "why-big", text: plainReason(w.reason) }),
           p ? el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "host" }), el("th", { class: "num", text: "free at last try" }), el("th", { class: "num", text: "short by" }))),
             el("tbody", {}, p.hosts.map((hh) => el("tr", { "data-host": hh.name }, el("td", { text: hh.name }), el("td", { class: "num", text: hh.closed ? (/^(down|unreach)/.test(hh.note) ? "offline" : hh.note) : `${cpus(hh.cpu)} · ${gbn(hh.mem)}` }),
-              el("td", { class: "num problem", text: hh.closed ? "-" : [hh.short.cpu > 0 ? cpus(hh.short.cpu) : "", hh.short.mem > 0 ? gbn(hh.short.mem) : ""].filter(Boolean).join(" · ") || "fits soon" }))))) : null) : section("Waiting", el("div", { class: "note", text: "nothing waits on this belt" })),
+              el("td", { class: "num problem", text: hh.closed ? "-" : [hh.short.cpu > 0 ? cpus(hh.short.cpu) : "", hh.short.mem > 0 ? gbn(hh.short.mem) : ""].filter(Boolean).join(" · ") || "just short" }))))) : null) : section("Waiting", el("div", { class: "note", text: "nothing waits on this belt" })),
         jobs.length ? section("Jobs on the belt", jobRows(jobs, actions)) : null,
         section(`Running (${runners.length})`, runnerRows(runners, actions)),
         facts([["os / driver", `${c.os || "linux"} / ${c.driver || "-"}` + (c.docker ? " · docker " + c.docker : "")],
@@ -304,10 +319,11 @@ function build(sel, actions) {
       const box = el("div", {});
       const out = el("div", { "data-runner": r.name },
         el("div", { class: "kind", text: "runner · a machine on the map" }), el("h3", { text: r.job || (r.state === "starting" ? "starting…" : r.name) }),
-        el("div", { class: "note", text: `on ${r.host} · class ${r.class} · ${r.state === "busy" ? "running for " + ago(r.ageSeconds) : r.state}` }),
-        facts([["CPU now / reserved", `${cpus(r.cpuNow || 0)} / ${cpus(r.heldCpus || r.estCpus)}`],
-          ["memory now / reserved", `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(held)}`],
-          ["size from", r.estRuns ? `its last ${r.estRuns} runs (expects ${cpus(r.estCpus)} · ${gb(r.estMem)})` : r.watched ? "a first guess, watched: it reserves 3× until it shows its size" : "the class's first guess"],
+        el("div", { class: "note", text: `on ${r.host} · class ${r.class} · ${r.state === "busy" ? "running for " + ago(r.ageSeconds) : isReady(r) ? "ready for " + ago(r.ageSeconds) : r.state}` }),
+        isReady(r) ? el("div", { class: "why-big ready", text: `Ready: up with no job yet. It holds ${gb(held)}, the largest recent ${r.class} job, so whichever comes fits; when it gets one it holds that job's size. ` + (r.givesWay ? "It steps aside for a waiting job of another class that needs its room." : "Its class keeps it up whatever waits (warmMin).") }) : null,
+        facts([["CPU now / held", `${cpus(r.cpuNow || 0)} / ${cpus(r.heldCpus || r.estCpus)}`],
+          ["memory now / held", `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(held)}`],
+          ["size from", isReady(r) ? "its class's largest recent job, until it has its own" : r.estRuns ? `its job's last ${r.estRuns} runs, largest + 20% (expects ${cpus(r.estCpus)} · ${gb(r.estMem)})` : r.watched ? "a first guess, watched: it holds 3× until its size shows" : "the class's first guess"],
           ["memory limit", r.memLimit ? gb(r.memLimit) + (r.memBytes > 0.9 * r.memLimit ? " — close" : "") : "-"],
           ["runner", r.name], ["slot", r.slot || "-"]]),
         r.memBytes > r.estMem && r.estMem ? el("div", { class: "note", text: "Using more than expected: it goes on, and its next run gets more room." }) : null,
@@ -377,7 +393,7 @@ const sz = (c, b) => `${cpus(c)} · ${gb(b)}`;
 function runnerRows(runners, actions) {
   if (!runners.length) return el("div", { class: "note", text: "none" });
   return el("ul", { class: "rows" }, runners.map((r) => el("li", {}, el("button", { type: "button", "data-runner": r.name, onclick: () => actions.select({ kind: "runner", id: r.name }) },
-    el("span", { text: r.job || r.state }), el("span", { text: r.state === "starting" ? `${r.class} · starting` : `${r.class} · ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)}` })))));
+    el("span", { text: r.job || (isReady(r) ? "ready" : r.state) }), el("span", { text: r.state === "starting" ? `${r.class} · starting` : isReady(r) ? `${r.class} · holds ${gb(r.heldMem || r.estMem)}${r.givesWay ? " · gives way" : ""}` : `${r.class} · uses ${gb(r.memBytes || 0)} of ${gb(r.heldMem || r.estMem)}` })))));
 }
 function jobRows(jobs, actions) {
   return el("ul", { class: "rows" }, jobs.map((j) => el("li", {}, el("button", { type: "button", "data-job-id": j.githubJobId || null, "data-run-id": j.runId, onclick: () => actions.select({ kind: "job", id: jobKey(j) }) },
@@ -540,25 +556,26 @@ export function renderList(actions) {
     if (empty) { $(empty).hidden = rows.length > 0; $(id).hidden = rows.length === 0; }
   };
   const td = (text, cls = "") => el("td", { class: cls, text: text === undefined || text === null ? "-" : String(text) });
-  fill("l-line", s.waiting.map((w) => el("tr", { "data-class": w.class }, td(w.order ? ordinal(w.order) + (w.priority ? ": " + w.priority : "") : "-", "wrap"), td(w.class, "waiting"), td(w.jobs, "num"), td(ago(w.oldestSeconds), "num"), td(plainReason(w.reason), "wrap"))), "l-line-empty");
+  // one table: each job once, its class's reason said by the class's next job, the rest behind it
   const jobs = waitRows(s);
   fill("l-jobs", jobs.map((j) => el("tr", { "data-job-id": j.githubJobId || null, "data-run-id": j.runId, "data-class": j.class },
-    td(j.position || "-", "num"), td(j.job), td(j.class), el("td", {}, el("span", { class: "lvl " + (j.expedited ? "expedite" : j.level || "normal"), text: j.expedited ? "expedite" : j.level || "normal" })),
-    td(ago(j.waitedSeconds), "num"), td(j._go ? "a runner is starting for it" : plainReason(j.reason), "wrap"), td(j.workflow, "opt muted"), td(j.runId, "opt muted"))));
+    td(j.position || "-", "num"), td(j.job), td(j.class), el("td", {}, j.expedited || (j.level && j.level !== "normal") ? el("span", { class: "lvl " + (j.expedited ? "expedite" : j.level), text: j.expedited ? "expedite" : j.level }) : null),
+    td(ago(j.waitedSeconds), "num"), el("td", { class: "wrap" }, whyText(j), j.expect && !j._go ? el("div", { class: "eta", text: expectText(j.expect) }) : null), td(j.workflow, "opt muted"))), "l-jobs-empty");
   const mbar = (parts) => el("span", { class: "mbar" }, parts.map(([v, c, tot]) => el("i", { style: `width:${tot ? (100 * v) / tot : 0}%;background:${c}` })));
   fill("l-hosts", s.hosts.map((h) => {
-    const L = hostLoad(h);
-    const mem = h.memBytes || 0;
-    return el("tr", { "data-host": h.name }, td(h.name), td(L.word + (L.why ? ": " + L.why : ""), L.tone === "ok" ? "muted" : L.tone === "bad" ? "problem" : "waiting"), td(h.kind, "opt muted"), td(h.os || "-", "opt muted"),
-      td(L.cpu && L.mem ? `CPU ${L.cpu.pct}% · memory ${L.mem.pct}%` : "-"),
-      el("td", {}, mbar([[h.usedMem, ZC.held, mem], [h.freeMem, ZC.free, mem], [h.otherMem || 0, ZC.others, mem]]), mem ? `${gb(h.usedMem)} / ${gb(h.freeMem)} / ${h.otherMem !== undefined ? gb(h.otherMem) : "-"} of ${gb(mem)}` : "-"),
-      td(h.cpus ? `${cpus(h.usedCpus)} / ${cpus(h.freeCpus)} of ${h.cpus}` : "-"),
+    const L = hostLoad(h, s.runners), M = L.mem, C = L.cpu;
+    const seg = (p) => mbar([[p.held + p.kept, ZC.held, p.lend], [p.give, ZC.give, p.lend], [p.other, ZC.others, p.lend], [p.free, ZC.free, p.lend]]);
+    return el("tr", { "data-host": h.name }, td(h.name), td(L.word + (L.why ? ": " + L.why : ""), L.tone === "ok" ? "muted" : L.tone === "ready" ? "ready" : L.tone === "bad" ? "problem" : "waiting"),
+      td(C && M ? `${cpus(C.free)} · ${gb(M.free)}` : "-", "num"),
+      el("td", {}, M ? [seg(M), `${short((M.held + M.kept) / GiB)} held · ${short(M.used / GiB)} used` + (M.give ? ` · ${short(M.give / GiB)} gives way` : "") + ` · of ${gb(M.lend)}`] : "-"),
+      el("td", {}, C ? [seg(C), `${short(C.held + C.kept)} held · ${short(C.used)} used` + (C.give ? ` · ${short(C.give)} gives way` : "") + ` · of ${short(C.lend)}` + (L.share > 1 ? ` (${h.cpus}×${L.share})` : "")] : "-"),
+      td(h.runners + (L.ready ? ` (${L.ready} ready)` : ""), "num"), td(h.kind + " · " + (h.os || "-"), "opt muted"),
       td(h.cpuPressure === null || h.cpuPressure === undefined ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"), td(h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
-      td(h.runners, "num"), td(h.seenSeconds === null || h.seenSeconds === undefined ? "-" : dur(h.seenSeconds) + " ago", "num opt"), td(h.lastDrop || "-", "opt muted"));
+      td(h.seenSeconds === null || h.seenSeconds === undefined ? "-" : dur(h.seenSeconds) + " ago", "num opt"), td(h.lastDrop || "-", "opt muted"));
   }));
-  fill("l-runners", s.runners.map((r) => el("tr", { "data-runner": r.name, "data-class": r.class, "data-host": r.host }, td(r.name), td(r.class), td(r.host), td(r.state, "muted"), td(r.job || "-"),
+  fill("l-runners", s.runners.map((r) => el("tr", { "data-runner": r.name, "data-class": r.class, "data-host": r.host }, td(r.name), td(r.class), td(r.host), td(isReady(r) ? "ready" + (r.givesWay ? " · gives way" : "") : r.state, isReady(r) ? "ready" : "muted"), td(r.job || "-"),
     td(`${(r.cpuNow || 0).toFixed(1)} / ${(r.heldCpus || r.estCpus).toFixed(1)}`, "num"),
-    el("td", {}, mbar([[r.memBytes || 0, r.memBytes > r.estMem ? "#f0b429" : "#40c8be", r.heldMem || r.estMem]]), `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(r.heldMem || r.estMem)}` + (r.estRuns ? "" : r.watched ? " (first guess, watched)" : " (first guess)")),
+    el("td", {}, mbar([[r.memBytes || 0, r.memBytes > r.estMem ? "#f0b429" : "#40c8be", r.heldMem || r.estMem]]), `${r.memBytes ? gb(r.memBytes) : "-"} / ${gb(r.heldMem || r.estMem)}` + (isReady(r) ? " (its class's largest recent job)" : r.state === "starting" ? "" : r.estRuns ? "" : r.watched ? " (first guess, watched: 3×)" : " (first guess)")),
     td(dur(r.ageSeconds), "num opt"))), "l-runners-empty");
   const back = (c) => (s.takenBack || []).filter((j) => j.class === c).length;
   fill("l-overflow", (s.overflow || []).map((o) => el("tr", { "data-class": o.class }, td(o.class), td(o.take, "num"), td(o.held, "num"), td(o.after || "-"), td(back(o.class), "num"))), "l-overflow-empty");
@@ -587,6 +604,7 @@ export function renderList(actions) {
     el("li", { class: open ? "open" : "", "data-kind": i.kind }, el("b", { text: i.kind + " " }), i.detail, el("span", { class: "muted", text: open ? `  open ${dur(since(i.openedAt))}` : `  ${clock(i.openedAt)}${i.resolvedAt ? " – " + clock(i.resolvedAt) : ""}` }))));
   if (!s.incidents.length && !(s.recentIncidents || []).length) $("l-incidents").replaceChildren(el("li", { class: "muted", text: "none" }));
   $("l-explain").textContent = store.explainText || "";
+  renderCIList();
   if (store.series) renderCharts(store.series, s);
 }
 
@@ -663,3 +681,90 @@ export function atParam(sep) {
   return at === null ? "" : sep + "at=" + at.toFixed(0);
 }
 export { osBadge };
+
+// ---------------------------------------------------------------- CI watch
+// From /api/trend and /api/forecast, and the ci-* problems: what got slower
+// or faster and since which commit, what grows slowly, the limits crossed,
+// and when CI's growth fills the cores. A summary line; the rest on a click.
+const ciOpen = { v: false };
+try { ciOpen.v = localStorage.getItem("pumasi.ci") === "open"; } catch (e) { /* closed */ }
+export function ciModel() {
+  const t = store.trend, f = store.forecast, s = store.state;
+  if (!t && !f) return null;
+  // the same job and commit: one row, time first, then memory; the rest said along
+  const groups = new Map();
+  const rank = (c) => ({ time: 0, memory: 1, cpu: 2 })[c.metric] ?? 3;
+  for (const c of (t && t.changes) || []) {
+    if (c.holds === false) continue;
+    const k = c.repo + "|" + c.workflow + "|" + c.job + "|" + ((c.first && c.first.sha) || c.pr || "");
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+  const rows = [...groups.values()].map((g) => { g.sort((a, b) => rank(a) - rank(b)); return { c: g[0], also: g.slice(1) }; });
+  const items = rows.map(({ c, also }) => {
+    const up = c.ratio > 0;
+    const kind = c.metric === "memory" ? (up ? "bigger" : "smaller") : up ? "slower" : "faster";
+    const fmt = c.metric === "memory" ? (v) => gb(v) : c.metric === "cpu" ? (v) => Math.round(v) + " cpu·s" : (v) => ago(v);
+    const repo = "https://github.com/" + c.repo;
+    const sha = (c.first && c.first.sha) || "";
+    // a pull request it is known to come from; else the one merged in between, likely
+    const pr = c.pr || (c.first && c.first.pr) || 0;
+    const likely = !pr && (c.suspects || []).length === 1 ? c.suspects[0] : 0;
+    const step = (c.steps || []).find((x) => x.after > x.before) || (c.steps || [])[0];
+    return { kind, job: c.job, metric: c.metric, ratio: c.ratio, from: fmt(c.before), to: fmt(c.after), pr, likely, likelyURL: likely ? `${repo}/pull/${likely}` : "", sha, prURL: pr ? `${repo}/pull/${pr}` : "", shaURL: sha ? `${repo}/commit/${sha}` : "",
+      step: step && c.metric === "time" ? `${step.name} ${ago(step.before)} → ${ago(step.after)}` : "", also: also.map((a) => `${a.metric} ${pctText(a.ratio)}`), at: c.first && c.first.at };
+  });
+  for (const g of (t && t.creeping) || []) items.push({ kind: "growing", job: g.job, metric: "time", ratio: g.ratio, from: ago(g.from), to: ago(g.to), days: g.days });
+  const order = { slower: 0, bigger: 1, growing: 2, faster: 3, smaller: 4 };
+  items.sort((a, b) => order[a.kind] - order[b.kind] || Math.abs(b.ratio) - Math.abs(a.ratio));
+  const alarms = ((s && s.incidents) || []).filter((i) => /^ci-/.test(i.kind));
+  let fc = "";
+  if (f && f.fullIn > 0 && isFinite(f.fullIn)) fc = `at this rate the cores fill in ~${Math.round(f.fullIn)} weeks` + (f.fullSoon && f.fullLate ? ` (${Math.round(f.fullSoon)}–${Math.round(f.fullLate)})` : "");
+  else if (f && f.growth <= 0) fc = "CI is not growing: the cores do not fill at this rate";
+  const growth = f && f.fitted ? `CI ${f.growth >= 0 ? "+" : ""}${Math.round(f.growth * 100)}% a week` + (f.cores ? ` · busiest hours use ${Math.round(f.load * f.cores)} of ${Math.round(f.cores)} cores` : "") : "";
+  return { items, alarms, fc, growth };
+}
+const pctText = (r) => (r >= 0 ? "+" : "−") + Math.round(Math.abs(r) * 100) + "%";
+const KW = { slower: "slower", faster: "faster", bigger: "more memory", smaller: "less memory", growing: "growing" };
+function ciItem(it) {
+  const head = el("div", { class: "ci-l1" }, el("span", { class: "ci-tag " + it.kind, text: KW[it.kind] }), el("b", { text: it.job }),
+    el("span", { class: "ci-n " + it.kind, text: `${it.metric === "memory" ? "memory" : "time"} ${pctText(it.ratio)}` }), el("span", { class: "muted", text: `${it.from} → ${it.to}` }));
+  const since = it.kind === "growing" ? el("div", { class: "ci-l2 muted", text: `slowly, over ${it.days} days, no one commit` })
+    : el("div", { class: "ci-l2" }, "since ", it.pr ? el("a", { href: it.prURL, target: "_blank", rel: "noopener", text: "PR #" + it.pr }) : null, it.pr && it.sha ? " · " : "",
+      it.sha ? el("a", { href: it.shaURL, target: "_blank", rel: "noopener", class: "mono", text: it.sha.slice(0, 7) }) : null,
+      it.likely ? el("span", {}, " (likely ", el("a", { href: it.likelyURL, target: "_blank", rel: "noopener", text: "PR #" + it.likely }), ")") : null,
+      it.at ? el("span", { class: "muted", text: " · " + new Date(it.at).toLocaleDateString([], { month: "short", day: "numeric" }) }) : null,
+      it.step ? el("span", { class: "muted", text: " · step " + it.step }) : null, it.also.length ? el("span", { class: "muted", text: " · " + it.also.join(", ") }) : null);
+  return el("li", { "data-ci": it.kind, "data-job": it.job }, head, since);
+}
+function ciBody(m, max) {
+  return [
+    m.fc || m.growth ? el("div", { class: "ci-fc" }, m.fc ? el("b", { text: m.fc[0].toUpperCase() + m.fc.slice(1) }) : null, m.growth ? el("span", { class: "muted", text: (m.fc ? " · " : "") + m.growth }) : null) : null,
+    el("h4", { text: "Changes" }), m.items.length ? el("ul", { class: "ci-list" }, m.items.slice(0, max).map(ciItem)) : el("div", { class: "note", text: "no job changed in the last two weeks" }),
+    m.items.length > max ? el("div", { class: "note", text: `+${m.items.length - max} more: pumasi trend` }) : null,
+    el("h4", { text: "Limits" }), m.alarms.length ? el("ul", { class: "ci-list" }, m.alarms.map((a) => el("li", { "data-kind": a.kind }, el("div", { class: "ci-l1" }, el("span", { class: "ci-tag slower", text: kindWord(a.kind).replace(/^ci /, "") }), el("span", { text: a.detail })))))
+      : el("div", { class: "note", text: "no limit crossed (job time, memory, wait, deadline, cpu-hours: watch: in pumasi.yaml)" }),
+  ];
+}
+export function renderCI() {
+  const box = $("ci");
+  const m = ciModel();
+  if (!m) { box.hidden = true; return; }
+  box.hidden = false;
+  const top = m.items.find((x) => x.kind === "slower" || x.kind === "bigger") || m.items[0];
+  const bits = [];
+  if (m.alarms.length) bits.push(el("span", { class: "problem", text: `${m.alarms.length} ${m.alarms.length === 1 ? "limit" : "limits"} crossed` }));
+  if (top) bits.push(el("span", {}, el("b", { text: top.job }), ` ${top.metric === "memory" ? "memory" : ""} ${pctText(top.ratio)}` + (top.pr ? ` since #${top.pr}` : top.sha ? ` since ${top.sha.slice(0, 7)}` : "")));
+  if (m.fc) bits.push(el("span", { class: "muted", text: m.fc.replace("at this rate the cores fill in ", "cores full in ") }));
+  $("ci-head").replaceChildren(...bits.flatMap((b, i) => (i ? [" · ", b] : [b])));
+  $("ci-toggle").setAttribute("aria-expanded", String(ciOpen.v));
+  $("ci-toggle").onclick = () => { ciOpen.v = !ciOpen.v; try { localStorage.setItem("pumasi.ci", ciOpen.v ? "open" : "closed"); } catch (e) { /* this page only */ } renderCI(); };
+  box.classList.toggle("open", ciOpen.v);
+  $("ci-body").hidden = !ciOpen.v;
+  if (ciOpen.v) $("ci-body").replaceChildren(...ciBody(m, 6).filter(Boolean));
+}
+export function renderCIList() {
+  const m = ciModel();
+  $("l-ci").hidden = !m;
+  if (m) $("l-ci-body").replaceChildren(...ciBody(m, 12).filter(Boolean));
+}
