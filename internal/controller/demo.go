@@ -19,16 +19,20 @@ import (
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
+	"github.com/midagedev/pumasi/internal/watch"
 	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
-// The demo is a made-up shop of four hosts and eight classes that the real
+// The demo is a made-up shop of four hosts and nine classes that the real
 // placement (decide.Decide) runs, for the dashboard without a controller:
 // `pumasi open --demo`. It is a pure function of its seed and the simulated
 // second it is asked about, so a picture of it can be taken again. Every ten
 // minutes the same scenes come round: a desktop someone works at, a nightly
 // batch that waits, a deploy that goes first, a job the kernel kills at the
 // memory limit its class sets, a host that drops off and comes back, a Mac short of disk.
+// One cycle in four a release comes whose packages need its check: their
+// runners are started ahead, as the check ends. Its history (the weeks
+// before) crosses a watch limit: unit-tests over 5m.
 
 const (
 	demoCycle   = 600.0 // seconds; the scenes repeat with this period
@@ -51,6 +55,10 @@ type Demo struct {
 	specs  map[int][]demoSpec // arrivals by cycle, made once
 	ops    demoOps            // what people did on the demo's priority controls; not replayed by seed
 	hist   *synth.History     // the weeks before the demo began, for trends (made on first use)
+	alarms []watch.Alarm      // the watch limits its history crosses (made with hist)
+
+	pastOnce sync.Once
+	past     []decide.Ran // the jobs before the demo began (pastRan)
 }
 
 // history is five weeks of a made-up repository's CI up to the day the demo
@@ -61,8 +69,17 @@ func (d *Demo) history() *synth.History {
 	if d.hist == nil {
 		h := synth.Demo(d.started)
 		d.hist = &h
+		d.alarms = watch.Alarms(watch.AlarmInput{Now: d.started, Loc: time.UTC, Runs: h.Runs}, d.cfg.Watch)
 	}
 	return d.hist
+}
+
+// watchAlarms are the watch limits the demo's history crosses.
+func (d *Demo) watchAlarms() []watch.Alarm {
+	d.history()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.alarms
 }
 
 // NewDemo makes a demo whose clock starts at demoStartAt now.
@@ -174,6 +191,7 @@ func demoConfig() *config.Config {
 		{Name: "deploy", Reserve: 1},
 		{Name: "macos", OS: "macos", CPUs: 4, Memory: 8 << 30},
 		{Name: "nightly"},
+		{Name: "release"},
 		{Name: "light", CPUs: 1, Memory: 1 << 30, Overflow: true, Hosts: []string{"wsl-desktop"}, Labels: []string{"self-hosted", "light"}},
 		{Name: "light-mac", OS: "macos", CPUs: 1, Memory: 1 << 30, Overflow: true, After: "light", Labels: []string{"self-hosted", "light"}},
 	}
@@ -199,6 +217,9 @@ func demoConfig() *config.Config {
 	low := config.PriorityRule{Level: "low"}
 	low.Match.Event = "schedule"
 	c.Priority = []config.PriorityRule{high, low}
+	// A limit someone set when unit-tests took four and a half minutes: the
+	// history's slower test step has taken it past.
+	c.Watch.Limits = []config.Limit{{Match: config.RuleMatch{Job: "unit-tests"}, MaxJobTime: config.Span(5 * time.Minute)}}
 	return c
 }
 
@@ -229,7 +250,19 @@ var demoKinds = map[string]demoKind{
 	"deploy-api":       {"deploy", "deploy-prod.yml", "deploy-api", "push", [2]float64{60, 90}, [2]float64{2.2, 2.8}, [2]float64{4.5, 5.5}, false, false},
 	"deploy-web":       {"deploy", "deploy-prod.yml", "deploy-web", "push", [2]float64{50, 70}, [2]float64{1.8, 2.2}, [2]float64{3.5, 4.5}, false, false},
 	"deploy-worker":    {"deploy", "deploy-prod.yml", "deploy-worker", "push", [2]float64{40, 60}, [2]float64{1.2, 1.6}, [2]float64{2.5, 3.2}, false, false},
+	"release-check":    {"pr-checks", "release.yml", "release-check", "push", [2]float64{60, 80}, [2]float64{.8, 1.1}, [2]float64{1.5, 2}, false, false},
+	"package (amd64)":  {"release", "release.yml", "package (amd64)", "push", [2]float64{90, 120}, [2]float64{1.5, 1.9}, [2]float64{2.5, 3.2}, false, false},
+	"package (arm64)":  {"release", "release.yml", "package (arm64)", "push", [2]float64{100, 130}, [2]float64{1.5, 1.9}, [2]float64{2.5, 3.2}, false, false},
 }
+
+// demoNeeds: a job that needs another of its run (`needs:`) comes only once
+// that one has ended well, a few seconds after, as GitHub asks for it then.
+var demoNeeds = map[string]string{"package (amd64)": "release-check", "package (arm64)": "release-check"}
+
+// demoReleaseCycle: a release runs in one cycle of four, so its class has
+// had no jobs for longer than decide.WarmWindow when it comes: it keeps no
+// runner warm, and the packages get theirs started ahead.
+func demoReleaseCycle(k int) bool { return ((k%4)+4)%4 == 2 }
 
 const demoRepo = "example/app"
 
@@ -259,6 +292,7 @@ type demoSpec struct {
 	grow   float64 // GiB/s it keeps growing after its first half minute (the job that hits its limit)
 	result string
 	phase  float64
+	waits  bool // it needs another job of its run (demoNeeds): it comes when that one ends
 }
 
 func (sp demoSpec) k() demoKind { return demoKinds[sp.kind] }
@@ -343,6 +377,14 @@ func (d *Demo) cycleSpecs(k int) []demoSpec {
 	for i, j := range []string{"deploy-api", "deploy-web", "deploy-worker"} {
 		add(200+float64(i), j, run)
 	}
+	// Now and then a release: a check, then two packages that need it.
+	if demoReleaseCycle(k) {
+		run++
+		add(470, "release-check", run)
+		for _, j := range []string{"package (amd64)", "package (arm64)"} {
+			add(470, j, run).waits = true
+		}
+	}
 	slices.SortStableFunc(out, func(a, b demoSpec) int { return cmp.Compare(a.at, b.at) })
 	for i := range out {
 		out[i].id = (k+2)*1000 + i
@@ -371,6 +413,17 @@ type demoWorld struct {
 	seq      uint32
 	highOnly []decide.Defer // jobs high-only mode keeps out of this round, by class
 	giveWay  []string       // runners without a job that step aside for one (the last plan's)
+	later    []demoSpec     // jobs whose needs ended: they come at their at
+	followed []demoSpec     // those that came, for how many runners their class keeps warm
+	ran      []demoRan      // every job that came, and when it ended: what the ledger keeps
+	needs    []decide.Need  // which job follows which, learned from ran
+	needsAt  float64
+}
+
+// demoRan is a job of ran by its id.
+type demoRan struct {
+	id int
+	r  decide.Ran
 }
 
 type demoJob struct {
@@ -429,6 +482,9 @@ func (w *demoWorld) clone() *demoWorld {
 	c.back = slices.Clone(w.back)
 	c.defers = slices.Clone(w.defers)
 	c.giveWay = slices.Clone(w.giveWay)
+	c.later = slices.Clone(w.later)
+	c.followed = slices.Clone(w.followed)
+	c.ran = slices.Clone(w.ran)
 	c.measured = make(map[string][]size.Sample, len(w.measured))
 	for k, v := range w.measured {
 		c.measured[k] = slices.Clone(v)
@@ -548,6 +604,7 @@ func (d *Demo) at(t float64) *demoWorld {
 func (d *Demo) step(w *demoWorld) {
 	t := w.t + demoTick
 	w.t = t
+	d.arriveLater(w, t)
 	d.arrive(w, t)
 	d.progress(w, t)
 	d.giveBack(w, t)
@@ -572,6 +629,9 @@ func (d *Demo) arrive(w *demoWorld, t float64) {
 			return
 		}
 		w.next++
+		if sp.waits {
+			continue // it comes when the job it needs ends (arriveLater)
+		}
 		class := sp.k().class
 		if d.class(class).Overflow {
 			// GitHub gives an overflow class no more than it takes; the rest go
@@ -589,6 +649,43 @@ func (d *Demo) arrive(w *demoWorld, t float64) {
 			}
 		}
 		w.demand = append(w.demand, demoJob{spec: sp, class: class, firstSeen: sp.at})
+		w.ran = append(w.ran, demoRan{sp.id, ranOfSpec(sp, sp.at)})
+	}
+}
+
+func ranOfSpec(sp demoSpec, came float64) decide.Ran {
+	kd := sp.k()
+	return decide.Ran{Run: strconv.FormatInt(sp.runID, 10), Workflow: kd.workflow, Job: kd.job, Class: kd.class, Came: demoEpoch.Add(time.Duration(came * float64(time.Second)))}
+}
+
+// arriveLater: the jobs whose needs have ended come.
+func (d *Demo) arriveLater(w *demoWorld, t float64) {
+	keep := w.later[:0]
+	for _, sp := range w.later {
+		if sp.at > t {
+			keep = append(keep, sp)
+			continue
+		}
+		w.demand = append(w.demand, demoJob{spec: sp, class: sp.k().class, firstSeen: sp.at})
+		w.ran = append(w.ran, demoRan{sp.id, ranOfSpec(sp, sp.at)})
+		w.followed = append(w.followed, sp)
+	}
+	w.later = keep
+}
+
+// needDelay: how long after the job it needs ends GitHub asks for one.
+func needDelay(sp demoSpec) float64 { return 5 + sp.phase }
+
+// follow: the jobs of sp's run that need it come, once it ended well at t.
+func (d *Demo) follow(w *demoWorld, sp demoSpec, t float64, result string) {
+	if result != "succeeded" {
+		return // GitHub skips a job whose needs failed
+	}
+	for _, f := range d.cycleSpecs(int(math.Floor(sp.at / demoCycle))) {
+		if f.waits && f.runID == sp.runID && demoNeeds[f.kind] == sp.kind {
+			f.at = t + needDelay(f)
+			w.later = append(w.later, f)
+		}
 	}
 }
 
@@ -661,6 +758,13 @@ func (d *Demo) progress(w *demoWorld, t float64) {
 
 func (d *Demo) finish(w *demoWorld, r demoRunner, t float64, result string, oom bool) {
 	w.finished = append(w.finished, demoFinished{r: r, finished: t, result: result, oom: oom})
+	for i := len(w.ran) - 1; i >= 0; i-- {
+		if w.ran[i].id == r.job.spec.id {
+			w.ran[i].r.Ended = demoEpoch.Add(time.Duration(t * float64(time.Second)))
+			break
+		}
+	}
+	d.follow(w, r.job.spec, t, result)
 	if len(w.finished) > 60 {
 		w.finished = slices.Delete(w.finished, 0, len(w.finished)-60)
 	}
@@ -819,6 +923,113 @@ func (d *Demo) hostNow(w *demoWorld, h demoHost, t float64) demoHostNow {
 	return n
 }
 
+// demoLead: how long before a job comes a runner is started for it, as the
+// controller works it out: the time a runner takes to come up (3 to 5s in
+// the demo) and a placement round.
+const demoLead = 4*time.Second + demoTick*time.Second
+
+// demoSoon is, by class, the jobs expected within demoLead that no runner
+// is up for yet, the first of them in words, and the largest's size.
+type demoSoon struct {
+	n   map[string]int
+	why map[string]string
+	est map[string]size.Estimate
+}
+
+// soon is what the running jobs, or those just ended, bring by the needs
+// learned: as soonLocked works it out from the ledger.
+func (d *Demo) soon(w *demoWorld, t float64) demoSoon {
+	d.learn(w, t)
+	if len(w.needs) == 0 {
+		return demoSoon{}
+	}
+	now := demoEpoch.Add(time.Duration(t * float64(time.Second)))
+	came := map[[2]string]bool{}
+	var going []decide.Going
+	for _, x := range w.ran {
+		came[[2]string{x.r.Run, x.r.Job}] = true
+		if !x.r.Ended.IsZero() && now.Sub(x.r.Ended) < decide.NeedGap {
+			going = append(going, decide.Going{Run: x.r.Run, Workflow: x.r.Workflow, Job: x.r.Job, Ends: x.r.Ended})
+		}
+	}
+	for _, r := range w.runners {
+		if !r.busy() {
+			continue
+		}
+		rt, ok := size.Runtime(w.measured[sizeKey(r.job.spec.kind, d.class(r.class).Platform())])
+		if !ok {
+			continue
+		}
+		x := ranOfSpec(r.job.spec, r.job.firstSeen)
+		going = append(going, decide.Going{Run: x.Run, Workflow: x.Workflow, Job: x.Job, Ends: decide.EndOf(demoEpoch.Add(time.Duration(r.started*float64(time.Second))), now, rt)})
+	}
+	exp := decide.Expected(going, w.needs, func(run, job string) bool { return came[[2]string{run, job}] })
+	n, why := decide.Soon(exp, now, demoLead)
+	est := map[string]size.Estimate{}
+	for _, e := range exp {
+		if e.At.Sub(now) > demoLead {
+			continue
+		}
+		x := d.estimate(w, e.Job, e.Class)
+		cur := est[e.Class]
+		cur.CPUs, cur.MemBytes = max(cur.CPUs, x.CPUs), max(cur.MemBytes, x.MemBytes)
+		est[e.Class] = cur
+	}
+	return demoSoon{n, why, est}
+}
+
+// learn learns again which job follows which, every ten minutes at most,
+// from the jobs before the demo began and those since (decide.LearnNeeds).
+func (d *Demo) learn(w *demoWorld, t float64) {
+	if w.needs != nil && t-w.needsAt < needEvery.Seconds() {
+		return
+	}
+	w.needsAt = t
+	runs := d.pastRan()
+	for _, x := range w.ran {
+		runs = append(runs, x.r)
+	}
+	w.needs = decide.LearnNeeds(runs)
+	if w.needs == nil {
+		w.needs = []decide.Need{}
+	}
+}
+
+// pastRan is the jobs of the twelve cycles before the demo began, as its
+// arrivals make them, each up in 5s and ended on time: what the ledger
+// knew of the days before.
+func (d *Demo) pastRan() []decide.Ran {
+	d.pastOnce.Do(func() {
+		first := int(math.Floor(demoWarm / demoCycle))
+		for k := first - 12; k < first; k++ {
+			ended := map[string]float64{} // run/job -> when it ended
+			for _, sp := range d.cycleSpecs(k) {
+				if sp.waits {
+					continue
+				}
+				x := ranOfSpec(sp, sp.at)
+				end := sp.at + 5 + sp.end
+				x.Ended = demoEpoch.Add(time.Duration(end * float64(time.Second)))
+				d.past = append(d.past, x)
+				if sp.result == "succeeded" {
+					ended[x.Run+"/"+sp.kind] = end
+				}
+			}
+			for _, sp := range d.cycleSpecs(k) {
+				end, ok := ended[strconv.FormatInt(sp.runID, 10)+"/"+demoNeeds[sp.kind]]
+				if !sp.waits || !ok {
+					continue
+				}
+				at := end + needDelay(sp)
+				x := ranOfSpec(sp, at)
+				x.Ended = demoEpoch.Add(time.Duration((at + 5 + sp.end) * float64(time.Second)))
+				d.past = append(d.past, x)
+			}
+		}
+	})
+	return d.past
+}
+
 func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 	now := demoEpoch.Add(time.Duration(t * float64(time.Second)))
 	at := func(s float64) time.Time { return demoEpoch.Add(time.Duration(s * float64(time.Second))) }
@@ -838,6 +1049,7 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 		dh.Closed = d.closed(h, n)
 		s.Hosts = append(s.Hosts, dh)
 	}
+	soon := d.soon(w, t)
 	for _, cl := range d.cfg.Classes {
 		dc := decide.Class{Name: cl.Name, OS: cl.OS, CPUs: cl.CPUs, MemBytes: int64(cl.Memory), Hosts: cl.Hosts, Reserve: cl.Reserve,
 			Native: cl.Driver == "native", MaxDuration: cl.MaxDuration, Overflow: cl.Overflow}
@@ -850,6 +1062,10 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 			}
 		} else {
 			d.warm(w, &dc, t)
+			if n := soon.n[cl.Name]; n > 0 {
+				e := soon.est[cl.Name]
+				dc.Soon, dc.SoonFor, dc.SoonCPUs, dc.SoonMem = n, soon.why[cl.Name], e.CPUs, e.MemBytes
+			}
 		}
 		s.Classes = append(s.Classes, dc)
 	}
@@ -946,10 +1162,22 @@ func (d *Demo) warm(w *demoWorld, dc *decide.Class, t float64) {
 			if sp.k().class != dc.Name || sp.at > t || sp.at < t-decide.WarmWindow.Seconds() {
 				continue
 			}
+			if sp.waits {
+				continue // counted when it came, below
+			}
 			arrived = append(arrived, demoEpoch.Add(time.Duration(sp.at*float64(time.Second))))
 			if e := d.estimate(w, sp.kind, dc.Name); !e.Blind {
 				dc.NextCPUs, dc.NextMem = math.Max(dc.NextCPUs, e.CPUs), max(dc.NextMem, e.MemBytes)
 			}
+		}
+	}
+	for _, sp := range w.followed {
+		if sp.k().class != dc.Name || sp.at > t || sp.at < t-decide.WarmWindow.Seconds() {
+			continue
+		}
+		arrived = append(arrived, demoEpoch.Add(time.Duration(sp.at*float64(time.Second))))
+		if e := d.estimate(w, sp.kind, dc.Name); !e.Blind {
+			dc.NextCPUs, dc.NextMem = math.Max(dc.NextCPUs, e.CPUs), max(dc.NextMem, e.MemBytes)
 		}
 	}
 	dc.Warm = decide.WarmCount(arrived, d.cfg.WarmMax())
@@ -1108,12 +1336,17 @@ func (v demoView) state() State {
 			out.RecentIncidents = append(out.RecentIncidents, i)
 		}
 	}
+	// The watch limits the history crosses: open since the controller began.
+	for _, a := range d.watchAlarms() {
+		out.Incidents = append(out.Incidents, ledger.Incident{Key: a.Key, Kind: a.Kind, Subject: a.Subject, Detail: a.Detail, OpenedAt: v.ts(demoWarm)})
+	}
 	slices.SortStableFunc(out.RecentIncidents, func(a, b ledger.Incident) int { return a.ResolvedAt.Compare(b.ResolvedAt) })
+	soon := d.soon(w, t)
 	for i, cl := range out.Classes {
 		if !cl.Overflow {
 			dc := decide.Class{Name: cl.Name}
 			d.warm(w, &dc, t)
-			out.Classes[i].Warm = dc.Warm
+			out.Classes[i].Warm, out.Classes[i].Soon = dc.Warm, soon.n[cl.Name]
 		}
 	}
 	hostIdx := map[string]int{}
@@ -1149,6 +1382,9 @@ func (v demoView) state() State {
 			EstCPUs: cmp.Or(r.est.CPUs, cl.CPUs), EstMem: cmp.Or(r.est.MemBytes, int64(cl.Memory)), EstRuns: r.est.Runs}
 		if !r.busy() && t >= r.created+r.prov {
 			rs.State = "idle"
+		}
+		if !r.busy() {
+			rs.Ahead = aheadOf(w.starts[r.name].reason)
 		}
 		if r.busy() {
 			rs.State, rs.Job = "busy", r.job.spec.kind
