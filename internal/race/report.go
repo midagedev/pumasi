@@ -79,11 +79,11 @@ func (r Report) Table() string {
 		b.WriteString("\n")
 	}
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(w, "setup\tmedian wait\tp90 wait\tmax wait\tmost waiting\tlast start\tall done\tmem used\tmem held\tcpu used\tpeak cpu/room\t")
+	fmt.Fprintln(w, "setup\tmedian wait\tp90 wait\tmax wait\tmost waiting\tlast start\tall done\tslowdown\tp90 slowdown\tpeak psi\tmem used\tmem held\tcpu used\t")
 	for _, x := range r.Runs {
 		s := x.Summary
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.2f\t\n", x.Name, mmss(s.MedianWait), mmss(s.P90Wait), mmss(s.MaxWait),
-			s.PeakWaiting, mmss(s.Drained), mmss(s.Done), s.MemUse*100, s.MemHeld*100, s.CPUUse*100, s.PeakCPU)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%.2f\t%.2f\t%.0f\t%.0f%%\t%.0f%%\t%.0f%%\t\n", x.Name, mmss(s.MedianWait), mmss(s.P90Wait), mmss(s.MaxWait),
+			s.PeakWaiting, mmss(s.Drained), mmss(s.Done), s.MeanSlowdown, s.P90Slowdown, s.PeakPSI, s.MemUse*100, s.MemHeld*100, s.CPUUse*100)
 	}
 	w.Flush()
 	return b.String()

@@ -91,3 +91,37 @@ func TestNoHostRunsOutOfMemory(t *testing.T) {
 		}
 	}
 }
+
+// Jobs that want twice the cores of their host get half of what they want,
+// run twice as long, and the host's cpu pressure rises past the controller's line.
+func TestSharedCoresSlowJobsDown(t *testing.T) {
+	h := Hosts[3] // linux-spare: 16 cores
+	const n = 8
+	var jobs []Job
+	var runs []*run
+	for i := range n {
+		jobs = append(jobs, Job{ID: i + 1, Kind: "lint", Dur: 100, CPU: (2*h.CPUs - h.OtherCPU) / n, Mem: 1})
+	}
+	for i := range jobs {
+		runs = append(runs, start(i, h.Name, 0, jobs))
+		runs[i].work = 500 // up to pace, far from its end
+		jobs[i].Dur = 1000
+	}
+	m := newMachines()
+	var pace map[string]float64
+	for i := 1; i <= 30; i++ {
+		pace = m.pace(float64(i)*Tick, runs, jobs)
+	}
+	if p := pace[h.Name]; p < 0.49 || p > 0.51 {
+		t.Fatalf("pace %.2f, want 0.5", p)
+	}
+	if w := runs[0].work - 500; w < 29.5 || w > 30.5 {
+		t.Fatalf("a minute of ticks did %.1fs, want 30s", w)
+	}
+	if m.psi[h.Name] <= PSICPUThreshold {
+		t.Fatalf("pressure %.0f, want above %d", m.psi[h.Name], PSICPUThreshold)
+	}
+	if pace["linux-server"] != 1 || m.psi["linux-server"] != 0 {
+		t.Fatal("an idle host slowed down")
+	}
+}
