@@ -342,3 +342,20 @@ export const levelWord = (j) => (j.expedited ? "expedited" : j.level === "expedi
 
 // Problem kinds as headings.
 export const kindWord = (k) => ({ "host-unreachable": "host offline", "job-waiting": "waiting too long", "out-of-memory": "out of memory", "runner-died": "runner died", "disk-low": "disk almost full", "agent-restarted": "agent restarted" })[k] || String(k || "").replace(/-/g, " ");
+
+// The words of the List and the header, one meaning each, as /api/explain's
+// levels have them. A problem is something wrong now that needs someone (an
+// open incident, a warning, a host that does not answer, a runner near its
+// memory limit): the header counts them and the alarm board lists them. A
+// class waiting says why its jobs wait (the CLI's LINE). A note is worth
+// knowing but needs no one now (the CLI's NOTES).
+// moreProblems: the problem findings no open incident or warning speaks for.
+export function moreProblems(incidents, findings) {
+  const has = new Set((incidents || []).map((i) => i.kind + "/" + i.subject));
+  return (findings || []).filter((f) => f.level === "problem" && f.kind !== "warning" && !has.has(f.kind + "/" + f.subject));
+}
+export const problemLabel = (f) => (f.kind === "host" ? "host offline" : f.kind === "runner" ? "near memory limit" : f.kind === "controller" ? "no controller" : kindWord(f.kind));
+export function attentionWords(findings) {
+  const k = (l) => (findings || []).filter((f) => f.level === l).length, p = k("problem"), w = k("wait"), n = k("note");
+  return [p ? `${p} ${p === 1 ? "problem" : "problems"}` : "", w ? `${w} ${w === 1 ? "class" : "classes"} waiting` : "", n ? `${n} ${n === 1 ? "note" : "notes"}` : ""].filter(Boolean).join(" · ");
+}

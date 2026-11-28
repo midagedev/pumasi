@@ -648,7 +648,13 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 	if n := len(s.WaitingJobs) - waiting; n > 0 {
 		jobs += fmt.Sprintf(" (and %d %s starting)", n, plural(n, "job's runner is", "jobs' runners are"))
 	}
-	p("%d hosts, %d runners, %s, %d open problems", len(s.Hosts), len(s.Runners), jobs, len(s.Incidents))
+	problems := 0
+	for _, f := range fs {
+		if f.Level == levelProblem {
+			problems++
+		}
+	}
+	p("%d hosts, %d runners, %s, %d %s", len(s.Hosts), len(s.Runners), jobs, problems, plural(problems, "problem", "problems"))
 
 	writeFindings := func(title string, level string) {
 		p("")

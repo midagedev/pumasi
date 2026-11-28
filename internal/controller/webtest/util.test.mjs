@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -90,4 +90,17 @@ test("a host card's machine share makes held + machine + free its memory", () =>
   assert.equal(machineShare({ lend: 24 * GiB, held: 16 * GiB, kept: 0, give: 0, free: 8 * GiB }), 0);
   assert.equal(machineShare({ lend: 32 * GiB, held: 25.7 * GiB, kept: 0, give: 0, free: 6.3 * GiB }), 0);
   assert.deepEqual([cardGB(25.7), cardGB(26), cardGB(0.66), cardGB(105.7), cardGB(99.96)], ["25.7", "26", "0.7", "106", "100"]);
+});
+
+// One meaning for "problem": the header's count, the alarm board and the List's
+// problem cards are the same findings; the List's other cards are classes
+// waiting and notes, as /api/explain's levels.
+test("a problem is a problem finding, and the List counts waits and notes apart", () => {
+  const incidents = [{ kind: "ci-too-slow", subject: "unit-tests" }];
+  const fs = [{ level: "problem", kind: "ci-too-slow", subject: "unit-tests" }, { level: "problem", kind: "host", subject: "linux-spare" },
+    { level: "problem", kind: "warning", subject: "credentials" }, { level: "wait", kind: "waiting", subject: "e2e" }, { level: "note", kind: "overflow", subject: "light" }];
+  assert.deepEqual(moreProblems(incidents, fs).map((f) => f.subject), ["linux-spare"]);
+  assert.equal(attentionWords(fs), "3 problems · 1 class waiting · 1 note");
+  assert.equal(attentionWords(fs.slice(0, 1)), "1 problem");
+  assert.equal(attentionWords([]), "");
 });

@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio, stepOf, cardGB, machineShare } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio, stepOf, cardGB, machineShare, moreProblems, problemLabel, attentionWords } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -127,7 +127,8 @@ export function renderChrome(onSelect) {
   $("where").textContent = (s.url || "").replace(/^https?:\/\//, "");
   $("demo").hidden = !s.demo;
   const { waiting, starting } = waitCounts(s);
-  const problems = s.incidents.length;
+  const more = moreProblems(s.incidents, store.findings);
+  const problems = s.incidents.length + (s.warnings || []).length + more.length; // what the alarm board lists
   const down = s.hosts.filter((h) => h.reachable === false).length;
   $("counts").replaceChildren(
     el("span", { class: "chip" + (down ? " bad" : "") }, el("b", { text: s.hosts.length }), " hosts" + (down ? ` · ${down} offline` : "")),
@@ -195,10 +196,12 @@ export function renderChrome(onSelect) {
   const items = [
     ...s.incidents.map((i) => ({ cls: "problem", kind: i.kind, label: kindWord(i.kind), text: i.detail, age: "for " + ago(since(i.openedAt)), sel: subjectOf(i) })),
     ...(s.warnings || []).map((w) => ({ cls: "warning", kind: "warning", label: "warning", text: w })),
+    ...more.map((f) => ({ cls: "problem", kind: f.kind, label: problemLabel(f), text: f.text, sel: f.runner ? { kind: "runner", id: f.runner } : f.host ? { kind: "host", id: f.host } : null })),
   ];
   $("alarms").hidden = items.length === 0;
-  $("alarms").classList.toggle("warn-only", !s.incidents.length);
-  $("alarm-title").textContent = s.incidents.length ? `Problems (${s.incidents.length})` : "Warnings";
+  const bad = items.filter((it) => it.cls === "problem").length;
+  $("alarms").classList.toggle("warn-only", !bad);
+  $("alarm-title").textContent = `Problems (${items.length})`;
   $("alarm-list").replaceChildren(...items.map((it) => el("li", { class: it.cls, "data-kind": it.kind }, el("button", { type: "button", onclick: () => it.sel && onSelect(it.sel) },
     el("span", { class: "k", text: it.label }), it.age ? el("span", { class: "age", text: it.age }) : null, el("div", { text: it.text })))));
 }
@@ -589,6 +592,7 @@ export function renderList(actions) {
   const s = store.state;
   if (!s) return;
   const fs = store.findings;
+  $("l-attention-n").textContent = attentionWords(fs);
   $("l-findings").replaceChildren(...(fs.length ? fs.map(findingEl) : [el("p", { class: "empty", text: "nothing needs attention" })]));
   const fill = (id, rows, empty) => {
     $(id).tBodies[0].replaceChildren(...rows);
