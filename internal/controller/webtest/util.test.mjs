@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, hostLoad, readyLine } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -36,4 +36,19 @@ test("a host's ready runners are all counted, those that give way among them", (
   assert.match(readyLine(L), /^3 ready; 2 give way: /);
   assert.match(readyLine(hostLoad(h, rs.slice(0, 3))), /^2 ready runners give way: /);
   assert.equal(readyLine(hostLoad(h, [rs[0], rs[3]])), "1 ready runner keeps its room");
+});
+
+// The room kept on the map is the expedited job's, not that of a job ahead of
+// it in its class that it pulls along (also "expedite" in the line).
+test("expressRow picks the job expedited by hand", () => {
+  const p = {
+    expedited: [{ job: "j9", githubJobId: 9, position: 3 }],
+    line: [
+      { job: "j1", level: "normal", position: 1 },
+      { job: "j7", level: "expedite", position: 2, why: "ahead of j9 in its class" },
+      { job: "j9", githubJobId: 9, level: "expedite", position: 3, waitingFor: "h1" },
+    ],
+  };
+  assert.equal(expressRow(p).job, "j9");
+  assert.equal(expressRow({ ...p, expedited: [{ job: "j9", position: 0 }] }), null);
 });

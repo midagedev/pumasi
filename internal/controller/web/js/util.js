@@ -199,6 +199,18 @@ export function readyLine(L) {
   if (L.giving) return `${L.ready} ready; ${L.giving} ${L.giving === 1 ? "gives" : "give"} way: ${give}`;
   return `${L.ready} ready ${L.ready === 1 ? "runner keeps its" : "runners keep their"} room`;
 }
+// expressRow: the line's row of the job expedited by hand (the first of them
+// still waiting), not one of those ahead of it it pulls along, which are
+// "expedite" in the line too.
+export function expressRow(p) {
+  const own = (p.expedited || []).filter((x) => x.position > 0);
+  const is = (x, e) => (e.job && x.job === e.job) || (e.githubJobId && x.githubJobId === e.githubJobId);
+  for (const e of own) {
+    const row = (p.line || []).find((x) => x.level === "expedite" && is(x, e));
+    if (row) return row;
+  }
+  return null;
+}
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
 // of the two is short and the most there is anywhere.
