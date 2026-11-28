@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB, aheadJobs, aheadWarm } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB, aheadJobs, aheadWarm, restOf } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -451,7 +451,8 @@ export class Scene {
       ctx.textBaseline = "middle";
       ctx.fillStyle = th.dim;
       const sh = L.share > 1 ? ` (cores shared ×${L.share})` : "";
-      ctx.fillText(`CPU ${(held + give).toFixed(1)} held of ${num1(cap)}${sh} · ${free.toFixed(1)} free · ${cores} cores`, 0, 0);
+      const rest = restOf(num1(cap), (held + give).toFixed(1), free.toFixed(1)); // so held + other use + free read as the whole
+      ctx.fillText(`CPU ${(held + give).toFixed(1)} held of ${num1(cap)}${sh} · ${rest ? rest + " other use · " : ""}${free.toFixed(1)} free · ${cores} cores`, 0, 0);
       ctx.restore();
     }
     // the left wall: what the floor is
@@ -1177,11 +1178,11 @@ export class Scene {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
       const mine = M.held + M.kept;
       // held is all runners hold; gives way is the part of it ready runners hand over;
-      // machine is the rest of what the host has (or lends): other programs and the
-      // memory kept free for it, so that held + machine + free reads as its memory
+      // other use is the rest of what the host has (or lends): other programs and the
+      // memory kept free for it, so that held + other use + free reads as its memory
       const mach = machineShare(M);
       const keys = (long) => [["held", `held ${cardGB((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${cardGB(M.give / GiB)} of it gives way`]] : []),
-        ...(mach > 0 ? [["other", `machine ${mach}${long ? " GB" : ""}`]] : []), ["used", `used ${cardGB(M.used / GiB)} GB`]];
+        ...(mach > 0 ? [["other", `other use ${mach}${long ? " GB" : ""}`]] : []), ["used", `used ${cardGB(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
       // the keys packed into as few lines as fit, the long words first

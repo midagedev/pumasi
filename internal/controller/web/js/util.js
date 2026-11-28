@@ -253,12 +253,18 @@ export function stepOf(c) {
 export function cardGB(v) {
   return v >= 99.95 ? String(Math.round(v)) : String(parseFloat(Math.max(0, v).toFixed(1)));
 }
-// machineShare: what of a host's memory is neither held by runners nor free,
-// in GB as the card writes it: its memory (as the hall's sign has it) less
-// held and free as the card shows them, so the three add up on screen.
+// machineShare: what of a host's memory is neither held by runners nor free
+// (other programs, and memory kept free for the machine: "other use"), in GB
+// as the card writes it: its memory (as the hall's sign has it) less held and
+// free as the card shows them, so the three add up on screen.
 export function machineShare(M) {
   const n = (b) => parseFloat(cardGB(b / GiB));
-  const m = Math.round((n(M.lend) - n(M.held + M.kept + (M.give || 0)) - n(M.free)) * 10) / 10;
+  return restOf(n(M.lend), n(M.held + M.kept + (M.give || 0)), n(M.free));
+}
+// restOf: a total less its parts, as written (numbers or the strings shown), to
+// a tenth; 0 below one.
+export function restOf(total, ...parts) {
+  const m = Math.round((parseFloat(total) - parts.reduce((a, p) => a + parseFloat(p), 0)) * 10) / 10;
   return m >= 0.1 ? m : 0;
 }
 // plainReason: why a class's next job waits, in one sentence. Placement says

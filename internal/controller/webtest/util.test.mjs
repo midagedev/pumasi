@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords, aheadJobs, aheadWarm } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB, moreProblems, attentionWords, aheadJobs, aheadWarm, restOf } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -118,4 +118,12 @@ test("an ahead tag counts the host's runners kept warm", () => {
   const st = [{ ...ah("r1"), state: "starting" }, ah("r2"), ...["p", "d1", "d2"].map((name) => ({ name, host: "a", class: "deploy", state: "idle" }))];
   assert.equal(aheadJobs(st, st[1]), "package");
   assert.equal(aheadWarm(st, st[1]), "plus 3 kept warm");
+});
+
+// The CPU line on the List and the wall: held + other use + free make the whole
+// as written (48 - 27 - 20 = 1).
+test("restOf is the whole less its parts as written", () => {
+  assert.equal(restOf("48", "27", "0", "20"), 1);
+  assert.equal(restOf(32, 25.7, 6.3), 0);
+  assert.equal(restOf("24", "18.6", "4.4"), 1);
 });
