@@ -122,7 +122,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 **Watching CI.** From the same measurements: `pumasi trend` shows each job's time day by day and the commit, pull request and step where it got slower or faster, and jobs slowly growing; `pumasi why-slow <PR URL>` says whether a pull request made CI slower and where; `pumasi forecast` says when CI's growth fills the hosts. Limits on job time, memory, wait, deadlines and CPU-hours become incidents. All of it is JSON too (`/api/trend`, `/api/why-slow`, `/api/forecast`) for agents, with measured accuracy in [docs/watch.md](docs/watch.md).
 
-<img src="docs/img/dashboard-ci.webp" width="66%" alt="The CI watch panel: unit-tests 39% slower since PR #1148, step Run tests 2m28s to 4m01s; build memory up 35%; e2e slowly growing over 28 days; typecheck faster; a crossed limit; at this rate the cores fill in about 23 weeks">
+<img src="docs/img/dashboard-ci.webp" width="66%" alt="The CI watch panel, on demo data: which job got slower, since which pull request and in which step; a build that takes more memory; an e2e job slowly growing with no one commit to blame; a job that got faster; a crossed time limit; and when the cores fill at this rate">
 
 <p>
 <img src="docs/img/dashboard-light.webp" width="66%" alt="The dashboard in the light theme">
