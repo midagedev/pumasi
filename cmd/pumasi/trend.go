@@ -40,6 +40,7 @@ func (s *source) runs(from time.Time) ([]ledger.JobRun, time.Time, error) {
 	now := time.Now()
 	s.web = "https://github.com"
 	if s.demo {
+		now = synth.DemoEnd(now) // where the demo's history ends today
 		var out []ledger.JobRun
 		for _, r := range synth.Demo(now).Runs {
 			if !r.FinishedAt.Before(from) && r.FinishedAt.Before(now) {

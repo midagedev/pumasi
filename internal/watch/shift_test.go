@@ -147,7 +147,7 @@ func TestHostSpellBackIsOneLine(t *testing.T) {
 // A change on main says the same numbers in why-slow as in the trend: both
 // read the trend's span and the Baseline before it.
 func TestWhySlowSaysTrendsNumbers(t *testing.T) {
-	now := time.Now()
+	now := synth.DemoEnd(time.Now()) // as --demo reads it
 	var runs []ledger.JobRun
 	for _, r := range synth.Demo(now).Runs {
 		if r.FinishedAt.Before(now) {
@@ -167,7 +167,7 @@ func TestWhySlowSaysTrendsNumbers(t *testing.T) {
 		if c.PR == 0 || c.Gradual {
 			continue
 		}
-		why, err := watch.WhySlow(runs, watch.Target{PR: c.PR})
+		why, err := watch.WhySlowAt(runs, watch.Target{PR: c.PR}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
