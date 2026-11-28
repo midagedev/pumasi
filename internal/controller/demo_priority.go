@@ -227,7 +227,7 @@ func (v demoView) priority() PriorityView {
 	}
 	coming := map[string]string{}
 	for _, r := range v.w.runners {
-		if r.started == 0 {
+		if !r.busy() {
 			coming[r.class] = "a runner is coming up for it on " + r.host
 		}
 	}
@@ -268,7 +268,7 @@ func (v demoView) priority() PriorityView {
 		}
 		var x Expedited
 		for _, r := range v.w.runners {
-			if r.job.id() == e.job && r.started > 0 {
+			if r.job.id() == e.job && r.busy() {
 				x = v.expedited(r.job, e)
 				st := v.ts(r.started)
 				after := secs(r.started - e.since)

@@ -346,13 +346,17 @@ type demoRunner struct {
 	name, class, host string
 	slot              int
 	created, prov     float64
-	started           float64 // 0 = no job yet
+	started           float64 // when its job started (see busy)
 	job               demoJob
 	est               size.Estimate
 	cpuSec            float64
 	memPeak           int64
 	ended             bool // its job is over while the host was away; it is told when the host is back
 }
+
+// busy: GitHub has handed the runner its job. Not started != 0: the demo
+// runs from before 0, and a job may start at 0 itself.
+func (r demoRunner) busy() bool { return r.job.spec.kind != "" }
 
 type demoFinished struct {
 	r        demoRunner
@@ -561,7 +565,7 @@ func (d *Demo) progress(w *demoWorld, t float64) {
 	var keep []demoRunner
 	for _, r := range w.runners {
 		up := d.up(r.host, t)
-		if r.started == 0 {
+		if !r.busy() {
 			if t < r.created+r.prov || !up {
 				keep = append(keep, r)
 				continue
@@ -630,7 +634,7 @@ func (d *Demo) giveBack(w *demoWorld, t float64) {
 	}
 	covering := map[string]int{}
 	for _, r := range w.runners {
-		if r.started == 0 {
+		if !r.busy() {
 			covering[r.class]++
 		}
 	}
@@ -680,7 +684,7 @@ func (d *Demo) hostIncidents(w *demoWorld, t float64) {
 		if within(h.down, lt) && lt-h.down[0] >= 30 {
 			jobs := 0
 			for _, r := range w.runners {
-				if r.host == h.name && r.started > 0 {
+				if r.host == h.name && r.busy() {
 					jobs++
 				}
 			}
@@ -744,7 +748,7 @@ func (d *Demo) hostNow(w *demoWorld, h demoHost, t float64) demoHostNow {
 		if r.host != h.name {
 			continue
 		}
-		if r.started > 0 {
+		if r.busy() {
 			c, _ := r.job.spec.use(t - r.started)
 			load += c
 		} else {
@@ -831,7 +835,7 @@ func (d *Demo) snapshot(w *demoWorld, t float64) decide.Snapshot {
 		cpus, mem := d.charge(r, t)
 		dr.CPUs, dr.MemBytes = cpus, mem
 		switch {
-		case r.started > 0:
+		case r.busy():
 			dr.State, dr.JobKnown, dr.Working, dr.JobStartedAt, dr.ListeningAt = "busy", true, true, at(r.started), at(r.created+r.prov)
 			dr.Watched = r.est.Watched(at(r.started), now)
 		case t >= r.created+r.prov:
@@ -851,7 +855,7 @@ func (d *Demo) waitingJob(j demoJob) config.WaitingJob {
 
 // charge is what a runner holds: its estimate (times the hold while watched), or its use when more.
 func (d *Demo) charge(r demoRunner, t float64) (float64, int64) {
-	if r.started == 0 {
+	if !r.busy() {
 		hold := int64(1)
 		if r.est.Blind {
 			hold = size.BlindHold
@@ -898,7 +902,7 @@ func (d *Demo) warm(w *demoWorld, dc *decide.Class, t float64) {
 func (d *Demo) apply(w *demoWorld, t float64, p decide.Plan) {
 	for _, st := range p.Stop {
 		// A runner with a job goes when the job ends; one without leaves now.
-		if i := slices.IndexFunc(w.runners, func(r demoRunner) bool { return r.name == st.Runner }); i >= 0 && w.runners[i].started == 0 {
+		if i := slices.IndexFunc(w.runners, func(r demoRunner) bool { return r.name == st.Runner }); i >= 0 && !w.runners[i].busy() {
 			delete(w.starts, st.Runner)
 			w.runners = slices.Delete(w.runners, i, i+1)
 		}
@@ -932,7 +936,7 @@ func (d *Demo) apply(w *demoWorld, t float64, p decide.Plan) {
 		held[j.class]++
 	}
 	for _, r := range w.runners {
-		if r.started > 0 {
+		if r.busy() {
 			held[r.class]++
 		}
 	}
@@ -1005,7 +1009,7 @@ func (d *Demo) forecast(w *demoWorld, t float64) map[string]decide.Expect {
 	}
 	busy := map[string]decide.Busy{}
 	for _, r := range w.runners {
-		if r.started == 0 {
+		if !r.busy() {
 			continue
 		}
 		b := decide.Busy{Job: r.job.spec.kind}
@@ -1086,23 +1090,23 @@ func (v demoView) state() State {
 		cl := d.class(r.class)
 		rs := RunnerState{Name: r.name, Class: r.class, Host: r.host, State: "starting", AgeSeconds: secs(t - r.created), Slot: r.slot,
 			EstCPUs: cmp.Or(r.est.CPUs, cl.CPUs), EstMem: cmp.Or(r.est.MemBytes, int64(cl.Memory)), EstRuns: r.est.Runs}
-		if r.started == 0 && t >= r.created+r.prov {
+		if !r.busy() && t >= r.created+r.prov {
 			rs.State = "idle"
 		}
-		if r.started > 0 {
+		if r.busy() {
 			rs.State, rs.Job = "busy", r.job.spec.kind
 			rs.Watched = r.est.Watched(demoEpoch.Add(time.Duration(r.started*float64(time.Second))), demoEpoch.Add(time.Duration(t*float64(time.Second))))
 		}
 		if d.up(r.host, t) {
 			rs.MemLimit = d.limitOf(r)
-			if r.started > 0 {
+			if r.busy() {
 				cpu, mem := r.job.spec.use(t - r.started)
 				rs.CPUNow, rs.MemBytes, rs.CPUSec = math.Round(cpu*1000)/1000, mem, math.Round(r.cpuSec*10)/10
 			} else {
 				rs.CPUNow, rs.MemBytes = 0.3, 180<<20
 			}
 		}
-		rs.HeldCPUs, rs.HeldMem = size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched || (r.started == 0 && r.est.Blind))
+		rs.HeldCPUs, rs.HeldMem = size.Charge(size.Estimate{CPUs: rs.EstCPUs, MemBytes: rs.EstMem}, rs.CPUNow, rs.MemBytes, rs.Watched || (!r.busy() && r.est.Blind))
 		out.Runners = append(out.Runners, rs)
 		h := &out.Hosts[hostIdx[r.host]]
 		h.Runners++

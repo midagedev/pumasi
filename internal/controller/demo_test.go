@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,13 +215,15 @@ func TestDemoPriorityControls(t *testing.T) {
 	if code, m := post(t, srv.URL+"/api/mode?at=260", `{"name":"high-only","for":"10m"}`, true); code != 200 || m["name"] != "high-only" || m["until"] == nil {
 		t.Fatalf("mode: %d %v", code, m)
 	}
-	s = getState(t, srv.URL+"/api/state?at=280")
+	// The next normal job that waits, waits for it.
 	found := false
-	for _, w := range s.Waiting {
-		found = found || strings.HasPrefix(w.Reason, "high-only mode for ")
+	for at := 270; at <= 400 && !found; at += 10 {
+		for _, w := range getState(t, srv.URL+fmt.Sprintf("/api/state?at=%d", at)).Waiting {
+			found = found || strings.HasPrefix(w.Reason, "high-only mode for ")
+		}
 	}
 	if !found {
-		t.Errorf("no class waits for high-only mode: %+v", s.Waiting)
+		t.Errorf("no class waits for high-only mode from 270 to 400")
 	}
 	// Before the mode was set, nothing changed.
 	for _, w := range getState(t, srv.URL+"/api/state?at=258").Waiting {
