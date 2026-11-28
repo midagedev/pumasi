@@ -105,37 +105,50 @@ func count(xs []string) string {
 	return strings.Join(out, " + ")
 }
 
-// Sweep runs other seeds and paces: the film's numbers are not one lucky draw.
+// Sweep runs ten seeds at three paces, and the busiest pace again with
+// every job busy from start to end: the film's numbers are not one lucky
+// draw. Each figure is the average over the seeds.
 func Sweep() string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', tabwriter.AlignRight)
-	names := []string{"fixed", "fixed-per-class", "fixed-split", "pumasi-strict", "pumasi", "pumasi-cold"}
-	fmt.Fprintf(w, "pushes every\tseeds\tjobs\t%s\t%s\t\n", strings.Join(names, "\t"), strings.Join(names, "\t"))
-	for _, every := range [][2]float64{{25, 40}, {35, 55}, {50, 70}} {
-		var n, jobs int
-		med := map[string]float64{}
-		p90 := map[string]float64{}
+	fmt.Fprintln(w, "pushes every\tsetup\tmedian wait\tp90 wait\tmax wait\tmost waiting\tall done\tslowdown\tp90 slowdown\t")
+	type load struct {
+		every [2]float64
+		busy  bool
+	}
+	for _, l := range []load{{[2]float64{25, 40}, false}, {[2]float64{35, 55}, false}, {[2]float64{50, 70}, false}, {[2]float64{25, 40}, true}} {
+		sum := map[string]*Summary{}
+		var names []string
 		for seed := uint64(1); seed <= 10; seed++ {
 			sc := Film
-			sc.Seed, sc.Every = seed, every
-			r := Run(sc)
-			n++
-			jobs += len(r.Jobs)
-			for _, x := range r.Runs {
-				med[x.Name] += x.Summary.MedianWait
-				p90[x.Name] += x.Summary.P90Wait
+			sc.Seed, sc.Every, sc.Busy = seed, l.every, l.busy
+			for _, x := range Run(sc).Runs {
+				t := sum[x.Name]
+				if t == nil {
+					t = &Summary{}
+					sum[x.Name] = t
+					names = append(names, x.Name)
+				}
+				s := x.Summary
+				t.MedianWait += s.MedianWait / 10
+				t.P90Wait += s.P90Wait / 10
+				t.MaxWait += s.MaxWait / 10
+				t.MeanWait += float64(s.PeakWaiting) / 10
+				t.Done += s.Done / 10
+				t.MeanSlowdown += s.MeanSlowdown / 10
+				t.P90Slowdown += s.P90Slowdown / 10
 			}
 		}
-		k := float64(n)
-		fmt.Fprintf(w, "%g-%gs\t%d\t%d\t", every[0], every[1], n, jobs/n)
-		for _, m := range []map[string]float64{med, p90} {
-			for _, name := range names {
-				fmt.Fprintf(w, "%s\t", mmss(m[name]/k))
-			}
+		pace := fmt.Sprintf("%g-%gs", l.every[0], l.every[1])
+		if l.busy {
+			pace += " busy"
 		}
-		fmt.Fprintln(w)
+		for _, n := range names {
+			t := sum[n]
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%.3f\t%.3f\t\n", pace, n, mmss(t.MedianWait), mmss(t.P90Wait), mmss(t.MaxWait), t.MeanWait, mmss(t.Done), t.MeanSlowdown, t.P90Slowdown)
+		}
 	}
 	w.Flush()
-	b.WriteString("(median wait, then p90 wait: each the average over the seeds)\n")
+	b.WriteString("(each figure the average over seeds 1-10; busy: every job uses its cpu from start to end)\n")
 	return b.String()
 }
