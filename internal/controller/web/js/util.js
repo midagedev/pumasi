@@ -225,6 +225,8 @@ export function plainReason(reason) {
     const most = open.slice().sort((a, b) => b.mem + (b.give || 0) - a.mem - (a.give || 0))[0];
     const more = most.give > 0.05 && most.mem + most.give > best.mem + 0.05 ? `; ${most.name} makes ${gbn(most.mem + most.give)} with its ready runners giving way` : "";
     if (need === have) return `needs ${need} memory, ${best.name} is just short of it${more}${tail}`;
+    // one host takes the class: "the most free" would hint at others
+    if (open.length === 1) return `needs ${need} memory, ${best.name} has ${have} free${more}${tail}`;
     return `needs ${need} memory, the most free${shut.length ? " elsewhere" : ""} is ${have} (${best.name})${more}${tail}`;
   }
   const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
