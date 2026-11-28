@@ -1163,14 +1163,19 @@ export class Scene {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
       const mine = M.held + M.kept;
       // held is all runners hold; gives way is the part of it ready runners hand over
-      const keys = (long) => [["held", `held ${short((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", long ? `${short(M.give / GiB)} of it gives way` : `${short(M.give / GiB)} gives way`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
+      const keys = (long) => [["held", `held ${short((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${short(M.give / GiB)} of it gives way`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
-      const one = [keys(true), keys(false)].find((ks) => wide(ks) <= room);
-      if (one) tg.leg = [one];
-      else { const ks = keys(true); tg.leg = [ks.slice(0, ks.length - 1), ks.slice(-1)]; }
+      // the keys packed into as few lines as fit, the long words first
+      const pack = (ks) => ks.reduce((rows, k) => {
+        const last = rows[rows.length - 1];
+        if (last && wide([...last, k]) <= room) last.push(k); else rows.push([k]);
+        return rows;
+      }, []);
+      const long = pack(keys(true)), brief = pack(keys(false));
+      tg.leg = brief.length < long.length ? brief : long;
     }
-    const h = 30 + (off ? 50 : 46) + (tg.leg && tg.leg.length > 1 ? 15 : 0) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
+    const h = 30 + (off ? 50 : 46) + (tg.leg ? 15 * (tg.leg.length - 1) : 0) + (lines.length ? 18 + lines.length * 16 : tg.all === 0 && !off ? 18 : 0) + 6;
     tg.lines = lines;
     // a hall near the screen's edge keeps its whole card in view (a narrow screen)
     const vw = this.v.w;
@@ -1283,7 +1288,7 @@ export class Scene {
           const ly = cy + 39 + i * 15;
           for (const [k, text] of row) { const [draw, col] = look[k]; draw(lx, ly); lx += 11; ctx.fillStyle = col || th.dim; ctx.fillText(text, lx, ly); lx += ctx.measureText(text).width + 8; }
         });
-        if (tg.leg && tg.leg.length > 1) cy += 15;
+        if (tg.leg) cy += 15 * (tg.leg.length - 1);
       }
       cy += 46;
     }
