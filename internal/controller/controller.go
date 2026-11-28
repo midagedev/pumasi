@@ -71,6 +71,10 @@ type Controller struct {
 	// seenNow: per workflow, the use right now of its jobs that have run long
 	// enough to show their size. A job of the workflow that never ran is sized by it.
 	seenNow map[ledger.JobKey]size.Sample
+	// needs: which job follows which (decide.LearnNeeds), learned at
+	// needsAt; only the decide loop touches them.
+	needs   []decide.Need
+	needsAt time.Time
 	// hostMem: each host's physical memory as its agent last said (under mu).
 	// A measured run that held more than its host has is left out of an estimate.
 	hostMem     map[string]int64
@@ -862,6 +866,17 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	}
 	rules := c.rulesNow(now)
 	s.HighOnly = modeReason(c.modeNow(now))
+	var recent []ledger.RunJob
+	var lead time.Duration
+	if c.cfg.AheadOn() {
+		c.learnNeeds(now)
+		if len(c.needs) > 0 {
+			if recent, err = c.ledger.RunJobs(now.Add(-recentRuns)); err != nil {
+				c.log.Error("ledger run jobs", "err", err)
+			}
+			lead = c.provisionTime() + c.cfg.EvaluateEvery
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	perClass := map[string]int{}
@@ -890,6 +905,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			c.log.Error("ledger arrivals", "err", err)
 		}
 	}
+	soon, soonFor, soonSize := c.soonLocked(now, recent, lead)
 	for _, cl := range c.classes {
 		dc := decide.Class{Name: cl.cfg.Name, OS: cl.cfg.OS, CPUs: cl.cfg.CPUs, MemBytes: int64(cl.cfg.Memory),
 			Hosts: cl.cfg.Hosts, MaxDuration: cl.cfg.MaxDuration,
@@ -897,6 +913,10 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			MayBeHigh: config.MayBeHigh(rules, cl.cfg.Name)}
 		if !cl.cfg.Overflow {
 			dc.Warm = decide.WarmCount(arrived[cl.cfg.Name], c.cfg.WarmMax())
+		}
+		if !cl.cfg.Overflow && soon[cl.cfg.Name] > 0 {
+			e := soonSize[cl.cfg.Name]
+			dc.Soon, dc.SoonFor, dc.SoonCPUs, dc.SoonMem = soon[cl.cfg.Name], soonFor[cl.cfg.Name], e.CPUs, e.MemBytes
 		}
 		if cl.cfg.Overflow || dc.Warm > 0 {
 			next := c.nextSize(cl.cfg)

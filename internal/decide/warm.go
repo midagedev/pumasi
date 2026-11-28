@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -39,6 +40,15 @@ func WarmCount(arrivals []time.Time, most int) int {
 	return min(largest, most)
 }
 
+// up is how many runners of c are kept up without a job: Warm, or Soon
+// when more jobs are expected now. Not for an overflow class.
+func (c Class) up() int {
+	if c.Overflow {
+		return 0
+	}
+	return max(c.Warm, c.Soon)
+}
+
 // charged is what a runner holds of its host.
 func charged(r Runner, classes map[string]Class) [2]float64 {
 	cpus, mem := r.CPUs, float64(r.MemBytes)
@@ -60,7 +70,7 @@ func warmKept(s Snapshot, runners []Runner, classes map[string]Class, hosts map[
 	idle := map[string][]Runner{}
 	for _, r := range runners {
 		c := classes[r.Class]
-		if c.Warm <= 0 || c.Overflow || !idleRunner(r) {
+		if c.up() <= 0 || !idleRunner(r) {
 			continue
 		}
 		if ok, _ := takes(s, c, hosts[r.Host]); ok {
@@ -75,7 +85,7 @@ func warmKept(s Snapshot, runners []Runner, classes map[string]Class, hosts map[
 			}
 			return rs[i].Name < rs[j].Name
 		})
-		for _, r := range rs[:min(len(rs), classes[cl].Warm)] {
+		for _, r := range rs[:min(len(rs), classes[cl].up())] {
 			out[r.Name] = true
 		}
 	}
@@ -186,8 +196,8 @@ func warmStarts(s Snapshot, hostNames []string, hosts map[string]Host, alloc map
 	want := map[string]int{}
 	var order []Class
 	for _, c := range s.Classes {
-		if c.Warm > 0 && !c.Overflow && !behind[c.Name] && c.Warm > sp.n[c.Name] {
-			want[c.Name] = c.Warm - sp.n[c.Name]
+		if n := c.up(); n > 0 && !behind[c.Name] && n > sp.n[c.Name] {
+			want[c.Name] = n - sp.n[c.Name]
 			order = append(order, c)
 		}
 	}
@@ -199,8 +209,11 @@ func warmStarts(s Snapshot, hostNames []string, hosts map[string]Host, alloc map
 				continue
 			}
 			cpu, mem := c.CPUs, float64(c.MemBytes)
-			if c.NextCPUs > 0 && c.NextMem > 0 {
+			switch {
+			case c.Warm > 0 && c.NextCPUs > 0 && c.NextMem > 0:
 				cpu, mem = c.NextCPUs, float64(c.NextMem)
+			case c.Warm <= 0 && c.SoonCPUs > 0 && c.SoonMem > 0:
+				cpu, mem = c.SoonCPUs, float64(c.SoonMem)
 			}
 			ceil := ceiling(s, c)
 			best, bestSlots := "", -1.0
@@ -227,10 +240,14 @@ func warmStarts(s Snapshot, hostNames []string, hosts map[string]Host, alloc map
 				continue
 			}
 			fc, fm := s.free(hosts[best], alloc[best])
-			have := c.Warm - want[c.Name]
-			out = append(out, Start{Class: c.Name, Host: best, CPUs: bestCPU, MemBytes: int64(bestMem), Reason: fmt.Sprintf(
-				"warm: kept up for the class's next job (%d of %d), holds %.1fcpu/%s of the free %.1fcpu/%s, the largest of its recent jobs",
-				have+1, c.Warm, bestCPU, gib(bestMem), fc, gib(fm))})
+			have := c.up() - want[c.Name]
+			reason := fmt.Sprintf("warm: kept up for the class's next job (%d of %d), holds %.1fcpu/%s of the free %.1fcpu/%s, the largest of its recent jobs",
+				have+1, c.Warm, bestCPU, gib(bestMem), fc, gib(fm))
+			if have >= c.Warm {
+				reason = fmt.Sprintf("ahead: %s (%d of %d expected), holds %.1fcpu/%s of the free %.1fcpu/%s",
+					cmp.Or(c.SoonFor, "a job of the class is expected"), have+1, c.Soon, bestCPU, gib(bestMem), fc, gib(fm))
+			}
+			out = append(out, Start{Class: c.Name, Host: best, CPUs: bestCPU, MemBytes: int64(bestMem), Reason: reason})
 			a := alloc[best]
 			alloc[best] = [2]float64{a[0] + bestCPU, a[1] + bestMem}
 			starting[best]++

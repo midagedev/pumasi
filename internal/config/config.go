@@ -49,6 +49,12 @@ type Config struct {
 	// cap. They hold room only no waiting job wants. Default DefaultWarm;
 	// 0 = off.
 	Warm *int `yaml:"warm"`
+	// Ahead: a job that needs another (`needs:`) gets a runner started as
+	// that one is about to end, so that it need not wait for one to come
+	// up. Which job follows which, and how soon, is learned from the
+	// ledger (decide.LearnNeeds). The runner holds room only no waiting job
+	// wants. Default true.
+	Ahead *bool `yaml:"ahead"`
 	// DiskMinFree: a host whose docker disk has less than this percent free gets no new runners.
 	DiskMinFree float64 `yaml:"diskMinFree"`
 	// Rerun: how often pumasi may rerun a workflow run's failed jobs after a
@@ -235,6 +241,9 @@ func (c *Config) WarmMax() int {
 	return *c.Warm
 }
 
+// AheadOn is Ahead, false when it was never set (a Config not made by Load).
+func (c *Config) AheadOn() bool { return c.Ahead != nil && *c.Ahead }
+
 // The first estimate of a class that gives none.
 const (
 	// DefaultCPUOvercommit: see Config.CPUOvercommit and docs/design.md.
@@ -348,6 +357,10 @@ func (c *Config) defaults() {
 	if c.Warm == nil {
 		w := DefaultWarm
 		c.Warm = &w
+	}
+	if c.Ahead == nil {
+		on := true
+		c.Ahead = &on
 	}
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"

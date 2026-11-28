@@ -46,6 +46,15 @@ type Class struct {
 	// does, and leave a host that stops taking the class. Not for an
 	// overflow class.
 	Warm int
+	// Soon: jobs of the class expected to come within the time a runner
+	// takes to come up — jobs that need one running now, which is expected
+	// to end (see Coming). A runner is kept up for each, as for Warm, held
+	// at SoonCPUs/SoonMem (the largest of them) when the class keeps none
+	// warm. SoonFor says which job and after what, for the reason.
+	Soon     int
+	SoonCPUs float64
+	SoonMem  int64
+	SoonFor  string
 	// MayBeHigh: some priority rule can make a job of the class high. While
 	// only high jobs are placed (Snapshot.HighOnly), an overflow class offers
 	// room only then, or for an expedited job of its own: a job it took
@@ -296,7 +305,7 @@ func Decide(s Snapshot) Plan {
 	}
 	for _, r := range sp.all() {
 		h, c := hosts[r.Host], classes[r.Class]
-		if ok, why := takes(s, c, h); c.Warm > 0 && sp.n[r.Class] > 0 && !ok && why != "" && h.Up {
+		if ok, why := takes(s, c, h); c.up() > 0 && sp.n[r.Class] > 0 && !ok && why != "" && h.Up {
 			drop(r, "spare runner leaves: "+why+"; it would take the class's next job there unasked")
 		}
 	}

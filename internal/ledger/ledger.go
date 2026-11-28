@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS incidents(
 );
 CREATE INDEX IF NOT EXISTS incidents_open ON incidents(key) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS demand_first_seen ON demand(first_seen);
+CREATE INDEX IF NOT EXISTS runners_assigned_job ON runners(assigned_job_id);
 CREATE TABLE IF NOT EXISTS outbox(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, payload TEXT NOT NULL,
@@ -563,6 +564,46 @@ func (l *Ledger) Arrivals(since time.Time) (map[string][]time.Time, error) {
 			return nil, err
 		}
 		out[class] = append(out[class], parseTS(first))
+	}
+	return out, rows.Err()
+}
+
+// RunJob is a job of a workflow run: when it first asked for a runner, and
+// when the pumasi runner that had it started and finished it (zero: not
+// yet, or not on a pumasi runner).
+type RunJob struct {
+	Repo     string
+	RunID    int64
+	Workflow string // the workflow file, without its ref
+	Job      string
+	Class    string
+	Came     time.Time
+	Started  time.Time
+	Ended    time.Time
+}
+
+// RunJobs are the jobs of workflow runs that came since a moment, in the
+// order they came, a job given back and offered again once.
+func (l *Ledger) RunJobs(since time.Time) ([]RunJob, error) {
+	rows, err := l.db.Query(`SELECT COALESCE(d.repo,''), d.run_id,
+	    CASE WHEN instr(COALESCE(d.workflow,''),'@')>0 THEN substr(d.workflow,1,instr(d.workflow,'@')-1) ELSE COALESCE(d.workflow,'') END,
+	    d.job, MIN(d.class), MIN(d.first_seen), MAX(r.started_at), MAX(r.finished_at)
+	  FROM demand d LEFT JOIN runners r ON r.assigned_job_id = d.job_id
+	  WHERE d.first_seen >= ? AND d.run_id IS NOT NULL AND d.run_id != 0 AND COALESCE(d.job,'') != ''
+	  GROUP BY d.repo, d.run_id, d.job ORDER BY MIN(d.first_seen)`, ts(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RunJob
+	for rows.Next() {
+		var j RunJob
+		var came, started, ended sql.NullString
+		if err := rows.Scan(&j.Repo, &j.RunID, &j.Workflow, &j.Job, &j.Class, &came, &started, &ended); err != nil {
+			return nil, err
+		}
+		j.Came, j.Started, j.Ended = parseTS(came), parseTS(started), parseTS(ended)
+		out = append(out, j)
 	}
 	return out, rows.Err()
 }

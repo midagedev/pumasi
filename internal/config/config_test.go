@@ -368,3 +368,17 @@ func TestWarm(t *testing.T) {
 		}
 	}
 }
+
+func TestAhead(t *testing.T) {
+	for extra, want := range map[string]bool{"": true, "ahead: false\n": false} {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: [{name: a}]\nhosts: [{ssh: h}]\n"+extra), 0o600)
+		c, err := Load(p)
+		if err != nil || c.AheadOn() != want {
+			t.Errorf("%q: %v, ahead %v, want %v", extra, err, c != nil && c.AheadOn(), want)
+		}
+	}
+	if (&Config{}).AheadOn() {
+		t.Error("a Config not made by Load starts runners ahead")
+	}
+}

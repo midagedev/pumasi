@@ -20,6 +20,8 @@ var Setups = []Setup{
 	{"fixed-split", func(sc Scenario, jobs []Job) Result { return RunFixed(Split(jobs), jobs) }},
 	{"pumasi-nowarm", func(sc Scenario, jobs []Job) Result { sc.Warm = 0; return RunPumasi(sc, jobs) }},
 	{"pumasi", func(sc Scenario, jobs []Job) Result { return RunPumasi(sc, jobs) }},
+	{"pumasi-nowarm+ahead", func(sc Scenario, jobs []Job) Result { sc.Warm, sc.Ahead = 0, true; return RunPumasi(sc, jobs) }},
+	{"pumasi+ahead", func(sc Scenario, jobs []Job) Result { sc.Ahead = true; return RunPumasi(sc, jobs) }},
 }
 
 // Variant is a way the hosts come up and the jobs come.
@@ -44,6 +46,7 @@ type LabRow struct {
 	NeedsMedian, NeedsP90               float64 // jobs that came after the ones they need
 	HeldMem, Gone, Delayed, DelayedSecs float64 // pumasi's idle runners, per run
 	OOM, PressSecs                      float64
+	AheadStarted, AheadServed           float64 // runners started ahead, and of them taken by a job, per run
 }
 
 // Lab runs each setup in each variant at the given paces over seeds 1..n.
@@ -70,6 +73,8 @@ func Lab(setups []Setup, variants []Variant, paces [][2]float64, n int) []LabRow
 					row.DelayedSecs += x.Idle.DelayedSecs * f
 					row.OOM += float64(x.Summary.OOM) * f
 					row.PressSecs += x.Summary.MemPressSecs * f
+					row.AheadStarted += float64(x.Idle.AheadStarted) * f
+					row.AheadServed += float64(x.Idle.AheadServed) * f
 					var w []float64
 					for i, j := range jobs {
 						if j.After > 0 {
@@ -97,14 +102,14 @@ func LabTable() string { return labTable(Lab(Setups, Variants, [][2]float64{{35,
 func labTable(rows []LabRow) string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(w, "pushes every\trunners come up\tsetup\tmedian wait\tp90\tmax\tneeds: median\tp90\tidle mem held\tgone without a job\tjobs warm delayed\tsecs\toom\tmem pressure secs\t")
+	fmt.Fprintln(w, "pushes every\trunners come up\tsetup\tmedian wait\tp90\tmax\tneeds: median\tp90\tidle mem held\tgone without a job\tjobs warm delayed\tsecs\tahead started\ttaken\toom\tmem pressure secs\t")
 	for _, r := range rows {
 		nm, np := "-", "-"
 		if r.NeedsMedian+r.NeedsP90 > 0 || strings.Contains(r.Variant, "needs") {
 			nm, np = mmss(r.NeedsMedian), mmss(r.NeedsP90)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%.1fG\t%.1f\t%.1f\t%.0f\t%.1f\t%.0f\t\n", r.Pace, r.Variant, r.Setup, mmss(r.Median), mmss(r.P90), mmss(r.Max),
-			nm, np, r.HeldMem, r.Gone, r.Delayed, math.Round(r.DelayedSecs), r.OOM, r.PressSecs)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%.1fG\t%.1f\t%.1f\t%.0f\t%.1f\t%.1f\t%.1f\t%.0f\t\n", r.Pace, r.Variant, r.Setup, mmss(r.Median), mmss(r.P90), mmss(r.Max),
+			nm, np, r.HeldMem, r.Gone, r.Delayed, math.Round(r.DelayedSecs), r.AheadStarted, r.AheadServed, r.OOM, r.PressSecs)
 	}
 	w.Flush()
 	b.WriteString("(seeds 1-10; needs: the jobs that came when the ones they need ended; idle, gone, delayed: pumasi's runners without a job, per run)\n")

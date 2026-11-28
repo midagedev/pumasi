@@ -39,6 +39,9 @@ type Status struct {
 	// Warm: per class, how many runners it keeps up without a job now
 	// (decide.WarmCount of how its jobs came lately).
 	Warm map[string]int `json:"warm,omitempty"`
+	// Soon: per class, how many jobs are expected within the time a runner
+	// takes to come up, as the jobs they need end (decide.Soon).
+	Soon map[string]int `json:"soon,omitempty"`
 }
 
 // Expect is when a waiting job is expected to start, where, and whose end
@@ -95,6 +98,12 @@ func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan, expect ma
 				st.Warm = map[string]int{}
 			}
 			st.Warm[cl.Name] = cl.Warm
+		}
+		if cl.Soon > 0 {
+			if st.Soon == nil {
+				st.Soon = map[string]int{}
+			}
+			st.Soon[cl.Name] = cl.Soon
 		}
 	}
 	st.Warnings = c.exposure()

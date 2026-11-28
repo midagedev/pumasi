@@ -72,6 +72,9 @@ type ClassState struct {
 	// Warm: runners the class keeps up without a job now, learned from how
 	// its jobs came in the last 30 minutes (0 = none).
 	Warm int `json:"warm,omitempty"`
+	// Soon: jobs of the class expected within the time a runner takes to
+	// come up, as the jobs they need end; a runner is kept up for each.
+	Soon int `json:"soon,omitempty"`
 }
 
 // StateLimits: a host over a pressure line or under diskMinFree takes no new
@@ -225,7 +228,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	out.Warnings = append([]string{}, live.Warnings...)
 	out.Overflow = append([]Overflow{}, live.Overflow...)
 	for i := range out.Classes {
-		out.Classes[i].Warm = live.Warm[out.Classes[i].Name]
+		out.Classes[i].Warm, out.Classes[i].Soon = live.Warm[out.Classes[i].Name], live.Soon[out.Classes[i].Name]
 	}
 	var err error
 

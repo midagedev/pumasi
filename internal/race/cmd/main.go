@@ -24,6 +24,8 @@ func main() {
 	fmt.Print(race.ETATable())
 	fmt.Println()
 	fmt.Print(race.DriftTable())
+	fmt.Println()
+	fmt.Print(race.LabTable())
 	if *out != "" {
 		b, err := json.Marshal(r)
 		if err == nil {

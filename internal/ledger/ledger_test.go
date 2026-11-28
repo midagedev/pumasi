@@ -307,3 +307,48 @@ func TestArrivals(t *testing.T) {
 		t.Fatalf("arrivals %v", got)
 	}
 }
+
+func TestRunJobs(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	t0 := time.Date(2026, 11, 27, 1, 0, 0, 0, time.UTC)
+	wf := "o/r/.github/workflows/ci.yml@refs/pull/7/merge"
+	unit := Job{ID: "u", Class: "c", Repo: "o/r", Workflow: wf, RunID: 9, Name: "unit"}
+	e2e := Job{ID: "e", Class: "big", Repo: "o/r", Workflow: wf, RunID: 9, Name: "e2e"}
+	for _, err := range []error{
+		l.UpsertDemand(Job{ID: "old", Class: "c", RunID: 1, Name: "lint"}, t0.Add(-time.Hour)),
+		l.UpsertDemand(unit, t0),
+		l.InsertRunner("r1", "c", "", "h", t0, size.Estimate{}),
+		l.UpsertDemand(Job{ID: "nope", Class: "c", Name: "no run"}, t0),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.JobStarted("r1", unit, t0.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := l.RunJobs(t0.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Workflow != "o/r/.github/workflows/ci.yml" || got[0].Job != "unit" || !got[0].Started.Equal(t0.Add(5*time.Second)) || !got[0].Ended.IsZero() {
+		t.Fatalf("running: %+v", got)
+	}
+	for _, err := range []error{
+		l.JobCompleted("r1", unit, "succeeded", t0.Add(100*time.Second)),
+		l.UpsertDemand(e2e, t0.Add(103*time.Second)),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ = l.RunJobs(t0.Add(-time.Minute))
+	if len(got) != 2 || got[1].Job != "e2e" || !got[1].Came.Equal(t0.Add(103*time.Second)) || !got[1].Started.IsZero() ||
+		got[0].Job != "unit" || !got[0].Ended.Equal(t0.Add(100*time.Second)) {
+		t.Fatalf("after: %+v", got)
+	}
+}

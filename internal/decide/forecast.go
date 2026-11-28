@@ -64,7 +64,7 @@ func Forecast(s Snapshot, busy map[string]Busy, runs map[string]time.Duration, p
 	// are what it plays forward.
 	cur.Classes = slices.Clone(s.Classes)
 	for i := range cur.Classes {
-		cur.Classes[i].Warm = 0
+		cur.Classes[i].Warm, cur.Classes[i].Soon = 0, 0
 	}
 	ends := map[string]Busy{}
 	for name, b := range busy {

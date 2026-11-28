@@ -270,3 +270,31 @@ func TestPumasiDoesNotPressMemory(t *testing.T) {
 		}
 	}
 }
+
+// With jobs that need others, a runner started as the needed job is about
+// to end is up when the job comes: such jobs wait less, and nearly every
+// runner started ahead is taken by one.
+func TestAheadRunnersAreUpWhenTheJobComes(t *testing.T) {
+	var plain, ahead []float64
+	var started, taken int
+	for seed := uint64(1); seed <= 4; seed++ {
+		sc := Film
+		sc.Seed, sc.Native, sc.Provision, sc.Needs, sc.Warm = seed, true, 4.8, true, 0
+		jobs := Stream(sc)
+		a := RunPumasi(sc, jobs)
+		sc.Ahead = true
+		b := RunPumasi(sc, jobs)
+		for i, j := range jobs {
+			if j.After != 0 {
+				plain, ahead = append(plain, a.Waits[i]), append(ahead, b.Waits[i])
+			}
+		}
+		started, taken = started+b.Idle.AheadStarted, taken+b.Idle.AheadServed
+	}
+	if p, q := quantile(plain, 0.5), quantile(ahead, 0.5); q > p/2 {
+		t.Fatalf("median wait of jobs that need others: %.1fs ahead, %.1fs without", q, p)
+	}
+	if started == 0 || float64(taken) < 0.9*float64(started) {
+		t.Fatalf("%d runners started ahead, %d taken", started, taken)
+	}
+}

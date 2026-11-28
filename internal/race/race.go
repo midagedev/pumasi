@@ -19,6 +19,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/midagedev/pumasi/internal/config"
@@ -196,13 +197,17 @@ type Scenario struct {
 	// pumasi last measured them (zero: they did not).
 	Drift Drift `json:"drift,omitempty"`
 	// Needs: jobs that need another come when it ends, as `needs:` makes
-	// them: the e2e legs after the unit tests, the size report after lint,
-	// the web deploy after the api's. Otherwise every job of a push comes
-	// with it.
+	// them: the e2e legs after the unit tests, the size report after the
+	// label check, the web deploy after the api's. Otherwise every job of a
+	// push comes with it.
 	Needs bool `json:"needs,omitempty"`
 	// Native: a pumasi runner takes as long to come up as native runners
 	// did on real hosts (see provision), not Provision every time.
 	Native bool `json:"native,omitempty"`
+	// Ahead: pumasi starts a runner for a job that needs another as that
+	// one is about to end (decide.Class.Soon), from which job followed which
+	// in the Days before (or, Cold, earlier in the stream).
+	Ahead bool `json:"ahead,omitempty"`
 }
 
 // Drift is a change in a repo's jobs, of the kinds CI goes through: the
@@ -280,7 +285,10 @@ func Stream(sc Scenario) []Job {
 	if sc.Drift.Nightly {
 		pushes = sc.Pushes / 2
 	}
-	nightly := func(at float64) {
+	nightly := func(at float64, n int) {
+		was := run
+		run = 3000 + n
+		defer func() { run = was }()
 		for i := range 8 {
 			add(at+float64(i%3), []string{"e2e (chromium)", "e2e (webkit)"}[i%2])
 		}
@@ -290,10 +298,10 @@ func Stream(sc Scenario) []Job {
 	for i := range pushes {
 		run = i + 1
 		if sc.Drift.Nightly && (i == 0 || i == pushes/2) {
-			nightly(at)
+			nightly(at, i)
 		}
 		o := func() float64 { return math.Round((at+r.Float64()*3)*10) / 10 }
-		lint := add(o(), "lint")
+		add(o(), "lint")
 		unit := add(o(), "unit-tests")
 		add(o(), "typecheck")
 		need(add(o(), "e2e (chromium)"), unit)
@@ -303,9 +311,9 @@ func Stream(sc Scenario) []Job {
 		if r.Float64() < build {
 			add(o(), "build-image")
 		}
-		add(o(), "label-check")
+		labels := add(o(), "label-check")
 		if r.Float64() < 0.6 {
-			need(add(o(), "size-report"), lint)
+			need(add(o(), "size-report"), labels)
 		}
 		if sc.Drift.New {
 			add(o(), Later[0].Name)
@@ -425,9 +433,12 @@ type Result struct {
 // listening for a job, and those kept warm.
 type Idle struct {
 	// WarmStarted: runners started for no job, to keep warm; WarmServed: of
-	// them, those a job took.
-	WarmStarted int `json:"warmStarted"`
-	WarmServed  int `json:"warmServed"`
+	// them, those a job took. AheadStarted, AheadServed: of those, the ones
+	// started for a job expected soon (Scenario.Ahead).
+	WarmStarted  int `json:"warmStarted"`
+	WarmServed   int `json:"warmServed"`
+	AheadStarted int `json:"aheadStarted,omitempty"`
+	AheadServed  int `json:"aheadServed,omitempty"`
 	// Stopped: runners stopped before any job took them (the idle timeout, a
 	// job of another class that needed the room, a host that closed).
 	Stopped int `json:"stopped"`
@@ -972,6 +983,7 @@ type runner struct {
 	run               *run // nil = no job yet
 	est               size.Estimate
 	warm              bool // started for no job
+	ahead             bool // of them, for a job expected (Soon)
 }
 
 // PSICPUThreshold and PSIMemThreshold are the controller's: cpu and memory
@@ -1039,7 +1051,15 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 	case sc.Warm <= 0:
 		res.Name = "pumasi-nowarm"
 	}
+	if sc.Ahead {
+		res.Name += "+ahead"
+		res.Setup += "; a runner started ahead for a job expected as the one it needs ends"
+	}
 	measured := history(sc)
+	var needs []decide.Need
+	if sc.Ahead && !sc.Cold {
+		needs = decide.LearnNeeds(before(sc))
+	}
 	told := map[int]bool{}
 	m := newMachines()
 	pressed, memPressed := map[string]bool{}, map[string]bool{}
@@ -1065,6 +1085,9 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		}
 		if r.warm {
 			res.Idle.WarmServed++
+		}
+		if r.ahead {
+			res.Idle.AheadServed++
 		}
 		return true
 	}
@@ -1124,7 +1147,11 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			}
 		}
 
-		s := decide.Snapshot{Now: at(t), Classes: warmed(classes, sc, jobs, arr, measured, t), MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, PSIMemThreshold: PSIMemThreshold, CPUOvercommit: sc.CPUOvercommit,
+		if sc.Ahead && sc.Cold && math.Mod(t, 60) == 0 {
+			needs = decide.LearnNeeds(rans(jobs, arr.at, ends))
+		}
+		cls := ahead(warmed(classes, sc, jobs, arr, measured, t), sc, needs, jobs, arr, ends, runners, measured, t)
+		s := decide.Snapshot{Now: at(t), Classes: cls, MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, PSIMemThreshold: PSIMemThreshold, CPUOvercommit: sc.CPUOvercommit,
 			ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
 		for _, h := range Hosts {
 			dh := h.decide()
@@ -1182,9 +1209,13 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			if _, err := fmt.Sscan(st.Job, &ji); err == nil {
 				est = estimate(measured, jobs[ji].Kind)
 			}
-			runners = append(runners, runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.provision(seq), est: est, warm: st.Job == ""})
-			if st.Job == "" {
+			r := runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.provision(seq), est: est, warm: st.Job == "", ahead: strings.HasPrefix(st.Reason, "ahead:")}
+			runners = append(runners, r)
+			if r.warm {
 				res.Idle.WarmStarted++
+			}
+			if r.ahead {
+				res.Idle.AheadStarted++
 			}
 		}
 
