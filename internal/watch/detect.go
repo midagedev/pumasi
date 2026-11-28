@@ -712,14 +712,23 @@ func theilSen(x []float64) float64 {
 	if n < 3 {
 		return 0
 	}
-	sl := make([]float64, 0, n*(n-1)/2)
-	for i := range n {
-		for j := i + 1; j < n; j++ {
+	// Of a long series, evenly spaced points: the pairs grow as its square.
+	idx := make([]int, 0, min(n, theilSenPoints))
+	for m := range min(n, theilSenPoints) {
+		idx = append(idx, m*(n-1)/max(1, min(n, theilSenPoints)-1))
+	}
+	sl := make([]float64, 0, len(idx)*(len(idx)-1)/2)
+	for a := range idx {
+		for b := a + 1; b < len(idx); b++ {
+			i, j := idx[a], idx[b]
 			sl = append(sl, (x[j]-x[i])/float64(j-i))
 		}
 	}
 	return median(sl)
 }
+
+// theilSenPoints is the most points a Theil–Sen slope is read from.
+const theilSenPoints = 256
 
 // median sorts v in place.
 func median(v []float64) float64 {
