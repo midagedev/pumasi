@@ -46,6 +46,9 @@ type Config struct {
 
 	Notify Notify `yaml:"notify"`
 
+	// Watch: what is kept of finished jobs, and the limits set on them.
+	Watch Watch `yaml:"watch"`
+
 	// Listen: the address every host dials, the hosts of hosts: too. Default
 	// DefaultListen: all of this machine's addresses.
 	Listen string `yaml:"listen"`
@@ -319,6 +322,7 @@ func (c *Config) defaults() {
 	if c.DiskMinFree == 0 {
 		c.DiskMinFree = 10
 	}
+	c.Watch.defaults()
 	if c.Notify.Level == "" {
 		c.Notify.Level = "problem"
 	}
