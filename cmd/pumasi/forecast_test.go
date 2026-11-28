@@ -14,7 +14,7 @@ import (
 // `pumasi forecast --demo` and the demo dashboard's /api/forecast say the
 // same: the same cores, from the demo's hosts, and the same weeks to fill.
 func TestDemoForecastMatchesDashboard(t *testing.T) {
-	cli, err := local(&source{demo: true}, controller.DemoCores(), 8)
+	cli, err := local(&source{demo: true}, 0, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestDemoForecastMatchesDashboard(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
 		t.Fatal(err)
 	}
-	if cli.Cores != api.Cores || cli.CoresFrom != api.CoresFrom {
+	if cli.Cores != api.Cores || cli.CoresFrom != api.CoresFrom || !cli.Physical || !api.Physical || cli.Cores != controller.DemoCores() {
 		t.Fatalf("cores: cli %.0f (%s), api %.0f (%s)", cli.Cores, cli.CoresFrom, api.Cores, api.CoresFrom)
 	}
 	// Made a moment apart, the two may differ in the last digits.

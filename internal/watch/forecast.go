@@ -50,6 +50,9 @@ type ForecastReport struct {
 	// that number came from.
 	Cores     float64 `json:"cores"`
 	CoresFrom string  `json:"coresFrom,omitempty"`
+	// Physical: Cores are the hosts' own (each its budget, else its cores),
+	// not counted again where runners share them, as the map counts them.
+	Physical bool `json:"physical,omitempty"`
 	// Load: the last week's PeakCores against Cores.
 	Load float64 `json:"load"`
 	// FullIn: weeks until the busiest hours need every core, at Growth.
@@ -213,6 +216,15 @@ func Forecast(runs []ledger.JobRun, cores float64, now time.Time, weeks int) For
 	return rep
 }
 
+// SetCores says where Cores came from, and whether they are the hosts'
+// physical cores, and words the forecast again.
+func (r *ForecastReport) SetCores(from string, physical bool) {
+	r.CoresFrom, r.Physical = from, physical
+	if r.Cores > 0 && r.Load > 0 {
+		r.Words = r.growthWords() + " " + r.capacityWords()
+	}
+}
+
 func (r ForecastReport) growthWords() string {
 	n := len(r.Weeks)
 	pre := ""
@@ -231,7 +243,11 @@ func (r ForecastReport) growthSentence(n int) string {
 }
 
 func (r ForecastReport) capacityWords() string {
-	s := fmt.Sprintf("At the busiest hours it keeps %.0f of the %.0f cores busy (%.0f%%)", r.Weeks[len(r.Weeks)-1].PeakCores, r.Cores, 100*r.Load)
+	cores := "cores"
+	if r.Physical {
+		cores = "physical cores"
+	}
+	s := fmt.Sprintf("At the busiest hours it keeps %.0f of the %.0f %s busy (%.0f%%)", r.Weeks[len(r.Weeks)-1].PeakCores, r.Cores, cores, 100*r.Load)
 	switch {
 	case r.FullIn == 0:
 		return s + fmt.Sprintf(": the busiest hours already need every core; %s of jobs wait a minute or more for room.", oddsText(r.WaitShare))

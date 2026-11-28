@@ -2,11 +2,14 @@ package controller
 
 import (
 	"encoding/json"
+	"github.com/midagedev/pumasi/internal/config"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,13 +175,17 @@ func TestDemoForecast(t *testing.T) {
 	if DemoCores() != 66 || DemoCores() != synth.DemoFleetCores {
 		t.Fatalf("demo cores %.0f, the history's %d", DemoCores(), synth.DemoFleetCores)
 	}
+	if !rep.Physical || !strings.Contains(rep.Words, "of the 66 physical cores") {
+		t.Fatalf("the demo's cores are its hosts' physical ones: %s", rep.Words)
+	}
 	if rep.Cores != DemoCores() || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
 		t.Fatalf("%+v", rep)
 	}
 	if code := getJSON(t, srv.URL+"/api/forecast?weeks=2", &rep); code != http.StatusBadRequest {
 		t.Fatalf("weeks=2: %d", code)
 	}
-	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Load > 0.05 {
+	rep = watch.ForecastReport{}
+	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Physical || rep.Load > 0.05 {
 		t.Fatalf("cores=1000: %+v", rep)
 	}
 }
@@ -203,5 +210,42 @@ func TestDemoHistoryRunsTheDashboardsJobs(t *testing.T) {
 	}
 	if n < 5 {
 		t.Fatalf("%d jobs in common", n)
+	}
+}
+
+// The demo's CI history runs on the demo dashboard's linux hosts, each with
+// a share of the runs by the cores it lends; its desktop is the slower, and
+// its build jobs go where the dashboard's build class goes.
+func TestDemoHistoryRunsOnTheDashboardsHosts(t *testing.T) {
+	var linux []demoHost
+	total := 0.0
+	for _, h := range demoHosts {
+		if h.os == "linux" {
+			linux = append(linux, h)
+			total += lendCores(h.budgetCPUs, h.cpus)
+		}
+	}
+	if len(synth.DemoHosts) != len(linux) {
+		t.Fatalf("history hosts %+v, dashboard's linux hosts %d", synth.DemoHosts, len(linux))
+	}
+	for _, sh := range synth.DemoHosts {
+		i := slices.IndexFunc(linux, func(h demoHost) bool { return h.name == sh.Name })
+		if i < 0 {
+			t.Errorf("%s: not a host of the dashboard", sh.Name)
+			continue
+		}
+		h := linux[i]
+		if share := lendCores(h.budgetCPUs, h.cpus) / total; math.Abs(sh.Share-share) > 1e-9 {
+			t.Errorf("%s: share %.3f, its cores give %.3f", sh.Name, sh.Share, share)
+		}
+		if (h.kind == "desktop") != (sh.Speed > 1) {
+			t.Errorf("%s (%s): speed %.2f", sh.Name, h.kind, sh.Speed)
+		}
+	}
+	build := slices.IndexFunc(demoConfig().Classes, func(c config.Class) bool { return c.Name == "build" })
+	for _, j := range synth.DemoJobs {
+		if j.Class == "build" && !slices.Equal(j.Hosts, demoConfig().Classes[build].Hosts) {
+			t.Errorf("%s runs on %v, the build class on %v", j.Name, j.Hosts, demoConfig().Classes[build].Hosts)
+		}
 	}
 }

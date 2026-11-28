@@ -34,7 +34,8 @@ type Job struct {
 	MemGB                 float64
 	Spread                float64 // lognormal sigma of its time
 	Steps                 []Step
-	Nightly               bool // runs once a night on main, not on pull requests
+	Nightly               bool     // runs once a night on main, not on pull requests
+	Hosts                 []string // only these hosts run it (nil = any)
 }
 
 // Step is a step of a job and its share of the job's time.
@@ -105,6 +106,8 @@ type Config struct {
 	Inject []Planned
 	// Natural: the slow growth of a suite (default on).
 	NoNatural bool
+	// Hosts: the hosts the jobs run on (default a fast one and a slower one).
+	Hosts []Host
 	// Pushes: a pull request's pushes after its first, on average
 	// (default 1.5).
 	Pushes float64
@@ -159,13 +162,16 @@ type merge struct {
 	opened  time.Time
 }
 
-type host struct {
-	name  string
-	speed float64 // time factor
-	share float64
+// Host is a host the jobs run on: its time factor and its share of the runs.
+type Host struct {
+	Name  string
+	Speed float64 // time factor
+	Share float64
 }
 
-var hosts = []host{{"linux-fast", 1.0, 0.65}, {"linux-slow", 1.3, 0.35}}
+// hosts are the default two: a fast one, and a slower one with a third of
+// the runs.
+var hosts = []Host{{"linux-fast", 1.0, 0.65}, {"linux-slow", 1.3, 0.35}}
 
 // Generate makes the history of a config.
 func Generate(cfg Config) History {
@@ -174,6 +180,9 @@ func Generate(cfg Config) History {
 	}
 	if cfg.Merges == 0 {
 		cfg.Merges = 8
+	}
+	if cfg.Hosts == nil {
+		cfg.Hosts = hosts
 	}
 	if cfg.ContendedRate == 0 {
 		cfg.ContendedRate = 0.06
@@ -251,7 +260,7 @@ func Generate(cfg Config) History {
 	for wk := 0; wk*7 < cfg.Days; wk++ {
 		for range 1 + rng.IntN(2) {
 			at := cfg.Start.AddDate(0, 0, wk*7).Add(time.Duration(rng.Float64() * 7 * 24 * float64(time.Hour)))
-			spells = append(spells, spell{host: hosts[rng.IntN(len(hosts))].name, from: at,
+			spells = append(spells, spell{host: cfg.Hosts[rng.IntN(len(cfg.Hosts))].Name, from: at,
 				to: at.Add(time.Duration((2 + 6*rng.Float64()) * float64(time.Hour))), factor: 1.3 + 0.5*rng.Float64()})
 		}
 	}
@@ -347,12 +356,9 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 				apply(c)
 			}
 		}
-		h := hosts[0]
-		if rng.Float64() >= h.share {
-			h = hosts[1]
-		}
+		h := pickHost(g.cfg.Hosts, j.Hosts, rng.Float64())
 		if g.cfg.Pinned {
-			h = hosts[ji%len(hosts)] // the draw above is kept: the rest of the history stays the same
+			h = g.cfg.Hosts[ji%len(g.cfg.Hosts)] // the draw above is kept: the rest of the history stays the same
 		}
 		// Noise: the job's spread, the busy hours, outliers, contention.
 		f := math.Exp(rng.NormFloat64() * j.Spread)
@@ -366,13 +372,13 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 			f *= 0.7 + 0.15*rng.Float64() // a warm cache skipped a step
 		}
 		for _, sp := range g.spells {
-			if sp.host == h.name && !at.Before(sp.from) && at.Before(sp.to) {
+			if sp.host == h.Name && !at.Before(sp.from) && at.Before(sp.to) {
 				f *= sp.factor
 			}
 		}
 		for _, hs := range g.cfg.HostShifts {
 			from := g.cfg.Start.Add(hs.After)
-			if (hs.Host == "" || hs.Host == h.name) && !at.Before(from) && (hs.For == 0 || at.Before(from.Add(hs.For))) {
+			if (hs.Host == "" || hs.Host == h.Name) && !at.Before(from) && (hs.For == 0 || at.Before(from.Add(hs.For))) {
 				f *= hs.Factor
 			}
 		}
@@ -382,14 +388,14 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 			flagged = rng.Float64() < 0.8
 		}
 		start := at.Add(time.Duration((5 + 25*rng.Float64()) * float64(time.Second)))
-		r := ledger.JobRun{Runner: fmt.Sprintf("r%d-%d", g.runID, ji), Class: j.Class, Host: h.name, Platform: "linux/docker",
+		r := ledger.JobRun{Runner: fmt.Sprintf("r%d-%d", g.runID, ji), Class: j.Class, Host: h.Name, Platform: "linux/docker",
 			Repo: "example/app", Workflow: j.Workflow, Job: j.Name, RunID: g.runID, GHJobID: g.runID*100 + int64(ji), Attempt: 1,
 			Event: event, Branch: branch, SHA: sha, PR: pr, Result: "succeeded", QueuedAt: at, StartedAt: start}
 		// The steps: each its share of the job, with a spread of its own.
 		t := start
 		total := 0.0
 		for si, s := range j.Steps {
-			sec := j.Sec * s.Share * dur * h.speed * f * cmpOr(stepF[s.Name], 1) * math.Exp(rng.NormFloat64()*0.04)
+			sec := j.Sec * s.Share * dur * h.Speed * f * cmpOr(stepF[s.Name], 1) * math.Exp(rng.NormFloat64()*0.04)
 			sec = math.Max(1, math.Round(sec))
 			r.Steps = append(r.Steps, ledger.Step{Number: si + 1, Name: s.Name, StartedAt: t, CompletedAt: t.Add(time.Duration(sec) * time.Second), Sec: sec, Conclusion: "success"})
 			t = t.Add(time.Duration(sec) * time.Second)
@@ -409,6 +415,25 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 		}
 		g.runs = append(g.runs, r)
 	}
+}
+
+// pickHost: the host whose share u falls in, among only, when given.
+func pickHost(hs []Host, only []string, u float64) Host {
+	var in []Host
+	total := 0.0
+	for _, h := range hs {
+		if len(only) == 0 || slices.Contains(only, h.Name) {
+			in = append(in, h)
+			total += h.Share
+		}
+	}
+	for _, h := range in {
+		if u < h.Share/total {
+			return h
+		}
+		u -= h.Share / total
+	}
+	return in[len(in)-1]
 }
 
 func cmpOr(a, b float64) float64 {
@@ -439,6 +464,13 @@ func sha(seed uint64, kind string, i int) string {
 // The demo's history queues on them, so its CI and its map are one shop.
 const DemoFleetCores = 66
 
+// DemoHosts are the demo dashboard's linux hosts (controller's demoHosts;
+// a test holds them equal), each with a share of the runs by the cores it
+// lends (32, 16, and the desktop's budget of 10). The servers run a job as
+// fast as each other, as the map does; the desktop's person keeps three of
+// its cores busy, so its jobs take longer.
+var DemoHosts = []Host{{"linux-server", 1.0, 32.0 / 58}, {"linux-spare", 1.0, 16.0 / 58}, {"wsl-desktop", 1.15, 10.0 / 58}}
+
 // demoMerges: a weekday's merges at the demo's start, so that its last
 // week's busiest hours keep about half of DemoFleetCores busy. Its suite
 // grows, and its e2e job creeps, by the days of a team of 7 merges a day.
@@ -467,7 +499,7 @@ var DemoJobs = []Job{
 		Steps: steps("Set up job", .03, "Checkout", .07, "Install", .3, "Typecheck", .57, "Post", .03)},
 	{Workflow: ".github/workflows/pr-checks.yml", Name: "unit-tests", Class: "pr-checks", Sec: 120, Cores: 1.9, MemGB: 3.2, Spread: 0.08,
 		Steps: steps("Set up job", .02, "Checkout", .04, "Install", .14, "Build", .2, "Run tests", .55, "Upload coverage", .05)},
-	{Workflow: ".github/workflows/pr-checks.yml", Name: "build-image", Class: "build", Sec: 130, Cores: 5, MemGB: 11.5, Spread: 0.07,
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "build-image", Class: "build", Sec: 130, Cores: 5, MemGB: 11.5, Spread: 0.07, Hosts: []string{"linux-server"},
 		Steps: steps("Set up job", .02, "Checkout", .05, "Restore cache", .08, "Compile", .7, "Package", .12, "Post", .03)},
 	{Workflow: ".github/workflows/pr-checks.yml", Name: "e2e (chromium)", Class: "e2e", Sec: 190, Cores: 3.3, MemGB: 10, Spread: 0.1,
 		Steps: steps("Set up job", .01, "Checkout", .02, "Install", .07, "Start services", .1, "Run e2e", .76, "Upload traces", .04)},
@@ -490,7 +522,7 @@ var demoBase = time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
 // demoConfig is the demo's history with jobs as they start.
 func demoConfig(jobs []Job) Config {
 	day := func(d float64) time.Duration { return time.Duration(d*24*float64(time.Hour)) + 10*time.Hour }
-	return Config{Seed: 42, Start: demoBase, Days: 42, Jobs: jobs, Merges: demoMerges, Pushes: demoPushes, NaturalShare: 7.0 / demoMerges, Growth: 0.06, Cores: DemoFleetCores, Inject: []Planned{
+	return Config{Seed: 42, Start: demoBase, Days: 42, Jobs: jobs, Hosts: DemoHosts, Merges: demoMerges, Pushes: demoPushes, NaturalShare: 7.0 / demoMerges, Growth: 0.06, Cores: DemoFleetCores, Inject: []Planned{
 		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 200 * demoMerges / 7}, After: day(9), Label: "e2e creeping up"},
 		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(28), Label: "a slower test step"},
 		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(29), Label: "typecheck made faster"},
@@ -534,16 +566,16 @@ func median(v []float64) float64 {
 // history's start, worked back from DemoJobs by demoWorkBack;
 // TestDemoJobsWorkedBack works them back again and says when they moved.
 var demoAtStart = map[string][2]float64{
-	"lint":             {51.27, 1.091},
-	"typecheck":        {75.28, 2.22},
-	"unit-tests":       {74.23, 3.2},
-	"build-image":      {115.8, 8.461},
-	"e2e (chromium)":   {142.5, 9.92},
-	"e2e (webkit)":     {147.8, 8.747},
-	"e2e (firefox)":    {202.5, 13.98},
+	"lint":             {54.02, 1.091},
+	"typecheck":        {78.02, 2.22},
+	"unit-tests":       {77.84, 3.2},
+	"build-image":      {123.4, 8.461},
+	"e2e (chromium)":   {150.9, 9.92},
+	"e2e (webkit)":     {157.1, 8.747},
+	"e2e (firefox)":    {214.2, 13.98},
 	"nightly-soak 1/3": {283, 13.74},
-	"nightly-soak 2/3": {256.4, 13.78},
-	"nightly-soak 3/3": {234.4, 13.79},
+	"nightly-soak 2/3": {261.1, 13.78},
+	"nightly-soak 3/3": {275.2, 13.79},
 }
 
 func demoJobsAtStart() []Job {

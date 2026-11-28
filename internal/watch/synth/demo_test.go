@@ -68,3 +68,37 @@ func TestDemoJobsWorkedBack(t *testing.T) {
 		t.Errorf("demoAtStart moved; worked back again:\n%s", table.String())
 	}
 }
+
+// The demo's runs are on DemoHosts only, build-image on linux-server, and
+// whatever the trend says of a machine names one of them.
+func TestDemoNamesOnlyItsHosts(t *testing.T) {
+	now := DemoEnd(time.Now())
+	h := Demo(now)
+	names := map[string]bool{}
+	for _, dh := range DemoHosts {
+		names[dh.Name] = true
+	}
+	for _, r := range h.Runs {
+		if !names[r.Host] || r.Job == "build-image" && r.Host != "linux-server" {
+			t.Fatalf("%s ran on %s", r.Job, r.Host)
+		}
+	}
+	for _, since := range []time.Duration{14 * 24 * time.Hour, 30 * 24 * time.Hour} {
+		for _, side := range []time.Duration{0, -1} {
+			from := watch.TrendFrom(now, since)
+			rep := watch.BuildTrend(h.Runs, watch.TrendQuery{From: from, To: now, Loc: time.Local}, watch.Options{MinBefore: side, MinAfter: side})
+			for _, s := range rep.Shifts {
+				for _, hn := range s.Hosts {
+					if !names[hn] {
+						t.Errorf("a machine line names %s: %s", hn, watch.ShiftLine(s))
+					}
+				}
+			}
+			for _, c := range rep.Changes {
+				if c.Host != "" && !names[c.Host] {
+					t.Errorf("a change names %s", c.Host)
+				}
+			}
+		}
+	}
+}
