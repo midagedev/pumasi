@@ -2,6 +2,7 @@ package decide
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -206,5 +207,23 @@ func TestWarmMinSaysSo(t *testing.T) {
 	p := Decide(s)
 	if len(p.Start) != 1 || !strings.Contains(p.Start[0].Reason, "(1 of 1, warmMin 1)") {
 		t.Fatalf("%+v", p.Start)
+	}
+}
+
+// The plan names the runners up without a job that would step aside for a
+// job that comes: not one a job of its class GitHub holds is owed, nor the
+// ones its class keeps whatever waits.
+func TestGiveWayNamesSpareRunners(t *testing.T) {
+	rs := []Runner{idle("s1", "linux-s", "server1", time.Minute, 1, gb)}
+	if p := Decide(warmSnap(1, nil, rs)); !slices.Equal(p.GiveWay, []string{"s1"}) {
+		t.Fatalf("spare: give way %v", p.GiveWay)
+	}
+	if p := Decide(warmSnap(1, demand("linux-s", 1), rs)); len(p.GiveWay) != 0 {
+		t.Fatalf("owed to its class's job: give way %v", p.GiveWay)
+	}
+	s := warmSnap(1, nil, rs)
+	s.Classes[0].WarmMin = 1
+	if p := Decide(s); len(p.GiveWay) != 0 {
+		t.Fatalf("warmMin keeps it: give way %v", p.GiveWay)
 	}
 }

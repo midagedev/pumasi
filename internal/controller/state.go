@@ -75,6 +75,9 @@ type ClassState struct {
 	// Soon: jobs of the class expected within the time a runner takes to
 	// come up, as the jobs they need end; a runner is kept up for each.
 	Soon int `json:"soon,omitempty"`
+	// WarmMin: of its runners up without a job, how many the class keeps
+	// whatever waits: they do not step aside for another class's job.
+	WarmMin int `json:"warmMin,omitempty"`
 }
 
 // StateLimits: a host over a pressure line or under diskMinFree takes no new
@@ -119,6 +122,9 @@ type HostState struct {
 	MemBytes int64   `json:"memBytes"`
 	FreeCPUs float64 `json:"freeCpus"`
 	FreeMem  int64   `json:"freeMem"`
+	// CPUShare: how many times placement counts the cores here (cpuOvercommit
+	// on a server whose cores runners share; FreeCPUs counts them so). 0 = once.
+	CPUShare float64 `json:"cpuShare,omitempty"`
 	// CPU pressure (PSI some avg10, percent); nil when the agent did not answer.
 	CPUPressure *float64 `json:"cpuPressure"`
 	// Memory and disk pressure the same way; nil where the OS does not tell.
@@ -171,6 +177,9 @@ type RunnerState struct {
 	HeldMem  int64   `json:"heldMem"`
 	// The runner's number among its class's runners on the host ({slot}); 0 = not known.
 	Slot int `json:"slot"`
+	// GivesWay: up without a job, it steps aside for a waiting job of another
+	// class that needs its room (one of its own class it simply takes).
+	GivesWay bool `json:"givesWay,omitempty"`
 }
 
 // JobWait is one job that waits for a runner, or that waited and left.
@@ -286,8 +295,12 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			}
 		}
 	}
+	giving := map[string]bool{}
+	for _, n := range live.GiveWay {
+		giving[n] = true
+	}
 	for _, r := range runners {
-		rs := RunnerState{Name: r.Name, Class: r.Class, Host: r.Host, State: r.State,
+		rs := RunnerState{GivesWay: giving[r.Name] && r.Job == "", Name: r.Name, Class: r.Class, Host: r.Host, State: r.State,
 			Job: r.Job, AgeSeconds: int64(now.Sub(r.CreatedAt).Seconds()),
 			EstCPUs: cmp.Or(r.EstCPUs, classes[r.Class].CPUs), EstMem: cmp.Or(r.EstMem, int64(classes[r.Class].Memory)), EstRuns: r.EstRuns}
 		if a, ok := sampled[r.Name]; ok {
@@ -309,9 +322,10 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			h.CPUs, h.MemBytes = snap.CPUs, snap.MemBytes
 			h.BudgetCPUs = minPositive(h.BudgetCPUs, snap.BudgetCPUs)
 			h.BudgetMem = int64(minPositive(float64(h.BudgetMem), float64(snap.BudgetMem)))
-			cpu, mem := decide.Free(decide.Host{CPUs: snap.CPUs, MemBytes: snap.MemBytes, BudgetCPUs: h.BudgetCPUs, BudgetMem: h.BudgetMem,
-				NonRunnerCPU: snap.NonRunnerCPU, NonRunnerMem: snap.NonRunnerMem, KeepMem: keepMem(snap.MemBytes)}, h.UsedCPUs, float64(h.UsedMem))
-			h.FreeCPUs, h.FreeMem = cpu, int64(mem)
+			_, psi := snap.PSI["cpu"]
+			dh := decide.Host{Kind: h.Kind, CPUs: snap.CPUs, MemBytes: snap.MemBytes, BudgetCPUs: h.BudgetCPUs, BudgetMem: h.BudgetMem,
+				NonRunnerCPU: snap.NonRunnerCPU, NonRunnerMem: snap.NonRunnerMem, KeepMem: keepMem(snap.MemBytes), CPUPressureKnown: psi}
+			h.FreeCPUs, h.FreeMem, h.CPUShare = hostFree(cfg, dh, h.UsedCPUs, h.UsedMem)
 		}
 	}
 	hostMem := map[string]int64{}
@@ -414,6 +428,18 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 	return out, nil
 }
 
+// hostFree is what a new runner could take on h as placement counts it, and
+// how many times it counts the cores (0 = once).
+func hostFree(cfg *config.Config, h decide.Host, cpus float64, mem int64) (float64, int64, float64) {
+	s := decide.Snapshot{CPUOvercommit: cfg.CPUOvercommit, PSICPUThreshold: cfg.PSICPUThreshold}
+	cpu, m := s.HostFree(h, cpus, float64(mem))
+	share := s.CPUShare(h)
+	if share == 1 {
+		share = 0
+	}
+	return cpu, int64(m), share
+}
+
 func classStates(cfg *config.Config) []ClassState {
 	out := []ClassState{}
 	for _, cl := range cfg.Classes {
@@ -421,7 +447,7 @@ func classStates(cfg *config.Config) []ClassState {
 		out = append(out, ClassState{Name: cl.Name, Labels: cl.RunsOn(), OS: os, Driver: driver, Docker: cl.Docker,
 			Hosts: cl.Hosts, Mounts: cl.Mounts, Overflow: cl.Overflow, After: cl.After, Reserve: cl.Reserve,
 			CPUs: cmp.Or(cl.CPUs, config.DefaultCPUs), Memory: cmp.Or(int64(cl.Memory), config.DefaultMemory),
-			LimitCPUs: cl.Limit.CPUs, LimitMem: int64(cl.Limit.Memory), MaxDurationSeconds: int64(cl.MaxDuration.Seconds())})
+			LimitCPUs: cl.Limit.CPUs, LimitMem: int64(cl.Limit.Memory), MaxDurationSeconds: int64(cl.MaxDuration.Seconds()), WarmMin: cl.WarmMin})
 	}
 	return out
 }

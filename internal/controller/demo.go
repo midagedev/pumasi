@@ -27,8 +27,8 @@ import (
 // `pumasi open --demo`. It is a pure function of its seed and the simulated
 // second it is asked about, so a picture of it can be taken again. Every ten
 // minutes the same scenes come round: a desktop someone works at, a nightly
-// batch that waits, a deploy that goes first, a job killed at its class's
-// memory limit, a host that drops off and comes back, a Mac short of disk.
+// batch that waits, a deploy that goes first, a job the kernel kills at the
+// memory limit its class sets, a host that drops off and comes back, a Mac short of disk.
 
 const (
 	demoCycle   = 600.0 // seconds; the scenes repeat with this period
@@ -370,6 +370,7 @@ type demoWorld struct {
 	starts   map[string]demoDecision // runner -> its start decision
 	seq      uint32
 	highOnly []decide.Defer // jobs high-only mode keeps out of this round, by class
+	giveWay  []string       // runners without a job that step aside for one (the last plan's)
 }
 
 type demoJob struct {
@@ -427,6 +428,7 @@ func (w *demoWorld) clone() *demoWorld {
 	c.incs = slices.Clone(w.incs)
 	c.back = slices.Clone(w.back)
 	c.defers = slices.Clone(w.defers)
+	c.giveWay = slices.Clone(w.giveWay)
 	c.measured = make(map[string][]size.Sample, len(w.measured))
 	for k, v := range w.measured {
 		c.measured[k] = slices.Clone(v)
@@ -984,6 +986,7 @@ func (d *Demo) apply(w *demoWorld, t float64, p decide.Plan) {
 		w.starts[name] = demoDecision{at: t, action: "start", host: st.Host, reason: st.Reason}
 	}
 	w.defers = append(slices.Clone(p.Defer), w.highOnly...)
+	w.giveWay = slices.Clone(p.GiveWay)
 	// Each overflow class's take, as setTakes works it out.
 	held, unplaced := map[string]int{}, map[string]int{}
 	for _, j := range w.demand {
@@ -1142,7 +1145,7 @@ func (v demoView) state() State {
 	}
 	for _, r := range w.runners {
 		cl := d.class(r.class)
-		rs := RunnerState{Name: r.name, Class: r.class, Host: r.host, State: "starting", AgeSeconds: secs(t - r.created), Slot: r.slot,
+		rs := RunnerState{Name: r.name, Class: r.class, Host: r.host, State: "starting", AgeSeconds: secs(t - r.created), Slot: r.slot, GivesWay: !r.busy() && slices.Contains(w.giveWay, r.name),
 			EstCPUs: cmp.Or(r.est.CPUs, cl.CPUs), EstMem: cmp.Or(r.est.MemBytes, int64(cl.Memory)), EstRuns: r.est.Runs}
 		if !r.busy() && t >= r.created+r.prov {
 			rs.State = "idle"
@@ -1172,9 +1175,8 @@ func (v demoView) state() State {
 		if h.MemBytes == 0 {
 			continue
 		}
-		cpu, mem := decide.Free(decide.Host{CPUs: h.CPUs, MemBytes: h.MemBytes, BudgetCPUs: h.BudgetCPUs, BudgetMem: h.BudgetMem,
-			NonRunnerCPU: h.OtherCPUs, NonRunnerMem: h.OtherMem, KeepMem: h.KeepMem}, h.UsedCPUs, float64(h.UsedMem))
-		h.FreeCPUs, h.FreeMem = cpu, int64(mem)
+		h.FreeCPUs, h.FreeMem, h.CPUShare = hostFree(d.cfg, decide.Host{Kind: h.Kind, CPUs: h.CPUs, MemBytes: h.MemBytes, BudgetCPUs: h.BudgetCPUs, BudgetMem: h.BudgetMem,
+			NonRunnerCPU: h.OtherCPUs, NonRunnerMem: h.OtherMem, KeepMem: h.KeepMem, CPUPressureKnown: h.CPUPressure != nil}, h.UsedCPUs, h.UsedMem)
 	}
 	for _, cl := range d.cfg.Classes {
 		if cl.Overflow {

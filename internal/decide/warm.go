@@ -176,16 +176,26 @@ func (sp spareSet) yieldFor(s Snapshot, h Host, a [2]float64, class string, cpu,
 	return nil
 }
 
-// without is alloc with the room of the listening spare runners given back:
-// what a job that comes would find once they made way for it.
-func (sp spareSet) without(alloc map[string][2]float64, classes map[string]Class) map[string][2]float64 {
-	out := maps.Clone(alloc)
+// giving is the listening spare runners that make way for a job that
+// comes, of each class all but those it keeps whatever waits (held).
+func (sp spareSet) giving(classes map[string]Class) []Runner {
+	var out []Runner
 	used := map[string]int{}
 	for _, r := range sp.all() {
 		if used[r.Class] >= sp.n[r.Class]-sp.held(classes[r.Class]) {
 			continue
 		}
 		used[r.Class]++
+		out = append(out, r)
+	}
+	return out
+}
+
+// without is alloc with the room of the listening spare runners given back:
+// what a job that comes would find once they made way for it.
+func (sp spareSet) without(alloc map[string][2]float64, classes map[string]Class) map[string][2]float64 {
+	out := maps.Clone(alloc)
+	for _, r := range sp.giving(classes) {
 		c, a := charged(r, classes), out[r.Host]
 		out[r.Host] = [2]float64{a[0] - c[0], a[1] - c[1]}
 	}
