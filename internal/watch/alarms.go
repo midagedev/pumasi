@@ -348,7 +348,7 @@ func WeekGrowth(runs []ledger.JobRun, now time.Time) []Weekly {
 		var a, b []float64
 		for _, r := range rs {
 			v := r.RunSec
-			if f := hf[r.Host]; f > 0 {
+			if f := hf[machine(r)]; f > 0 {
 				v /= f
 			}
 			if r.FinishedAt.Before(weekAgo) {

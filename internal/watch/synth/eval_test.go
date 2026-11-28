@@ -68,3 +68,28 @@ func TestForecastReplayHolds(t *testing.T) {
 		}
 	}
 }
+
+// A host's change keeps being told from the jobs' (`watcheval -shift` for
+// the full numbers): far fewer false job changes at it, and a real
+// regression days away from it found as often as before.
+func TestHostShiftsHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluation")
+	}
+	ec := EvalConfig{Histories: 8}
+	rs := EvalShift(ec)
+	var b strings.Builder
+	WriteShiftReport(&b, ec, rs)
+	t.Log("\n" + b.String())
+	for _, r := range rs {
+		if r.Inside || r.For > 0 {
+			continue // the regression inside the host's change: the cost, measured not held
+		}
+		if r.Scenario != "every host 1.3x (mirror)" && r.FalsePlain >= 8 && r.False*2 > r.FalsePlain {
+			t.Errorf("%s (pinned %v): false job changes %d, before %d", r.Scenario, r.Pinned, r.False, r.FalsePlain)
+		}
+		if r.Found < r.FoundPlain-1 {
+			t.Errorf("%s (pinned %v): regression found %d, before %d", r.Scenario, r.Pinned, r.Found, r.FoundPlain)
+		}
+	}
+}
