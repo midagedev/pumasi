@@ -39,7 +39,7 @@ func ETA(sc Scenario, seeds int) ETAStats {
 		x := RunPumasi(sc, jobs)
 		told := map[int]bool{}
 		for _, tl := range x.Told {
-			start := jobs[tl.Job].At + x.Waits[tl.Job]
+			start := x.Arrived[tl.Job] + x.Waits[tl.Job]
 			lead := start - tl.At
 			if lead < MinLead {
 				continue

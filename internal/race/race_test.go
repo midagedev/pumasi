@@ -2,6 +2,7 @@ package race
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -198,5 +199,74 @@ func TestNoDriftIsTheSameStream(t *testing.T) {
 	a, b := Stream(sc), Stream(Film)
 	if len(a) != len(b) || a[10] != b[10] {
 		t.Fatalf("streams differ")
+	}
+}
+
+// With Needs, a job that needs another comes only after that one ended: after
+// it started, Delay later, in every setup.
+func TestNeedsComeAfterTheirParent(t *testing.T) {
+	sc := Film
+	sc.Needs = true
+	r := Run(sc)
+	idx := map[int]int{}
+	n := 0
+	for i, j := range r.Jobs {
+		idx[j.ID] = i
+		if j.After != 0 {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no job needs another")
+	}
+	for _, x := range r.Runs {
+		for i, j := range r.Jobs {
+			if j.After == 0 {
+				if x.Arrived[i] != j.At {
+					t.Fatalf("%s: job %d came at %g, not %g", x.Name, j.ID, x.Arrived[i], j.At)
+				}
+				continue
+			}
+			p := idx[j.After]
+			if start := x.Arrived[p] + x.Waits[p]; x.Arrived[i] < start+j.Delay {
+				t.Fatalf("%s: job %d came at %g, before job %d started at %g", x.Name, j.ID, x.Arrived[i], j.After, start)
+			}
+		}
+	}
+}
+
+// Native runners come up as they did on real hosts: median near 4.8s, one in
+// ten past 5.7s.
+func TestNativeProvision(t *testing.T) {
+	sc := Film
+	sc.Native = true
+	var d []float64
+	for i := range 2000 {
+		d = append(d, sc.provision(i))
+	}
+	slices.Sort(d)
+	if m := d[len(d)/2]; m < 4.2 || m > 5.4 {
+		t.Fatalf("median %.1fs", m)
+	}
+	if p := d[len(d)*9/10]; p < 5.7 || p > 12 {
+		t.Fatalf("p90 %.1fs", p)
+	}
+	if d[len(d)-1] > 36 {
+		t.Fatalf("max %.1fs", d[len(d)-1])
+	}
+}
+
+// pumasi places within the hosts' memory: no job is lost to it, and no host
+// is pressed for memory, with native runners and jobs that need others.
+func TestPumasiDoesNotPressMemory(t *testing.T) {
+	sc := Film
+	sc.Native, sc.Needs = true, true
+	for _, x := range Run(sc).Runs {
+		if x.Setup == "" || x.Name[:min(6, len(x.Name))] != "pumasi" {
+			continue
+		}
+		if x.Summary.OOM != 0 || x.Summary.MemPressSecs != 0 {
+			t.Fatalf("%s: %d jobs lost to memory, %gs pressed", x.Name, x.Summary.OOM, x.Summary.MemPressSecs)
+		}
 	}
 }

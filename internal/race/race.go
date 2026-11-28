@@ -58,6 +58,9 @@ func (h Host) decide() decide.Host {
 		KeepMem: min(max(h.Mem/10, gb), 4*gb)}
 }
 
+// phys is the memory, GiB, the machine has besides its other use.
+func (h Host) phys() float64 { return float64(h.Mem-h.OtherMem) / gb }
+
 // Room is what the host can give runners when none runs: the same for both setups.
 func (h Host) Room() (cpu float64, mem int64) {
 	c, m := decide.Free(h.decide(), 0, 0)
@@ -138,6 +141,11 @@ type Job struct {
 	// Busy: it uses its cpu from the first second to the last (a compile, a
 	// test suite that saturates its cores) instead of coming up to it.
 	Busy bool `json:"busy,omitempty"`
+	// After: the job (ID) it needs; it comes Delay seconds after that one
+	// ends (0 = it comes at At). Run: the workflow run it is of (0 = none).
+	After int     `json:"after,omitempty"`
+	Delay float64 `json:"delay,omitempty"`
+	Run   int     `json:"run,omitempty"`
 }
 
 // use is what the job uses el seconds after it started: it comes up to its
@@ -187,6 +195,14 @@ type Scenario struct {
 	// Drift: how the jobs changed since the fixed runners were sized and
 	// pumasi last measured them (zero: they did not).
 	Drift Drift `json:"drift,omitempty"`
+	// Needs: jobs that need another come when it ends, as `needs:` makes
+	// them: the e2e legs after the unit tests, the size report after lint,
+	// the web deploy after the api's. Otherwise every job of a push comes
+	// with it.
+	Needs bool `json:"needs,omitempty"`
+	// Native: a pumasi runner takes as long to come up as native runners
+	// did on real hosts (see provision), not Provision every time.
+	Native bool `json:"native,omitempty"`
 }
 
 // Drift is a change in a repo's jobs, of the kinds CI goes through: the
@@ -241,8 +257,21 @@ func round2(v float64) float64 { return math.Round(v*100) / 100 }
 // iOS build every two minutes or so while they come, and one deploy.
 func Stream(sc Scenario) []Job {
 	r := rand.New(rand.NewPCG(sc.Seed, 1))
+	rn := rand.New(rand.NewPCG(sc.Seed, 3)) // the delays of needs, apart: the rest of the stream stays the same
 	var out []Job
-	add := func(at float64, kind string) { out = append(out, sc.draw(r, at, kind)) }
+	run := 0
+	add := func(at float64, kind string) int {
+		j := sc.draw(r, at, kind)
+		j.Run, j.ID = run, len(out)+1
+		out = append(out, j)
+		return len(out)
+	}
+	// need makes job i (an ID add gave) come after job of ID after, when Needs.
+	need := func(i, after int) {
+		if sc.Needs && after > 0 {
+			out[i-1].After, out[i-1].Delay = after, math.Round((1.5+rn.Float64()*3)*10)/10
+		}
+	}
 	at := 5.0
 	webkit, build, pushes := 0.4, 0.35, sc.Pushes
 	if h := sc.Drift.Heavy; h > 0 {
@@ -259,23 +288,24 @@ func Stream(sc Scenario) []Job {
 		add(at+1, "build-image")
 	}
 	for i := range pushes {
+		run = i + 1
 		if sc.Drift.Nightly && (i == 0 || i == pushes/2) {
 			nightly(at)
 		}
 		o := func() float64 { return math.Round((at+r.Float64()*3)*10) / 10 }
-		add(o(), "lint")
-		add(o(), "unit-tests")
+		lint := add(o(), "lint")
+		unit := add(o(), "unit-tests")
 		add(o(), "typecheck")
-		add(o(), "e2e (chromium)")
+		need(add(o(), "e2e (chromium)"), unit)
 		if r.Float64() < webkit {
-			add(o(), "e2e (webkit)")
+			need(add(o(), "e2e (webkit)"), unit)
 		}
 		if r.Float64() < build {
 			add(o(), "build-image")
 		}
 		add(o(), "label-check")
 		if r.Float64() < 0.6 {
-			add(o(), "size-report")
+			need(add(o(), "size-report"), lint)
 		}
 		if sc.Drift.New {
 			add(o(), Later[0].Name)
@@ -283,13 +313,19 @@ func Stream(sc Scenario) []Job {
 		at += sc.Every[0] + r.Float64()*(sc.Every[1]-sc.Every[0])
 	}
 	for t, i := 20.0, 0; t < at; t, i = t+105+r.Float64()*30, i+1 {
+		run = 1000 + i
 		add(math.Round(t), []string{"ios-build", "xcode-tests"}[i%2])
 	}
-	add(math.Round(at/2), "deploy-api")
-	add(math.Round(at/2)+1, "deploy-web")
+	run = 2000
+	api := add(math.Round(at/2), "deploy-api")
+	need(add(math.Round(at/2)+1, "deploy-web"), api)
 	slices.SortStableFunc(out, func(a, b Job) int { return cmp.Compare(a.At, b.At) })
+	id := map[int]int{} // as added -> in arrival order
 	for i := range out {
-		out[i].ID = i + 1
+		id[out[i].ID] = i + 1
+	}
+	for i := range out {
+		out[i].ID, out[i].After = i+1, id[out[i].After]
 	}
 	return out
 }
@@ -360,13 +396,23 @@ type Summary struct {
 	// its room; HostOverSecs: how long some host's jobs used more than it.
 	HostMemPeak  float64 `json:"hostMemPeak"`
 	HostOverSecs float64 `json:"hostOverSecs"`
+	// Against the machine itself, budget or not: MemPressSecs, how long the
+	// jobs on some host used memory the host keeps back (KeepMem: where the
+	// kernel starts reclaiming and swapping); OOM, how many times the jobs
+	// on a host came to use more than the machine has besides its other use,
+	// and OOMSecs how long.
+	MemPressSecs float64 `json:"memPressSecs"`
+	OOM          int     `json:"oom"`
+	OOMSecs      float64 `json:"oomSecs"`
 }
 
 // Result is one setup's run.
 type Result struct {
-	Name    string    `json:"name"`
-	Setup   string    `json:"setup"` // in words
-	Waits   []float64 `json:"waits"` // by job, in stream order
+	Name  string    `json:"name"`
+	Setup string    `json:"setup"` // in words
+	Waits []float64 `json:"waits"` // by job, in stream order
+	// Arrived: when each job came (Job.At, or later for one that needs another).
+	Arrived []float64 `json:"arrived,omitempty"`
 	Summary Summary   `json:"summary"`
 	Frames  []Frame   `json:"frames,omitempty"`
 	// Told: pumasi only, what it said of each job's start while it waited.
@@ -390,6 +436,13 @@ type Idle struct {
 	HeldCPU float64 `json:"heldCpu"`
 	HeldMem float64 `json:"heldMem"`
 	PeakMem float64 `json:"peakMem"`
+	// Delayed: jobs that waited a round in which the same placement, with
+	// the runners kept warm and still without a job gone, would have started
+	// them; DelayedSecs: those rounds, seconds in all; DelayedMax: the most
+	// for one job. What runners kept warm cost the jobs, rather than room.
+	Delayed     int     `json:"delayed"`
+	DelayedSecs float64 `json:"delayedSecs"`
+	DelayedMax  float64 `json:"delayedMax"`
 }
 
 // Told is what pumasi said, at one moment, of when a waiting job would start.
@@ -420,8 +473,12 @@ func summarize(res *Result, jobs []Job, ends []float64) {
 	s.MedianWait, s.P90Wait, s.MaxWait, s.MeanWait = quantile(w, 0.5), quantile(w, 0.9), slices.Max(w), math.Round(mean(w))
 	slow := make([]float64, len(jobs))
 	for i, j := range jobs {
-		s.Drained = math.Max(s.Drained, j.At+res.Waits[i])
-		slow[i] = (ends[i] - j.At - res.Waits[i]) / j.Dur
+		came := j.At
+		if res.Arrived != nil {
+			came = res.Arrived[i]
+		}
+		s.Drained = math.Max(s.Drained, came+res.Waits[i])
+		slow[i] = (ends[i] - came - res.Waits[i]) / j.Dur
 	}
 	s.Done = math.Round(slices.Max(ends))
 	s.MeanSlowdown, s.P90Slowdown = round2(mean(slow)), round2(quantile(slow, 0.9))
@@ -430,16 +487,18 @@ func summarize(res *Result, jobs []Job, ends []float64) {
 		c, m := h.Room()
 		roomCPU, roomMem = roomCPU+c, roomMem+float64(m)/gb
 	}
-	hostRoom := map[string]float64{}
+	hostRoom, phys, keep := map[string]float64{}, map[string]float64{}, map[string]float64{}
 	for _, h := range Hosts {
 		_, m := h.Room()
 		hostRoom[h.Name] = float64(m) / gb
+		phys[h.Name], keep[h.Name] = h.phys(), float64(h.decide().KeepMem)/gb
 	}
+	inOOM := map[string]bool{}
 	var n, cpu, mem, held float64
 	for _, f := range res.Frames {
 		s.PeakWaiting = max(s.PeakWaiting, len(f.Waiting))
 		var c, m, hm float64
-		any, over := false, false
+		any, over, press, oom := false, false, false, false
 		for _, h := range f.Hosts {
 			var used float64
 			for _, r := range h.Jobs {
@@ -450,9 +509,21 @@ func summarize(res *Result, jobs []Job, ends []float64) {
 			s.PeakPSI = math.Max(s.PeakPSI, h.PSI)
 			s.HostMemPeak = math.Max(s.HostMemPeak, used/hostRoom[h.Name])
 			over = over || used > hostRoom[h.Name]+1e-9
+			press = press || used > phys[h.Name]-keep[h.Name]+1e-9
+			o := used > phys[h.Name]+1e-9
+			if o && !inOOM[h.Name] {
+				s.OOM++
+			}
+			inOOM[h.Name], oom = o, oom || o
 		}
 		if over {
 			s.HostOverSecs += Tick
+		}
+		if press {
+			s.MemPressSecs += Tick
+		}
+		if oom {
+			s.OOMSecs += Tick
 		}
 		if any {
 			n, cpu, mem, held = n+1, cpu+c, mem+m, held+hm
@@ -490,9 +561,17 @@ const (
 )
 
 // machines is the state of the hosts that outlives a tick: their pressure.
-type machines struct{ psi map[string]float64 }
+type machines struct{ psi, mem map[string]float64 }
 
-func newMachines() *machines { return &machines{psi: map[string]float64{}} }
+func newMachines() *machines { return &machines{psi: map[string]float64{}, mem: map[string]float64{}} }
+
+// psiMem is memory pressure as pumasi would read it on a linux host: none
+// while the jobs leave the memory the host keeps back, rising through it to
+// 100 when they take it all (reclaim, then swap).
+func (m *machines) psiMem(h Host) float64 {
+	k := float64(h.decide().KeepMem) / gb
+	return math.Round(100*math.Min(1, math.Max(0, (m.mem[h.Name]-(h.phys()-k))/k))*100) / 100
+}
 
 // pace moves every running job on by one tick. Where the jobs on a host and
 // the rest of the machine want more cores than it has, each gets the same
@@ -515,12 +594,14 @@ func (m *machines) pace(t float64, runs []*run, jobs []Job) map[string]float64 {
 			now := 100 * math.Max(0, 1-h.CPUs/(burst*want))
 			m.psi[h.Name] += (now - m.psi[h.Name]) * (1 - math.Exp(-Tick/avg10))
 		}
+		m.mem[h.Name] = 0
 		for _, r := range runs {
 			if r.host != h.Name {
 				continue
 			}
 			j := jobs[r.job]
 			c, mem := j.use(r.work)
+			m.mem[h.Name] += mem
 			step := Tick * f
 			if r.work+step >= j.Dur {
 				r.end = t - Tick + Tick*(j.Dur-r.work)/step
@@ -800,8 +881,12 @@ func RunFixed(f Fixed, jobs []Job) Result {
 	busy := make([]*run, len(f.Slots))
 	ends := make([]float64, len(jobs))
 	var queue []int
-	next, done := 0, 0
+	done := 0
+	arr := newArrivals(jobs)
 	for t := 0.0; done < len(jobs); t += Tick {
+		if t > 24*3600 {
+			panic("race: " + f.Name + " never ran every job")
+		}
 		var runs []*run
 		for _, r := range busy {
 			if r != nil {
@@ -816,10 +901,7 @@ func RunFixed(f Fixed, jobs []Job) Result {
 				done++
 			}
 		}
-		for next < len(jobs) && jobs[next].At <= t {
-			queue = append(queue, next)
-			next++
-		}
+		queue = append(queue, arr.due(t, ends)...)
 		left := queue[:0:0]
 		for _, ji := range queue {
 			k := kindOf(jobs[ji].Kind)
@@ -835,7 +917,7 @@ func RunFixed(f Fixed, jobs []Job) Result {
 				continue
 			}
 			busy[si] = start(ji, f.Slots[si].Host, t, jobs)
-			res.Waits[ji] = math.Max(0, t-jobs[ji].At)
+			res.Waits[ji] = math.Max(0, t-arr.at[ji])
 			if jobs[ji].Mem > f.Slots[si].Mem+1e-9 {
 				res.Summary.OverRunner++
 			}
@@ -856,6 +938,7 @@ func RunFixed(f Fixed, jobs []Job) Result {
 		}
 		res.Frames = append(res.Frames, fr)
 	}
+	res.Arrived = arr.at
 	summarize(&res, jobs, ends)
 	return res
 }
@@ -891,8 +974,12 @@ type runner struct {
 	warm              bool // started for no job
 }
 
-// PSICPUThreshold is the controller's: cpu pressure at which a host gets no new runners.
-const PSICPUThreshold = 40
+// PSICPUThreshold and PSIMemThreshold are the controller's: cpu and memory
+// pressure at which a host gets no new runners.
+const (
+	PSICPUThreshold = 40
+	PSIMemThreshold = 10
+)
 
 var epoch = time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC)
 
@@ -955,12 +1042,32 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 	measured := history(sc)
 	told := map[int]bool{}
 	m := newMachines()
-	pressed := map[string]bool{}
+	pressed, memPressed := map[string]bool{}, map[string]bool{}
+	delayed := map[int]float64{}
 	ends := make([]float64, len(jobs))
 	var demand []int
 	var runners []runner
-	next, done, seq := 0, 0, 0
+	done, seq := 0, 0
 	ticks := 0.0
+	arr := newArrivals(jobs)
+	// take hands a listening runner its class's oldest job, as GitHub does.
+	take := func(r *runner, t float64) bool {
+		i := slices.IndexFunc(demand, func(ji int) bool { return kindOf(jobs[ji].Kind).Class == r.class })
+		if i < 0 {
+			return false
+		}
+		ji := demand[i]
+		demand = slices.Delete(demand, i, i+1)
+		r.run, r.est = start(ji, r.host, t, jobs), estimate(measured, jobs[ji].Kind)
+		res.Waits[ji] = math.Max(0, t-arr.at[ji])
+		if jobs[ji].Mem*gb > float64(r.est.MemBytes)+1 {
+			res.Summary.OverRunner++
+		}
+		if r.warm {
+			res.Idle.WarmServed++
+		}
+		return true
+	}
 	var classes []decide.Class
 	for _, c := range Classes {
 		classes = append(classes, decide.Class{Name: c.Name, OS: c.OS, CPUs: c.CPUs, MemBytes: c.Mem, Hosts: c.Hosts})
@@ -986,31 +1093,12 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			}
 		}
 		pace := m.pace(t, runs, jobs)
-		for next < len(jobs) && jobs[next].At <= t {
-			demand = append(demand, next)
-			next++
-		}
+		demand = append(demand, arr.due(t, ends)...)
 		keep := runners[:0:0]
 		for _, r := range runners {
 			if r.run == nil {
-				if t < r.ready {
-					keep = append(keep, r)
-					continue
-				}
-				i := slices.IndexFunc(demand, func(ji int) bool { return kindOf(jobs[ji].Kind).Class == r.class })
-				if i < 0 {
-					keep = append(keep, r) // it listens until a job comes or pumasi stops it
-					continue
-				}
-				ji := demand[i]
-				demand = slices.Delete(demand, i, i+1)
-				r.run, r.est = start(ji, r.host, t, jobs), estimate(measured, jobs[ji].Kind)
-				res.Waits[ji] = math.Max(0, t-jobs[ji].At)
-				if jobs[ji].Mem*gb > float64(r.est.MemBytes)+1 {
-					res.Summary.OverRunner++
-				}
-				if r.warm {
-					res.Idle.WarmServed++
+				if t >= r.ready {
+					take(&r, t) // or it listens until a job comes or pumasi stops it
 				}
 				keep = append(keep, r)
 				continue
@@ -1026,8 +1114,17 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			measured[j.Kind] = slices.Clone(runs[max(0, len(runs)-size.Window):])
 		}
 		runners = keep
+		// Jobs that came as the ones they need ended go to a runner listening.
+		if later := arr.due(t, ends); len(later) > 0 {
+			demand = append(demand, later...)
+			for i := range runners {
+				if r := &runners[i]; r.run == nil && t >= r.ready {
+					take(r, t)
+				}
+			}
+		}
 
-		s := decide.Snapshot{Now: at(t), Classes: warmed(classes, sc, jobs[:next], measured, t), MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, CPUOvercommit: sc.CPUOvercommit,
+		s := decide.Snapshot{Now: at(t), Classes: warmed(classes, sc, jobs, arr, measured, t), MaxStarting: 4, BlindHold: size.BlindHold, PSICPUThreshold: PSICPUThreshold, PSIMemThreshold: PSIMemThreshold, CPUOvercommit: sc.CPUOvercommit,
 			ProvisionTimeout: 3 * time.Minute, IdleTimeout: 5 * time.Minute, HostLostAfter: 2 * time.Minute}
 		for _, h := range Hosts {
 			dh := h.decide()
@@ -1037,12 +1134,17 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 				if pressed[h.Name] {
 					dh.Pressed = []string{"cpu"}
 				}
+				dh.PSIMem = m.psiMem(h)
+				memPressed[h.Name] = decide.Over(dh.PSIMem, PSIMemThreshold, memPressed[h.Name])
+				if memPressed[h.Name] {
+					dh.Pressed = append(dh.Pressed, "memory")
+				}
 			}
 			s.Hosts = append(s.Hosts, dh)
 		}
 		for _, ji := range demand {
 			e := estimate(measured, jobs[ji].Kind)
-			d := decide.Demand{ID: fmt.Sprint(ji), Class: kindOf(jobs[ji].Kind).Class, FirstSeen: at(jobs[ji].At), Name: jobs[ji].Kind, Blind: e.Blind}
+			d := decide.Demand{ID: fmt.Sprint(ji), Class: kindOf(jobs[ji].Kind).Class, FirstSeen: at(arr.at[ji]), Name: jobs[ji].Kind, Blind: e.Blind}
 			if !e.Blind {
 				d.CPUs, d.MemBytes = e.CPUs, e.MemBytes
 			}
@@ -1062,6 +1164,9 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		}
 		res.Told = append(res.Told, tell(s, runners, measured, jobs, sc, t, told)...)
 		plan := decide.Decide(s)
+		for _, ji := range warmCost(s, plan, runners) {
+			delayed[ji] += Tick
+		}
 		for _, st := range plan.Stop {
 			i := slices.IndexFunc(runners, func(r runner) bool { return r.name == st.Runner })
 			if i < 0 || runners[i].run != nil {
@@ -1077,7 +1182,7 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 			if _, err := fmt.Sscan(st.Job, &ji); err == nil {
 				est = estimate(measured, jobs[ji].Kind)
 			}
-			runners = append(runners, runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.Provision, est: est, warm: st.Job == ""})
+			runners = append(runners, runner{name: fmt.Sprintf("r%d", seq), class: st.Class, host: st.Host, created: t, ready: t + sc.provision(seq), est: est, warm: st.Job == ""})
 			if st.Job == "" {
 				res.Idle.WarmStarted++
 			}
@@ -1107,26 +1212,63 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 		res.Frames = append(res.Frames, fr)
 	}
 	res.Idle.HeldCPU, res.Idle.HeldMem = round2(res.Idle.HeldCPU/ticks), round2(res.Idle.HeldMem/ticks)
+	res.Arrived = arr.at
+	for _, d := range delayed {
+		res.Idle.Delayed++
+		res.Idle.DelayedSecs += d
+		res.Idle.DelayedMax = math.Max(res.Idle.DelayedMax, d)
+	}
 	summarize(&res, jobs, ends)
 	return res
+}
+
+// warmCost is the waiting jobs plan does not start that the same snapshot
+// without the runners started warm and still without a job would have.
+func warmCost(s decide.Snapshot, plan decide.Plan, runners []runner) []int {
+	waits := map[string]bool{}
+	for _, l := range plan.Line {
+		if l.Reason != "" {
+			waits[l.ID] = true
+		}
+	}
+	idle := map[string]bool{}
+	for _, r := range runners {
+		if r.warm && r.run == nil {
+			idle[r.name] = true
+		}
+	}
+	if len(waits) == 0 || len(idle) == 0 {
+		return nil
+	}
+	s.Runners = slices.DeleteFunc(slices.Clone(s.Runners), func(r decide.Runner) bool { return idle[r.Name] })
+	var out []int
+	for _, st := range decide.Decide(s).Start {
+		var ji int
+		if _, err := fmt.Sscan(st.Job, &ji); err == nil && waits[st.Job] {
+			out = append(out, ji)
+		}
+	}
+	return out
 }
 
 // warmed is the classes with how many runners each keeps warm at t
 // (decide.WarmCount of the arrivals of the last decide.WarmWindow) and the size of
 // its next job: the largest estimate of the kinds that arrived.
-func warmed(classes []decide.Class, sc Scenario, arrived []Job, measured map[string][]size.Sample, t float64) []decide.Class {
+func warmed(classes []decide.Class, sc Scenario, jobs []Job, arr *arrivals, measured map[string][]size.Sample, t float64) []decide.Class {
 	if sc.Warm <= 0 {
 		return classes
 	}
 	out := slices.Clone(classes)
+	came := arr.came()
 	for i := range out {
 		c := &out[i]
 		var ts []time.Time
-		for _, j := range arrived {
-			if kindOf(j.Kind).Class != c.Name || j.At < t-decide.WarmWindow.Seconds() {
+		for _, ji := range came {
+			j := jobs[ji]
+			if kindOf(j.Kind).Class != c.Name || arr.at[ji] < t-decide.WarmWindow.Seconds() {
 				continue
 			}
-			ts = append(ts, at(j.At))
+			ts = append(ts, at(arr.at[ji]))
 			e := estimate(measured, j.Kind)
 			c.NextCPUs, c.NextMem = math.Max(c.NextCPUs, e.CPUs), max(c.NextMem, e.MemBytes)
 		}
