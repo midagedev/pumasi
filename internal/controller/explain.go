@@ -504,7 +504,8 @@ func countList(by map[string]int) string {
 }
 
 // Text says the forecast in a few words: "starts in ~3m on h1, when e2e ends".
-func (e JobExpect) Text() string {
+// self is the waiting job's name: one of its name it waits for is "another".
+func (e JobExpect) Text(self string) string {
 	var in string
 	switch s := e.InSeconds; {
 	case s < 60:
@@ -516,7 +517,11 @@ func (e JobExpect) Text() string {
 	}
 	t := "starts in " + in + " on " + e.Host
 	if e.After != "" {
-		t += ", when " + e.After + " ends"
+		after := e.After
+		if after == self {
+			after = "another " + after
+		}
+		t += ", when " + after + " ends"
 	}
 	return t
 }
@@ -644,7 +649,7 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 				n = fmt.Sprintf("#%d %s", j.Position, n)
 			}
 			if j.Expect != nil {
-				n += " (" + j.Expect.Text() + ")"
+				n += " (" + j.Expect.Text(j.Job) + ")"
 			}
 			names = append(names, n)
 		}

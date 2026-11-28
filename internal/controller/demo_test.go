@@ -275,13 +275,16 @@ func TestDemoWaitingJobsHaveAnExpectedStart(t *testing.T) {
 func TestExpectText(t *testing.T) {
 	for _, c := range []struct {
 		e    JobExpect
+		self string
 		want string
 	}{
-		{JobExpect{InSeconds: 40, Host: "h1"}, "starts in under a minute on h1"},
-		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e"}, "starts in ~3m on h1, when e2e ends"},
-		{JobExpect{InSeconds: 6000, Host: "h2", After: "build"}, "starts in ~1h40m on h2, when build ends"},
+		{JobExpect{InSeconds: 40, Host: "h1"}, "lint", "starts in under a minute on h1"},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e"}, "lint", "starts in ~3m on h1, when e2e ends"},
+		{JobExpect{InSeconds: 6000, Host: "h2", After: "build"}, "lint", "starts in ~1h40m on h2, when build ends"},
+		// a job of the same name (another run, a matrix) is not the waiting job itself
+		{JobExpect{InSeconds: 30, Host: "h1", After: "build"}, "build", "starts in under a minute on h1, when another build ends"},
 	} {
-		if got := c.e.Text(); got != c.want {
+		if got := c.e.Text(c.self); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.e, got, c.want)
 		}
 	}

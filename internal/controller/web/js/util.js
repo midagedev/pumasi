@@ -248,14 +248,16 @@ function apart(need, have, fmt) {
   return a === b ? [fmt(need), fmt(need)] : [a, b];
 }
 // expectText: when a waiting job is expected to start (state's expect), in a few words.
-// With runners, a job that ends on another host says where it runs.
-export function expectText(e, runners = []) {
+// With runners, a job that ends on another host says where it runs. self is the
+// waiting job's name: one of the same name it waits for is "another".
+export function expectText(e, runners = [], self = "") {
   if (!e) return "";
   const at = e.after && runners.find((r) => r.job === e.after);
   const where = at && at.host !== e.host ? ` on ${at.host}` : "";
+  const after = e.after && e.after === self ? "another " + e.after : e.after;
   const s = e.inSeconds || 0;
   const inw = s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
-  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${e.after}${where} ends` : "");
+  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${after}${where} ends` : "");
 }
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
 
