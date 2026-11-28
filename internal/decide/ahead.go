@@ -140,20 +140,18 @@ func Expected(going []Going, needs []Need, came func(run, job string) bool) []Co
 }
 
 // Soon is how many of the expected jobs of each class come within lead of
-// now (the time a runner takes to come up), and for the first of them,
+// now (the time a runner takes to come up), and for each of them in turn,
 // which job after what, in words. A job past its time that has not come is
 // still expected: its After ran long (EndOf moves its end on).
-func Soon(expected []Coming, now time.Time, lead time.Duration) (map[string]int, map[string]string) {
-	n, why := map[string]int{}, map[string]string{}
+func Soon(expected []Coming, now time.Time, lead time.Duration) (map[string]int, map[string][]string) {
+	n, why := map[string]int{}, map[string][]string{}
 	for _, e := range expected {
 		in := e.At.Sub(now)
 		if in > lead {
 			continue
 		}
 		n[e.Class]++
-		if why[e.Class] == "" {
-			why[e.Class] = fmt.Sprintf("%s expected in ~%ds, when %s ends", e.Job, max(0, int(in.Seconds()+0.5)), e.After)
-		}
+		why[e.Class] = append(why[e.Class], fmt.Sprintf("%s expected in ~%ds, when %s ends", e.Job, max(0, int(in.Seconds()+0.5)), e.After))
 	}
 	return n, why
 }

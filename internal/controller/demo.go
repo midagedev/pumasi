@@ -937,7 +937,7 @@ const demoLead = 4*time.Second + demoTick*time.Second
 // is up for yet, the first of them in words, and the largest's size.
 type demoSoon struct {
 	n   map[string]int
-	why map[string]string
+	why map[string][]string
 	est map[string]size.Estimate
 }
 

@@ -45,7 +45,7 @@ func (c *Controller) learnNeeds(now time.Time) {
 // runner is up for yet (decide.Soon), the reason for the first, and what
 // the largest of them is expected to use: what the jobs running now, or
 // just ended, bring by c.needs. recent: RunJobs of recentRuns.
-func (c *Controller) soonLocked(now time.Time, recent []ledger.RunJob, lead time.Duration) (map[string]int, map[string]string, map[string]size.Estimate) {
+func (c *Controller) soonLocked(now time.Time, recent []ledger.RunJob, lead time.Duration) (map[string]int, map[string][]string, map[string]size.Estimate) {
 	if len(c.needs) == 0 {
 		return nil, nil, nil
 	}

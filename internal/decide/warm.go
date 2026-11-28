@@ -1,7 +1,6 @@
 package decide
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -47,6 +46,15 @@ func (c Class) up() int {
 		return 0
 	}
 	return max(c.Warm, c.Soon)
+}
+
+// soonFor is the i-th expected job of the class in words: each runner
+// started ahead names its own job, not all the first one.
+func soonFor(c Class, i int) string {
+	if len(c.SoonFor) == 0 {
+		return "a job of the class is expected"
+	}
+	return c.SoonFor[min(i, len(c.SoonFor)-1)]
 }
 
 // charged is what a runner holds of its host.
@@ -263,7 +271,7 @@ func warmStarts(s Snapshot, hostNames []string, hosts map[string]Host, alloc map
 				have+1, of, bestCPU, gib(bestMem), fc, gib(fm))
 			if have >= c.Warm {
 				reason = fmt.Sprintf("ahead: %s (%d of %d expected), holds %.1fcpu/%s of the free %.1fcpu/%s",
-					cmp.Or(c.SoonFor, "a job of the class is expected"), have+1, c.Soon, bestCPU, gib(bestMem), fc, gib(fm))
+					soonFor(c, have), have+1, c.Soon, bestCPU, gib(bestMem), fc, gib(fm))
 			}
 			out = append(out, Start{Class: c.Name, Host: best, CPUs: bestCPU, MemBytes: int64(bestMem), Reason: reason})
 			a := alloc[best]
