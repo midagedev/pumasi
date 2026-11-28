@@ -86,7 +86,7 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 	mux.HandleFunc("GET /api/trend", func(w http.ResponseWriter, r *http.Request) {
 		s := src(r)
 		q := r.URL.Query()
-		since := 14 * 24 * time.Hour
+		since := watch.TrendSpan
 		if v := q.Get("since"); v != "" {
 			d, err := config.ParseSpan(v)
 			if err != nil || d <= 0 {
@@ -96,8 +96,7 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 			since = d
 		}
 		now := s.now()
-		from := now.Add(-since)
-		from = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, now.Location())
+		from := watch.TrendFrom(now, since)
 		runs, err := s.runs(from.Add(-watch.Baseline))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -272,9 +272,22 @@ func WhySlow(runs []ledger.JobRun, t Target) (WhyReport, error) {
 	// Did main itself change in these jobs? The changes that are the
 	// target's own, and those since the oldest run of the baseline up to the
 	// target (the baseline mixes two levels).
+	// Read as `pumasi trend` reads them (its default span and the Baseline
+	// before it), so a change says the same numbers in both; reaching back a
+	// Baseline before the target when it is older than that.
+	var newest time.Time
+	for _, r := range runs {
+		if r.FinishedAt.After(newest) {
+			newest = r.FinishedAt
+		}
+	}
+	cut := TrendFrom(newest.Local(), TrendSpan).Add(-Baseline)
+	if t := codeTime(mine[0]).Add(-Baseline); t.Before(cut) {
+		cut = t
+	}
 	var trunkRuns []ledger.JobRun
 	for _, r := range runs {
-		if byJob[jk{r.Workflow, r.Job}] != nil {
+		if byJob[jk{r.Workflow, r.Job}] != nil && !r.FinishedAt.Before(cut) {
 			trunkRuns = append(trunkRuns, r)
 		}
 	}
