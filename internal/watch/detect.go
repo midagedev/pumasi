@@ -261,6 +261,14 @@ func agree(cs []Change) []Change {
 	return cs
 }
 
+// creepDays is the least span of runs on each side of a step that its
+// drift (Gradual) is read over.
+const creepDays = 7 * 24 * time.Hour
+
+// machineDay is the least span of runs on each side of a step that its
+// machines are compared over.
+const machineDay = 24 * time.Hour
+
 // joinSteps: steps of one number of a job, the same way, that agree named
 // by one run are one change, from the level before the first to the level
 // after the last ("memory -60% in 2 steps", not memory twice). The larger
@@ -376,7 +384,15 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 			RunsBefore: k - bounds[i], RunsAfter: bounds[i+2] - k, Z: mannWhitneyZ(x[lo:k], x[k:hi]), Now: math.Exp(newest)}
 		c.Holds = math.Abs(newest-level[i]) >= minStep && math.Signbit(newest-level[i]) == math.Signbit(d)
 		// A step is flat on both sides; a job that creeps up climbs on both.
+		// Over 4×Local runs each side, and a week at least: a busy job's
+		// runs are hours, too short to see a slow climb.
 		a, b := max(bounds[i], k-4*o.Local), min(bounds[i+2], k+4*o.Local)
+		for a > bounds[i] && codeTime(rs[k]).Sub(codeTime(rs[a-1])) <= creepDays {
+			a--
+		}
+		for b < bounds[i+2] && codeTime(rs[b]).Sub(codeTime(rs[k])) <= creepDays {
+			b++
+		}
 		drift := theilSen(x[a:k])*float64(k-a) + theilSen(x[k:b])*float64(b-k)
 		c.Gradual = math.Signbit(drift) == math.Signbit(d) && math.Abs(drift) >= gradualDrift*math.Abs(d)
 		first, lastBefore := attribute(rs, x, k, level[i], level[i+1], lo, hi)
@@ -395,10 +411,20 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 			// both sides. When a third of the runs or more were on others,
 			// and those machines do not show it (or there are none): the
 			// job moved.
-			if like, other, ok := sameMachineStep(rs, x, lo, k, hi); !ok || other >= 1.0/3 && (math.Abs(like) < minStep || math.Signbit(like) != math.Signbit(d)) {
-				c.Moved = &Move{From: machines(rs[lo:k]), To: machines(rs[k:hi])}
+			// Machines are set side by side over a day of runs each side at
+			// least: in a busy job the runs next to the step are an hour or
+			// two, and one host's slow hour is not its step.
+			wlo, whi := lo, hi
+			for wlo > bounds[i] && codeTime(rs[k]).Sub(codeTime(rs[wlo-1])) <= machineDay {
+				wlo--
 			}
-			c.Host, c.OneHost, c.OnHost = stepHost(rs, x, lo, k, hi, d, o)
+			for whi < bounds[i+2] && codeTime(rs[whi]).Sub(codeTime(rs[k])) <= machineDay {
+				whi++
+			}
+			if like, other, ok := sameMachineStep(rs, x, wlo, k, whi); !ok || other >= 1.0/3 && (math.Abs(like) < minStep || math.Signbit(like) != math.Signbit(d)) {
+				c.Moved = &Move{From: machines(rs[wlo:k]), To: machines(rs[k:whi])}
+			}
+			c.Host, c.OneHost, c.OnHost = stepHost(rs, x, wlo, k, whi, d, o)
 		}
 		out = append(out, c)
 	}
