@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +26,8 @@ const nearest = (ps) => {
   const p = ps.filter((x) => x.at).sort((a, b) => b.v / b.at - a.v / a.at)[0] || ps[0];
   return p ? `${p.k} ${p.v.toFixed(0)}%` + (p.at ? ` / ${p.at}%` : "") : "-";
 };
+// ciGB: memory in the CI panel, to a tenth of a GB under 100 GB (8.5 → 11.5).
+const ciGB = (b) => { const g = (b || 0) / GiB; return (g < 100 ? g.toFixed(1) : String(Math.round(g))) + " GB"; };
 const runCount = (rs) => [`${rs.filter((r) => r.job).length} running`, ...(rs.some(isReady) ? [`${rs.filter(isReady).length} ready`] : [])].join(" · ");
 export const store = { state: null, jobs: [], findings: [], explainText: "", prio: null, prioMissing: false, series: null, base: "" };
 
@@ -743,17 +745,17 @@ export function ciModel() {
   const items = rows.map(({ c, also }) => {
     const up = c.ratio > 0;
     const kind = c.metric === "memory" ? (up ? "bigger" : "smaller") : up ? "slower" : "faster";
-    const fmt = c.metric === "memory" ? (v) => gb(v) : c.metric === "cpu" ? (v) => Math.round(v) + " cpu·s" : (v) => ago(v);
+    const fmt = c.metric === "memory" ? ciGB : c.metric === "cpu" ? (v) => Math.round(v) + " cpu·s" : (v) => ago(v);
     const repo = "https://github.com/" + c.repo;
     const sha = (c.first && c.first.sha) || "";
     // a pull request it is known to come from; else the one merged in between, likely
     const pr = c.pr || (c.first && c.first.pr) || 0;
     const likely = !pr && (c.suspects || []).length === 1 ? c.suspects[0] : 0;
     const step = (c.steps || []).find((x) => x.after > x.before) || (c.steps || [])[0];
-    return { kind, job: c.job, metric: c.metric, ratio: c.ratio, from: fmt(c.before), to: fmt(c.after), pr, likely, likelyURL: likely ? `${repo}/pull/${likely}` : "", sha, prURL: pr ? `${repo}/pull/${pr}` : "", shaURL: sha ? `${repo}/commit/${sha}` : "",
-      step: step && c.metric === "time" ? `${step.name} ${ago(step.before)} → ${ago(step.after)}` : "", also: also.map((a) => `${a.metric} ${pctText(a.ratio)}`), at: c.first && c.first.at };
+    return { kind, job: c.job, metric: c.metric, ratio: shownRatio(c.metric, c.before, c.after), from: fmt(c.before), to: fmt(c.after), pr, likely, likelyURL: likely ? `${repo}/pull/${likely}` : "", sha, prURL: pr ? `${repo}/pull/${pr}` : "", shaURL: sha ? `${repo}/commit/${sha}` : "",
+      step: step && c.metric === "time" ? `${step.name} ${ago(step.before)} → ${ago(step.after)}` : "", also: also.map((a) => `${a.metric} ${pctText(shownRatio(a.metric, a.before, a.after))}`), at: c.first && c.first.at };
   });
-  for (const g of (t && t.creeping) || []) items.push({ kind: "growing", job: g.job, metric: "time", ratio: g.ratio, from: ago(g.from), to: ago(g.to), days: g.days });
+  for (const g of (t && t.creeping) || []) items.push({ kind: "growing", job: g.job, metric: "time", ratio: shownRatio("time", g.from, g.to), from: ago(g.from), to: ago(g.to), days: g.days });
   const order = { slower: 0, bigger: 1, growing: 2, faster: 3, smaller: 4 };
   items.sort((a, b) => order[a.kind] - order[b.kind] || Math.abs(b.ratio) - Math.abs(a.ratio));
   const alarms = ((s && s.incidents) || []).filter((i) => /^ci-/.test(i.kind));
@@ -763,7 +765,7 @@ export function ciModel() {
   const growth = f && f.fitted ? `CI ${f.growth >= 0 ? "+" : ""}${Math.round(f.growth * 100)}% a week` + (f.cores ? ` · busiest hours use ${Math.round(f.load * f.cores)} of ${Math.round(f.cores)} cores${f.lent ? " the hosts lend" : ""}` : "") : "";
   return { items, alarms, fc, growth };
 }
-const pctText = (r) => (r >= 0 ? "+" : "−") + Math.round(Math.abs(r) * 100) + "%";
+const pctText = (r) => (isNaN(r) ? "-" : (r >= 0 ? "+" : "−") + Math.round(Math.abs(r) * 100) + "%");
 const KW = { slower: "slower", faster: "faster", bigger: "more memory", smaller: "less memory", growing: "growing" };
 function ciItem(it) {
   const head = el("div", { class: "ci-l1" }, el("span", { class: "ci-tag " + it.kind, text: KW[it.kind] }), el("b", { text: it.job }),

@@ -101,7 +101,7 @@ func printWhy(w io.Writer, rep watch.WhyReport, web string) {
 			v += fmt.Sprintf(" (slow host x%.1f)", j.SlowHost)
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s-%s\t%s\t%s\t%s\t%s\n", name, j.Time.N, secs(j.Time.This), secs(j.Time.Usual.P50), secs(j.Time.Usual.P10), secs(j.Time.Usual.P90),
-			watch.Pct(j.Time.Ratio), v, change(j.Memory), change(j.CPU))
+			watch.Pct(watch.ShownRatio("time", j.Time.Usual.P50, j.Time.This)), v, change(j.Memory), change(j.CPU))
 	}
 	for _, j := range rep.Jobs {
 		row(j.Job, j)

@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -64,4 +64,11 @@ test("a host whose room is held by runners with no job is held, not busy", () =>
   assert.equal(hostLoad(h, [idle, starting]).word, "held");
   // with a job running, the same room is busy
   assert.equal(hostLoad(h, [{ ...idle, job: "e2e", state: "busy" }, starting]).word, "busy");
+});
+
+// The CI panel's percent is what the two values beside it make as written.
+test("shownRatio uses the values as the panel writes them", () => {
+  assert.equal(Math.round(shownRatio("time", 86.4, 121.6) * 100), 42);
+  assert.equal(Math.round(shownRatio("memory", 8.48 * GiB, 11.53 * GiB) * 100), 35);
+  assert.ok(isNaN(shownRatio("time", 0, 10)));
 });

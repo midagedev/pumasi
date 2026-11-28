@@ -217,6 +217,16 @@ export function expressRow(p) {
   }
   return null;
 }
+// shown: a CI value as the panel writes it (memory to a tenth of a GB, time
+// to the second, to the minute past an hour); shownRatio: after against
+// before as the two read, so that the percent beside them is what they make.
+// The CLI does the same (watch.Shown).
+export function shown(metric, v) {
+  if (metric === "memory") return Math.round((Math.max(0, v || 0) / GiB) * 10) / 10;
+  const n = Math.round(v || 0);
+  return n >= 3600 ? Math.floor(n / 60) * 60 : n;
+}
+export const shownRatio = (metric, before, after) => (shown(metric, before) > 0 ? shown(metric, after) / shown(metric, before) - 1 : NaN);
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
 // of the two is short and the most there is anywhere.
