@@ -303,7 +303,7 @@ rerun: 1                              # rerun once a run that failed through our
 ```
 
 **Hosts report that the controller is gone.** A dead controller can't speak, so when `notify.webhook` is set, the controller picks two of its joined hosts and gives them the webhook address.
-The first reports once when it hasn't reached the controller for 5 minutes (`notify.away`), the second once 10 minutes after, and when they reach it again, only the hosts that reported say so once more:
+The first reports once when it hasn't reached the controller for 5 minutes (`notify.away`), the second once at 10 minutes, and when they reach it again, only the hosts that reported say so once more:
 
 ```
 [pumasi] server1 has not reached the pumasi controller ci-box at 10.0.0.5:7433 for 5m2s (connection refused): new jobs of build, deploy wait until it is back, running jobs go on
