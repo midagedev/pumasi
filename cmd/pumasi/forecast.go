@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/midagedev/pumasi/internal/config"
+	"github.com/midagedev/pumasi/internal/controller"
 	"github.com/midagedev/pumasi/internal/watch"
-	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
 const forecastUsage = `pumasi forecast: how fast CI grows, and at that rate when its busiest hours
@@ -67,7 +67,7 @@ func runForecast(args []string) error {
 	default:
 		c := *cores
 		if c == 0 && src.demo {
-			c = synth.DemoCores
+			c = controller.DemoCores()
 		}
 		var err error
 		if rep, err = local(&src, c, *weeks); err != nil {

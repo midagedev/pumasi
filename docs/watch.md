@@ -180,16 +180,16 @@ pumasi forecast                 # the running up's hosts (each its budget, else 
 pumasi forecast --cores 48      # the ledger, against 48 cores
 pumasi forecast --weeks 12      # read 12 weeks (default 8)
 pumasi forecast --json          # also GET /api/forecast (weeks=, cores=)
-pumasi forecast --demo
+pumasi forecast --demo          # the demo's history, against the demo dashboard's hosts
 ```
 
 ```
-CI used 437 cpu-hours in the last 7 days (389 the week before); over the last 6 weeks it grew +12% a week (+10% to +21%, 80% interval). At the busiest hours it keeps 7 of the 24 cores busy (30%); at this rate they need every core in ~13 weeks (8 to 16 weeks), and the wait for room doubles in ~2 weeks (1 to 2 weeks); one job in ten waits a minute or more for room in ~4 weeks (now 3%, 5s on average).
+CI used 434 cpu-hours in the last 7 days (389 the week before); over the last 6 weeks it grew +12% a week (+10% to +21%, 80% interval). At the busiest hours it keeps 7 of the 66 cores busy (11%); at this rate they need every core in ~22 weeks (13 to 26 weeks).
 ```
 
 - **Growth** is the Theil–Sen slope of the weekly cpu-hours (on logs), with its 80% interval. A week the ledger does not reach the start of is shown but not fitted; a ledger whose last job is more than two days old ends the weeks there.
 - **The busiest hours** are the 95th percentile of the hours' cores in use (each job's cpu-seconds spread over its time).
-- **The waits** come from replaying the last week's jobs on the cores, first come first served, each taking the cores it used: a run brings all its jobs at once, which is most of why CI waits. CI growing is the same week with more runs, each a copy of a run of that week at the time another run came (give or take an hour). "Need every core" is when the replay's busiest hours want all the cores; it comes later than the cpu-hours alone say, since more runs fill the quiet hours too.
+- **The waits** come from replaying the last week's jobs on the cores, first come first served, each taking the cores it used: a run brings all its jobs at once, which is most of why CI waits. CI growing is the same week with more runs, each a copy of a run of that week at the time another run came (give or take an hour). "Need every core" is when the replay's busiest hours want all the cores; it comes later than the cpu-hours alone say, since more runs fill the quiet hours too. The replay goes up to eight times the runs; past that the hours are smooth and their busiest grow with the runs, so it scales the busiest hours at eight times up to the cores (on the demo, within 3% of replaying on to the cores).
 - Every date is "at this rate": the growth, carried forward. The ranges are the same dates at the ends of the growth's interval.
 
 What the replay leaves out, so real waits come **sooner** than it says: hosts are not one pool (a job needs room on one host), memory is not counted, and pumasi reserves a job's largest recent size plus 20%, more than the cores it used on average.
