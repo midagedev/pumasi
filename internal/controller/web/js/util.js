@@ -165,7 +165,10 @@ export function hostLoad(h, runners = []) {
     const f = tot > lend ? lend / tot : 1; // held over what is lent: fit the bar
     const room = free + give;
     const taken = clamp(1 - room / lend, 0, 1), rawTaken = clamp(1 - free / lend, 0, 1);
-    return { lend, held, give, kept, other, free, used, room, f, taken, rawTaken, pct: Math.round(taken * 100),
+    // jobless: how taken it would be without the runners that hold room and
+    // run nothing yet (ready ones that keep it, and those starting)
+    const jobless = clamp(1 - (room + kept) / lend, 0, 1);
+    return { lend, held, give, kept, other, free, used, room, f, taken, rawTaken, jobless, pct: Math.round(taken * 100),
       // the bar, as shares of what is lent
       seg: { held: (held * f) / lend, give: (give * f) / lend, kept: (kept * f) / lend, other: (other * f) / lend, used: clamp(used / lend, 0, 1) } };
   };
@@ -178,17 +181,42 @@ export function hostLoad(h, runners = []) {
   else {
     // FULL: 90% or more taken even counting what ready runners give way.
     // N READY: it would be FULL by its free room alone, and ready runners
-    // give way the rest: a waiting job of another class still gets in.
+    // give way the rest: a waiting job of another class still gets in. N is
+    // all its ready runners, as the header and the hosts list count them.
     const t = top("taken");
     if (t >= 0.9) { word = "full"; tone = "bad"; }
-    else if (top("rawTaken") >= 0.9 && giving.length) { word = giving.length + " ready"; tone = "ready"; }
+    else if (top("rawTaken") >= 0.9 && giving.length) { word = ready.length + " ready"; tone = "ready"; }
     else if (t >= 0.7) { word = "busy"; tone = "warn"; }
     else if (!h.runners) { word = "idle"; tone = "ok"; }
     else { word = "ok"; tone = "ok"; }
+    // HELD: as full as that only by runners that run no job yet (ready ones
+    // keeping their room, starting ones): nothing runs there, it is not busy
+    if ((word === "full" || word === "busy") && !mine.some((r) => r.job) && top("jobless") < 0.7) { word = "held"; tone = "warn"; }
   }
   return { mem, cpu, word, tone, why, lendMem, lendCpu, share, ready: ready.length, giving: giving.length };
 }
 
+// readyLine: a host's ready runners, as many as the header counts there, and
+// the part of them that gives way to another class's waiting job.
+export function readyLine(L) {
+  if (!L.ready) return "";
+  const give = `${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
+  if (L.giving === L.ready) return `${L.ready} ready ${L.ready === 1 ? "runner gives" : "runners give"} way: ${give}`;
+  if (L.giving) return `${L.ready} ready; ${L.giving} ${L.giving === 1 ? "gives" : "give"} way: ${give}`;
+  return `${L.ready} ready ${L.ready === 1 ? "runner keeps its" : "runners keep their"} room`;
+}
+// expressRow: the line's row of the job expedited by hand (the first of them
+// still waiting), not one of those ahead of it it pulls along, which are
+// "expedite" in the line too.
+export function expressRow(p) {
+  const own = (p.expedited || []).filter((x) => x.position > 0);
+  const is = (x, e) => (e.job && x.job === e.job) || (e.githubJobId && x.githubJobId === e.githubJobId);
+  for (const e of own) {
+    const row = (p.line || []).find((x) => x.level === "expedite" && is(x, e));
+    if (row) return row;
+  }
+  return null;
+}
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which
 // of the two is short and the most there is anywhere.
@@ -225,6 +253,8 @@ export function plainReason(reason) {
     const most = open.slice().sort((a, b) => b.mem + (b.give || 0) - a.mem - (a.give || 0))[0];
     const more = most.give > 0.05 && most.mem + most.give > best.mem + 0.05 ? `; ${most.name} makes ${gbn(most.mem + most.give)} with its ready runners giving way` : "";
     if (need === have) return `needs ${need} memory, ${best.name} is just short of it${more}${tail}`;
+    // one host takes the class: "the most free" would hint at others
+    if (open.length === 1) return `needs ${need} memory, ${best.name} has ${have} free${more}${tail}`;
     return `needs ${need} memory, the most free${shut.length ? " elsewhere" : ""} is ${have} (${best.name})${more}${tail}`;
   }
   const best = memOK.slice().sort((a, b) => b.cpu - a.cpu)[0];
@@ -248,18 +278,37 @@ function apart(need, have, fmt) {
   return a === b ? [fmt(need), fmt(need)] : [a, b];
 }
 // expectText: when a waiting job is expected to start (state's expect), in a few words.
-// With runners, a job that ends on another host says where it runs.
-export function expectText(e, runners = []) {
+// The controller says the same (JobExpect.Text in explain.go). self is the
+// waiting job's name: one of its name it waits for is "another". A job it
+// waits for that is still waiting itself is said to be: "after the e2e waiting
+// ahead of it". With the waiting jobs too, a running job whose name more than
+// one job has in sight says which one: where it runs, and how long it has,
+// when its host runs more than one. When that job's end alone does not make
+// the room, it says that others ending there before it do too.
+export function expectText(e, runners = [], self = "", waiting = []) {
   if (!e) return "";
-  const at = e.after && runners.find((r) => r.job === e.after);
+  const t = `starts in ${inText(e.inSeconds)} on ${e.host}`;
+  if (!e.after) return t;
+  if (!e.afterRunner) return `${t}, after the ${e.after} waiting ahead of it`;
+  const n = e.afterWith || 0;
+  const with_ = n ? `, once ${n} ${n === 1 ? "other" : "others"} there ${n === 1 ? "has" : "have"} ended too` : "";
+  const at = runners.find((r) => r.name === e.afterRunner);
+  const same = runners.filter((r) => r.job === e.after).length + waiting.filter((j) => j.job === e.after).length;
   const where = at && at.host !== e.host ? ` on ${at.host}` : "";
-  const s = e.inSeconds || 0;
-  const inw = s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
-  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${e.after}${where} ends` : "");
+  if (!at || same < 2) return `${t}, when ${e.after === self ? "another " + e.after : e.after}${where} ends${with_}`;
+  const on = where || " there";
+  const mins = (r) => Math.floor((r.ageSeconds || 0) / 60);
+  const twins = runners.filter((r) => r.job === e.after && r.host === at.host);
+  if (twins.length < 2) return `${t}, when the ${e.after} running${on} ends${with_}`;
+  if (twins.filter((r) => mins(r) === mins(at)).length > 1) return `${t}, when one of the ${twins.length} ${e.after} running${on} ends${with_}`;
+  return `${t}, when the ${e.after} running${on} for ${mins(at) < 1 ? "under a minute" : mins(at) + "m"} ends${with_}`;
 }
+const inText = (s = 0) => (s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m");
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
 
-export const levelWord = (j) => (j.expedited || j.level === "expedite" ? "expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");
+// One job is expedited; the older jobs of its class go first with it (GitHub gives a
+// class its oldest job first) and say so, not that they were expedited.
+export const levelWord = (j) => (j.expedited ? "expedited" : j.level === "expedite" ? "with expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");
 
 // Problem kinds as headings.
 export const kindWord = (k) => ({ "host-unreachable": "host offline", "job-waiting": "waiting too long", "out-of-memory": "out of memory", "runner-died": "runner died", "disk-low": "disk almost full", "agent-restarted": "agent restarted" })[k] || String(k || "").replace(/-/g, " ");

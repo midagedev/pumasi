@@ -16,6 +16,7 @@ all:
 test:
 	$(GO) vet ./...
 	$(GO) test ./...
+	@if command -v node >/dev/null; then node --test internal/controller/webtest/*.test.mjs; else echo "no node: the dashboard's tests (internal/controller/webtest) were not run"; fi
 
 # Provokes the failures of docs/design.md on real hosts; see scripts/chaos.sh.
 chaos: all

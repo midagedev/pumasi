@@ -49,6 +49,12 @@ type JobExpect struct {
 	InSeconds int64  `json:"inSeconds"`
 	Host      string `json:"host"`
 	After     string `json:"after,omitempty"`
+	// AfterRunner: After's runner when that job runs now; "" when After is a
+	// job still waiting. Jobs can share a name: this says which one.
+	AfterRunner string `json:"afterRunner,omitempty"`
+	// AfterWith: when After's end alone does not make the room, how many
+	// other jobs end on Host before it and leave theirs.
+	AfterWith int `json:"afterWith,omitempty"`
 }
 
 // ClassState is a class as the config gives it, defaults filled in.
@@ -106,6 +112,9 @@ type JobSize struct {
 	TopCPUs  float64 `json:"topCpus"` // the largest of the runs that count
 	TopMem   int64   `json:"topMem"`
 	Runs     int     `json:"runs"`
+	// Over: the memory its next run would need when that is past its class's
+	// hard limit; EstMem is then held at the limit (size.Estimate.AtLimit).
+	Over int64 `json:"over,omitempty"`
 }
 
 type HostState struct {
@@ -363,8 +372,11 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		}
 		withHostMem(runs, hostMem)
 		e := size.Learn(runs, size.Estimate{})
+		if name, err := l.JobClass(k); err == nil {
+			e = e.AtLimit(classMemLimit(cfg, name))
+		}
 		out.Sizes = append(out.Sizes, JobSize{Repo: k.Repo, Workflow: path.Base(k.Workflow), Job: k.Job, Platform: k.Platform, EstCPUs: e.CPUs, EstMem: e.MemBytes,
-			LastCPUs: runs[0].CPUs, LastMem: runs[0].MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs})
+			LastCPUs: runs[0].CPUs, LastMem: runs[0].MemBytes, TopCPUs: e.TopCPUs, TopMem: e.TopMem, Runs: e.Runs, Over: e.Over})
 	}
 
 	open, err := l.OpenDemand() // oldest first
@@ -408,7 +420,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			}
 		}
 		if e, ok := live.Expect[d.JobID]; ok {
-			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After}
+			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After, AfterRunner: e.AfterRunner, AfterWith: e.AfterWith}
 		}
 		j.OverLimit = live.Over[d.JobID]
 		out.WaitingJobs = append(out.WaitingJobs, j)
@@ -457,6 +469,16 @@ func hostFree(cfg *config.Config, h decide.Host, cpus float64, mem int64) (float
 		share = 0
 	}
 	return cpu, int64(m), share
+}
+
+// classMemLimit is a class's hard memory limit (0 = none, or no such class).
+func classMemLimit(cfg *config.Config, name string) int64 {
+	for _, cl := range cfg.Classes {
+		if cl.Name == name {
+			return int64(cl.Limit.Memory)
+		}
+	}
+	return 0
 }
 
 func classStates(cfg *config.Config) []ClassState {

@@ -53,11 +53,12 @@ type Class struct {
 	// takes to come up — jobs that need one running now, which is expected
 	// to end (see Coming). A runner is kept up for each, as for Warm, held
 	// at SoonCPUs/SoonMem (the largest of them) when the class keeps none
-	// warm. SoonFor says which job and after what, for the reason.
+	// warm. SoonFor says which job and after what, for the reason: one
+	// for each, in the order they are expected.
 	Soon     int
 	SoonCPUs float64
 	SoonMem  int64
-	SoonFor  string
+	SoonFor  []string
 	// MayBeHigh: some priority rule can make a job of the class high. While
 	// only high jobs are placed (Snapshot.HighOnly), an overflow class offers
 	// room only then, or for an expedited job of its own: a job it took
