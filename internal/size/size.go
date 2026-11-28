@@ -48,6 +48,18 @@ type Estimate struct {
 	// Ignored: runs left out because they held more memory than their host
 	// has (see Sample.HostMem).
 	Ignored int
+	// Over: the memory it would be given, when that is more than its
+	// class's hard limit and so held at the limit instead (see AtLimit).
+	Over int64
+}
+
+// AtLimit holds e at a class's hard memory limit (0 = none): room past the
+// limit would only be held, since the job is killed at the limit anyway.
+func (e Estimate) AtLimit(limit int64) Estimate {
+	if limit > 0 && e.MemBytes > limit {
+		e.Over, e.MemBytes = e.MemBytes, limit
+	}
+	return e
 }
 
 const (
@@ -172,6 +184,9 @@ func (e Estimate) Source() string {
 		s += "; 1 run that held more than its host's memory left out"
 	case e.Ignored > 1:
 		s += fmt.Sprintf("; %d runs that held more than their host's memory left out", e.Ignored)
+	}
+	if e.Over > 0 {
+		s += fmt.Sprintf("; held at its class's memory limit %s, though it would need %s: it was cut short at that limit before", gib(e.MemBytes), gib(e.Over))
 	}
 	return s
 }

@@ -217,6 +217,9 @@ type JobWait struct {
 	// Expect: waiting jobs only, when it is expected to start, if anything in
 	// sight lets it (see Status.Expect).
 	Expect *JobExpect `json:"expect,omitempty"`
+	// OverLimit: the memory it would need, when that is past its class's
+	// hard limit: it is held at the limit, and will be cut short there again.
+	OverLimit int64 `json:"overLimit,omitempty"`
 }
 
 type WaitingState struct {
@@ -407,6 +410,7 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 		if e, ok := live.Expect[d.JobID]; ok {
 			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After}
 		}
+		j.OverLimit = live.Over[d.JobID]
 		out.WaitingJobs = append(out.WaitingJobs, j)
 	}
 	back, err := l.TakenBack(now.Add(-time.Hour))

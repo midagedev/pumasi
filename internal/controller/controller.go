@@ -899,7 +899,7 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			if d, ok := c.runtimeLocked(cl.cfg, w.key); ok {
 				c.runtimes[dd.ID] = d
 			}
-			dd.CPUs, dd.MemBytes, dd.Blind, dd.Sized = est.CPUs, est.MemBytes, est.Blind, "("+est.Source()+")"
+			dd.CPUs, dd.MemBytes, dd.Blind, dd.Sized, dd.Over = est.CPUs, est.MemBytes, est.Blind, "("+est.Source()+")", est.Over
 			if dd.Name != "" {
 				dd.Sized = "for " + dd.Name + " " + dd.Sized
 			}
@@ -995,6 +995,11 @@ func (c *Controller) estimate(cl config.Class, k ledger.JobKey) size.Estimate {
 }
 
 func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estimate {
+	return c.measuredLocked(cl, k).AtLimit(int64(cl.Limit.Memory))
+}
+
+// measuredLocked is estimateLocked before the class's hard limit.
+func (c *Controller) measuredLocked(cl config.Class, k ledger.JobKey) size.Estimate {
 	k.Platform = cl.Platform()
 	first := size.Estimate{CPUs: cl.CPUs, MemBytes: int64(cl.Memory)}
 	blind := first

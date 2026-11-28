@@ -36,6 +36,9 @@ type Status struct {
 	// last round played it forward (decide.Forecast). A job without one waits
 	// for something no end in sight opens.
 	Expect map[string]Expect `json:"expect,omitempty"`
+	// Over: by id, the memory a waiting job would need past its class's hard
+	// limit; it is held at the limit and will be cut short there again.
+	Over map[string]int64 `json:"over,omitempty"`
 	// Warm: per class, how many runners it keeps up without a job now
 	// (decide.WarmCount of how its jobs came lately).
 	Warm map[string]int `json:"warm,omitempty"`
@@ -76,6 +79,14 @@ func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan, expect ma
 	defers := plan.Defer
 	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{},
 		Line: plan.Line, Covering: map[string]int{}, Expect: expect, GiveWay: plan.GiveWay}
+	for _, d := range snap.Demand {
+		if d.Over > 0 {
+			if st.Over == nil {
+				st.Over = map[string]int64{}
+			}
+			st.Over[d.ID] = d.Over
+		}
+	}
 	stopped := map[string]bool{}
 	for _, s := range plan.Stop {
 		stopped[s.Runner] = true
