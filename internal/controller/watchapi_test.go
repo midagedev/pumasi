@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -61,6 +62,27 @@ func TestDemoTrendNamesTheInjectedCommits(t *testing.T) {
 	for job, in := range truth {
 		if in.Creep == 0 && !found[job] {
 			t.Errorf("%s (%s) not found", job, in.Label)
+		}
+	}
+	// The creep is listed as such, and each job's CHANGE says what the
+	// lists say of it.
+	if len(rep.Creeping) != 1 || rep.Creeping[0].Job != "e2e (chromium)" || rep.Creeping[0].Ratio < 0.12 {
+		t.Errorf("creeping %+v", rep.Creeping)
+	}
+	for _, s := range rep.Series {
+		want := 1.0
+		for _, c := range rep.Changes {
+			if c.Metric == "time" && c.Job == s.Job && s.Job != "" {
+				want *= 1 + c.Ratio
+			}
+		}
+		for _, c := range rep.Creeping {
+			if c.Job == s.Job {
+				want *= 1 + c.Ratio
+			}
+		}
+		if want != 1 && (s.ChangeFrom != "listed" || math.Abs(s.Change-(want-1)) > 1e-9) {
+			t.Errorf("%s: change %+.3f (%s), the lists say %+.3f", s.Name(), s.Change, s.ChangeFrom, want-1)
 		}
 	}
 	if len(rep.Series) < 8 || rep.Grain != "day" {

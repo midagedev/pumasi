@@ -66,7 +66,8 @@ func TestRegressionAnnouncedOnce(t *testing.T) {
 	c.announceRegressions(now.Add(20 * time.Minute))
 	got := sent()
 	// The demo's build took more memory six days ago; its slower test step
-	// was ten days ago, too long ago to announce.
+	// was eight days ago, too long ago to announce, and its faster typecheck
+	// is good news, not a regression.
 	var in synth.Injected
 	for _, i := range h.Injected {
 		if i.Job == "build" {

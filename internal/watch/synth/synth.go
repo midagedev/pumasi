@@ -402,8 +402,8 @@ func Demo(end time.Time) History {
 	day := func(d float64) time.Duration { return time.Duration(d*24*float64(time.Hour)) + 10*time.Hour }
 	h := Generate(Config{Seed: 42, Start: base, Days: 42, Merges: 7, Growth: 0.06, Inject: []Planned{
 		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 150}, After: day(9), Label: "e2e creeping up"},
-		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(15), Label: "typecheck made faster"},
-		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(26), Label: "a slower test step"},
+		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(28), Label: "a slower test step"},
+		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(29), Label: "typecheck made faster"},
 		{Change: Change{Job: "build", Metric: "mem", Factor: 1.35}, After: day(31), Label: "build takes more memory"},
 	}})
 	e := end.UTC()

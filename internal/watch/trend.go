@@ -44,6 +44,11 @@ type Series struct {
 	Job      string   `json:"job,omitempty"`
 	Buckets  []Bucket `json:"buckets"` // one for each day or week of the span, empty ones too
 	All      Bucket   `json:"all"`     // the whole span
+	// Change: its time over the span. ChangeFrom "listed": the time steps
+	// and creep the report lists for it, together; "thirds": none listed, so
+	// the median of its last third of days against its first (BuildTrend).
+	Change     float64 `json:"change"`
+	ChangeFrom string  `json:"changeFrom,omitempty"`
 }
 
 // Name is how a series is shown: "ci.yml / unit-tests", "ci.yml (workflow)".

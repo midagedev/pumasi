@@ -79,10 +79,12 @@ const trendUsage = `pumasi trend: how long each job and workflow takes, day by d
   pumasi trend --json               the same as JSON (also GET /api/trend on the dashboard)
 
 Numbers are of runs that succeeded: p50 is the middle run, p90 the slow end.
-CHANGE is the typical time in the last third of the span against the first.
-CHANGED lists steps that held across runs (not single slow runs), found among
-runs whose host was not saturated by others, with the first run after the step:
-its commit, its pull request, and the job's steps that grew.
+CHANGED lists steps up or down that held across runs (not single slow runs),
+found among runs whose host was not saturated by others, with the first run
+after the step: its commit, its pull request, and the job's steps that grew;
+then jobs slowly growing with no step to show for it (looked for over the last
+28 days at least). CHANGE is a job's listed time steps and creep together
+(marked *), or for a job with none its last third of days against its first.
 
 Flags:
 `
@@ -140,14 +142,18 @@ func dayStart(t time.Time) time.Time {
 func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool) {
 	fmt.Fprintf(w, "%s to %s, a row a %s\n\n", rep.From.Format("Mon Jan 2"), rep.To.Format("Mon Jan 2 15:04"), rep.Grain)
 	fmt.Fprintln(w, "CHANGED (newest first)")
-	if len(rep.Changes) == 0 {
-		fmt.Fprintln(w, "  nothing: no job's time, memory or cpu stepped up or down and stayed there")
+	if len(rep.Changes) == 0 && len(rep.Creeping) == 0 {
+		fmt.Fprintln(w, "  nothing: no job's time, memory or cpu stepped up or down and stayed there, or crept up")
 	}
 	for _, g := range watch.GroupChanges(rep.Changes) {
 		fmt.Fprintln(w, "  "+watch.ChangeLine(g))
 		if more := watch.ChangeDetail(g[0], web); more != "" {
 			fmt.Fprintln(w, "      "+more)
 		}
+	}
+	for _, c := range rep.Creeping {
+		fmt.Fprintf(w, "  %s / %s: slowly growing, time %s over %s along its trend (%s -> %s, at least %s), no single commit\n",
+			path.Base(c.Workflow), c.Job, pctSigned(c.Ratio), fmt.Sprintf("%.0fd", c.Span.Hours()/24), secs(c.From), secs(c.To), pctSigned(c.Low))
 	}
 	fmt.Fprintln(w)
 	if days {
@@ -164,10 +170,19 @@ func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool) {
 			name = path.Base(s.Workflow) + " (workflow)"
 		}
 		a := s.All
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, a.Runs, secs(a.Sec.P50), secs(a.Sec.P90), pctSigned(watch.Growth(s)),
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, a.Runs, secs(a.Sec.P50), secs(a.Sec.P90), changeCell(s),
 			gib(int64(a.MemBytes.P90)), secs(a.CPUSec.P50), secs(a.WaitSec.P90), spark(s))
 	}
 	tw.Flush()
+	fmt.Fprintln(w, "\nCHANGE: a job's time steps and creep listed above, together (marked *); for one with none, the median of the span's last third of days against its first.\n"+
+		"Creep is looked for over the last 28 days at least: it is too slow to tell in less.")
+}
+
+func changeCell(s watch.Series) string {
+	if s.ChangeFrom == "listed" {
+		return pctSigned(s.Change) + "*"
+	}
+	return pctSigned(s.Change)
 }
 
 func printDays(w io.Writer, s watch.Series) {
