@@ -28,24 +28,24 @@ pumasi trend --min-side 0          # list a job's change at once, not after a da
 
 ```
 CHANGED (newest first)
-  ci.yml / build: memory +35% (11.0G -> 14.9G), since commit 9c97a3f on main, Thu Nov 19 19:09 (pull request #1993 ran at the new level before it); still so
-      https://github.com/OWNER/REPO/commit/9c97a3f…
-  ci.yml / typecheck: time -27% (1m29s -> 1m05s), cpu -27% (1m27s -> 1m04s), since commit 7bba353 on main, Tue Nov 17 19:19; still so
-      step "Install" 25s -> 20s, step "Typecheck" 47s -> 37s; https://github.com/OWNER/REPO/commit/7bba353…
-  ci.yml / unit-tests: time +39% (4m26s -> 6m10s), cpu +39% (8m48s -> 12m11s), since commit e343094 on main, Mon Nov 16 19:06 (pull request #1882 ran at the new level before it); still so
-      step "Run tests" 2m16s -> 4m37s; https://github.com/OWNER/REPO/commit/e343094…
-  ci.yml / e2e (chromium): slowly growing, time +26% over 28d along its trend (11m47s -> 14m52s, at least +22%), no single commit
+  pr-checks.yml / build-image: memory +36% (8.5G -> 11.5G), since commit 0c83298 on main, Thu Nov 19 19:00 (pull request #2246 ran at the new level before it); still so
+      https://github.com/OWNER/REPO/commit/0c83298…
+  pr-checks.yml / typecheck: time -22% (1m24s -> 1m06s), cpu -21% (1m25s -> 1m07s), since commit 6e197ba on main, Tue Nov 17 19:09 (pull request #2104 ran at the new level before it); still so
+      step "Install" 25s -> 19s, step "Typecheck" 47s -> 36s; https://github.com/OWNER/REPO/commit/6e197ba…
+  pr-checks.yml / unit-tests: time +41% (1m28s -> 2m04s), cpu +42% (2m54s -> 4m08s), since commit 85979f9 on main, Mon Nov 16 19:01 (pull request #2077 ran at the new level before it); still so
+      step "Run tests" 47s -> 1m18s; https://github.com/OWNER/REPO/commit/85979f9…
+  pr-checks.yml / e2e (chromium): slowly growing, time +25% over 28d along its trend (2m39s -> 3m18s, at least +23%), no single commit
 
-JOB                     RUNS  TIME p50  p90     CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
-ci.yml (workflow)       1843  14m48s    20m14s  +6%     15.3G    2h14m    30s       ▁▃▂▂▃▃▃▆▆▂▅▃▃█
-  build                 1842  5m39s     7m36s   +2%     15.3G    27m15s   28s       ▆▄▂▁▁▄▂█▇▂▅▁▄▄
-  e2e (chromium)        1843  14m02s    19m11s  +26%*   9.8G     42m39s   28s       ▁▄▁▂▂▃▄█▆▃▆▃▃▆
-  typecheck             1842  1m13s     1m43s   -27%*   2.3G     1m09s    28s       █▇▇▆▂▂▁▁▃▁▁▁▁▁
-  unit-tests            1842  5m54s     8m05s   +39%*   3.3G     10m49s   28s       ▁▁▂▄▅▆▅█▅▅▅▅▅▅
+JOB                       RUNS  TIME p50  p90    CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
+pr-checks.yml (workflow)  6250  4m17s     5m46s  +3%     14.4G    47m24s   30s       ▁▁█▂▂▄▂▇▂▃▂▄▄█
+  build-image             6249  2m11s     2m55s  +3%     11.8G    10m26s   29s       ▅▁▂▂▂▃▂▃▂▂▂▃▃█
+  e2e (chromium)          6249  3m09s     4m17s  +25%*   10.3G    9m52s    28s       ▁▁▁▃▂▃▄▅▄▄▄▄▅█
+  typecheck               6250  1m14s     1m42s  -22%*   2.3G     1m14s    28s       ██▇▆▁▁▂▂▂▂▁▁▂▄
+  unit-tests              6249  1m59s     2m39s  +41%*   3.3G     3m36s    28s       ▁▂▄▆▇▇▇█▇▇▆▇▇█
   …
 ```
 
-(`pumasi trend --demo`. The demo's six weeks queued on its dashboard's 66 cores, and end at the start of today, so the same day shows the same numbers.) Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end. CHANGE is what the list above says of the job (its time steps and creep together, marked `*`); for a job with nothing listed, the median of the span's last third of days against its first.
+(`pumasi trend --demo`. The demo's six weeks queued on its dashboard's 66 cores, its jobs end as the dashboard runs them (each the middle of the dashboard's time and memory, the weeks before worked back through its changes), and they end at the start of today, so the same day shows the same numbers.) Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end. CHANGE is what the list above says of the job (its time steps and creep together, marked `*`); for a job with nothing listed, the median of the span's last third of days against its first.
 
 The table is fitted to the terminal, or to 100 columns when the output is not one. A long job name is cut in the middle. A matrix job's name first loses the values that every job of its matrix shares, so `build (linux, dev, bucket-1, x) / deploy` reads `build (linux, …, x) / deploy`, and names that would read the same are cut less until they differ. `--json` keeps the full names.
 
@@ -185,7 +185,7 @@ pumasi forecast --demo          # the demo's history, which queued on the demo d
 ```
 
 ```
-CI used 2292 cpu-hours in the last 7 days (1880 the week before); over the last 5 weeks it grew +12% a week (+6% to +19%, 80% interval). At the busiest hours it keeps 34 of the 66 cores busy (52%); at this rate they need every core in ~7 weeks (4 to 13 weeks); one job in ten waits a minute or more for room in ~4 weeks (now 1%, 1s on average).
+CI used 2544 cpu-hours in the last 7 days (2423 the week before); over the last 5 weeks it grew +7% a week (+5% to +10%, 80% interval). At the busiest hours it keeps 30 of the 66 cores busy (45%); at this rate they need every core in ~11 weeks (8 to 17 weeks); one job in ten waits a minute or more for room in ~8 weeks (now under 1%, 1s on average).
 ```
 
 - **Growth** is the Theil–Sen slope of the weekly cpu-hours (on logs), with its 80% interval. A week the ledger does not reach the start of is shown but not fitted; a ledger whose last job is more than two days old ends the weeks there.

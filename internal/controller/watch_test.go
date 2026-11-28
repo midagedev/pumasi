@@ -65,18 +65,18 @@ func TestRegressionAnnouncedOnce(t *testing.T) {
 	c.announceRegressions(*now)
 	c.announceRegressions(now.Add(20 * time.Minute))
 	got := sent()
-	// The demo's build took more memory six days ago; its slower test step
+	// The demo's build-image took more memory six days ago; its slower test step
 	// was eight days ago, too long ago to announce, and its faster typecheck
 	// is good news, not a regression.
 	var in synth.Injected
 	for _, i := range h.Injected {
-		if i.Job == "build" {
+		if i.Job == "build-image" {
 			in = i
 		}
 	}
-	if len(got) != 1 || !strings.Contains(got[0], "ci.yml / build: memory +35%") || !strings.Contains(got[0], "commit "+in.SHA[:7]+" on main") ||
+	if len(got) != 1 || !strings.Contains(got[0], "pr-checks.yml / build-image: memory +3") || !strings.Contains(got[0], "commit "+in.SHA[:7]+" on main") ||
 		!strings.Contains(got[0], "https://github.com/example/app/commit/"+in.SHA) || !strings.Contains(got[0], `"kind":"ci-regression"`) {
-		t.Fatalf("notices (want build's, once):\n%s", strings.Join(got, "\n"))
+		t.Fatalf("notices (want build-image's, once):\n%s", strings.Join(got, "\n"))
 	}
 	if open, _ := c.ledger.OpenIncidents(); len(open) != 0 {
 		t.Fatalf("a regression is a fact, not an open incident: %+v", open)

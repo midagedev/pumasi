@@ -1,6 +1,9 @@
 package synth
 
 import (
+	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,5 +42,29 @@ func TestDemoTellsTheTruthEveryDay(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The demo's jobs end its history as DemoJobs say (the demo dashboard's),
+// and demoAtStart is what working them back gives.
+func TestDemoJobsWorkedBack(t *testing.T) {
+	now := DemoNow(Generate(demoConfig(demoJobsAtStart())))
+	for _, j := range DemoJobs {
+		got := now[j.Name]
+		if math.Abs(got[0]/j.Sec-1) > 0.02 || math.Abs(got[1]/j.MemGB-1) > 0.02 {
+			t.Errorf("%s ends at %.0fs %.2fG, want %.0fs %.2fG", j.Name, got[0], got[1], j.Sec, j.MemGB)
+		}
+	}
+	var table strings.Builder
+	moved := false
+	for _, j := range demoWorkBack() {
+		v := demoAtStart[j.Name]
+		fmt.Fprintf(&table, "\t%q: {%.4g, %.4g},\n", j.Name, j.Sec, j.MemGB)
+		if math.Abs(j.Sec/v[0]-1) > 0.005 || math.Abs(j.MemGB/v[1]-1) > 0.005 {
+			moved = true
+		}
+	}
+	if moved {
+		t.Errorf("demoAtStart moved; worked back again:\n%s", table.String())
 	}
 }

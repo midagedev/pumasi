@@ -105,6 +105,9 @@ type Config struct {
 	Inject []Planned
 	// Natural: the slow growth of a suite (default on).
 	NoNatural bool
+	// Pushes: a pull request's pushes after its first, on average
+	// (default 1.5).
+	Pushes float64
 	// NaturalShare scales how many merges carry natural growth (0 = 1): a
 	// team of more, smaller merges grows its suite no faster.
 	NaturalShare float64
@@ -261,7 +264,7 @@ func Generate(cfg Config) History {
 	// Runs: each pull request's pushes (GitHub tests the pull request merged
 	// into main as main is at that moment), each merge's push to main, each night.
 	for i, m := range merges {
-		pushes := 1 + poisson(rng, 1.5)
+		pushes := 1 + poisson(rng, cmpOr(cfg.Pushes, 1.5))
 		for p := range pushes {
 			at := m.opened.Add(time.Duration(float64(m.at.Sub(m.opened)) * (float64(p) + rng.Float64()*0.8) / float64(pushes)))
 			g.run(at, "pull_request", fmt.Sprintf("feature-%d", m.pr), sha(cfg.Seed, fmt.Sprintf("pr%d", m.pr), p), m.pr, min(merged(at), i), i, false)
@@ -439,7 +442,11 @@ const DemoFleetCores = 66
 // demoMerges: a weekday's merges at the demo's start, so that its last
 // week's busiest hours keep about half of DemoFleetCores busy. Its suite
 // grows, and its e2e job creeps, by the days of a team of 7 merges a day.
-const demoMerges = 36
+const demoMerges = 45
+
+// demoPushes: a pull request's pushes after its first, on average: its
+// jobs are short, so the busy hours are many runs.
+const demoPushes = 8.0
 
 // DemoEnd is where the demo's history ends for a moment: the start of its
 // day, so the same seed tells the same numbers all day.
@@ -447,22 +454,138 @@ func DemoEnd(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// DemoJobs are the demo's pull request checks and nightly jobs as they run
+// now, in its last week: the time (median seconds, over both hosts), cores
+// and memory (GiB) the demo dashboard's jobs of the same names run with
+// (controller's demoKinds, the middle of each range; a test holds them
+// equal). The history's earlier weeks are worked back from these through
+// its changes and its suite's growth (see demoJobsAtStart).
+var DemoJobs = []Job{
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "lint", Class: "pr-checks", Sec: 55, Cores: 0.65, MemGB: 1.1, Spread: 0.06,
+		Steps: steps("Set up job", .05, "Checkout", .1, "Install", .35, "Lint", .45, "Post", .05)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "typecheck", Class: "pr-checks", Sec: 65, Cores: 1.05, MemGB: 2.25, Spread: 0.05,
+		Steps: steps("Set up job", .03, "Checkout", .07, "Install", .3, "Typecheck", .57, "Post", .03)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "unit-tests", Class: "pr-checks", Sec: 120, Cores: 1.9, MemGB: 3.2, Spread: 0.08,
+		Steps: steps("Set up job", .02, "Checkout", .04, "Install", .14, "Build", .2, "Run tests", .55, "Upload coverage", .05)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "build-image", Class: "build", Sec: 130, Cores: 5, MemGB: 11.5, Spread: 0.07,
+		Steps: steps("Set up job", .02, "Checkout", .05, "Restore cache", .08, "Compile", .7, "Package", .12, "Post", .03)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "e2e (chromium)", Class: "e2e", Sec: 190, Cores: 3.3, MemGB: 10, Spread: 0.1,
+		Steps: steps("Set up job", .01, "Checkout", .02, "Install", .07, "Start services", .1, "Run e2e", .76, "Upload traces", .04)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "e2e (webkit)", Class: "e2e", Sec: 175, Cores: 2.8, MemGB: 8.75, Spread: 0.11,
+		Steps: steps("Set up job", .01, "Checkout", .02, "Install", .08, "Start services", .1, "Run e2e", .75, "Upload traces", .04)},
+	{Workflow: ".github/workflows/pr-checks.yml", Name: "e2e (firefox)", Class: "e2e", Sec: 220, Cores: 3.2, MemGB: 14, Spread: 0.09,
+		Steps: steps("Set up job", .01, "Checkout", .02, "Install", .08, "Start services", .1, "Run e2e", .75, "Upload traces", .04)},
+	{Workflow: ".github/workflows/nightly.yml", Name: "nightly-soak 1/3", Class: "nightly", Sec: 300, Cores: 3.6, MemGB: 13.75, Spread: 0.05, Nightly: true,
+		Steps: steps("Set up job", .01, "Checkout", .01, "Soak", .95, "Report", .03)},
+	{Workflow: ".github/workflows/nightly.yml", Name: "nightly-soak 2/3", Class: "nightly", Sec: 300, Cores: 3.6, MemGB: 13.75, Spread: 0.05, Nightly: true,
+		Steps: steps("Set up job", .01, "Checkout", .01, "Soak", .95, "Report", .03)},
+	{Workflow: ".github/workflows/nightly.yml", Name: "nightly-soak 3/3", Class: "nightly", Sec: 300, Cores: 3.6, MemGB: 13.75, Spread: 0.05, Nightly: true,
+		Steps: steps("Set up job", .01, "Checkout", .01, "Soak", .95, "Report", .03)},
+}
+
+// demoBase is the demo's history before it is moved to the week of now: a
+// Monday, its six weeks from then.
+var demoBase = time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+
+// demoConfig is the demo's history with jobs as they start.
+func demoConfig(jobs []Job) Config {
+	day := func(d float64) time.Duration { return time.Duration(d*24*float64(time.Hour)) + 10*time.Hour }
+	return Config{Seed: 42, Start: demoBase, Days: 42, Jobs: jobs, Merges: demoMerges, Pushes: demoPushes, NaturalShare: 7.0 / demoMerges, Growth: 0.06, Cores: DemoFleetCores, Inject: []Planned{
+		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 200 * demoMerges / 7}, After: day(9), Label: "e2e creeping up"},
+		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(28), Label: "a slower test step"},
+		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(29), Label: "typecheck made faster"},
+		{Change: Change{Job: "build-image", Metric: "mem", Factor: 1.35}, After: day(31), Label: "build-image takes more memory"},
+	}}
+}
+
+// DemoNow are the jobs' median time (seconds) and memory (GiB) in the
+// week after the demo's last change (days 32 to 39 of its six weeks, before
+// it is moved), the runs that succeeded on a host not busy with others.
+func DemoNow(h History) map[string][2]float64 {
+	from, to := demoBase.AddDate(0, 0, 32), demoBase.AddDate(0, 0, 39)
+	sec, mem := map[string][]float64{}, map[string][]float64{}
+	for _, r := range h.Runs {
+		if r.Result != "succeeded" || r.Contended() || r.QueuedAt.Before(from) || !r.QueuedAt.Before(to) {
+			continue
+		}
+		sec[r.Job] = append(sec[r.Job], r.RunSec)
+		mem[r.Job] = append(mem[r.Job], float64(r.MemWorkPeak)/gb)
+	}
+	out := map[string][2]float64{}
+	for j := range sec {
+		out[j] = [2]float64{median(sec[j]), median(mem[j])}
+	}
+	return out
+}
+
+func median(v []float64) float64 {
+	s := slices.Clone(v)
+	slices.Sort(s)
+	if len(s) == 0 {
+		return 0
+	}
+	if len(s)%2 == 1 {
+		return s[len(s)/2]
+	}
+	return (s[len(s)/2-1] + s[len(s)/2]) / 2
+}
+
+// demoAtStart are DemoJobs' time (seconds) and memory (GiB) at the
+// history's start, worked back from DemoJobs by demoWorkBack;
+// TestDemoJobsWorkedBack works them back again and says when they moved.
+var demoAtStart = map[string][2]float64{
+	"lint":             {51.27, 1.091},
+	"typecheck":        {75.28, 2.22},
+	"unit-tests":       {74.23, 3.2},
+	"build-image":      {115.8, 8.461},
+	"e2e (chromium)":   {142.5, 9.92},
+	"e2e (webkit)":     {147.8, 8.747},
+	"e2e (firefox)":    {202.5, 13.98},
+	"nightly-soak 1/3": {283, 13.74},
+	"nightly-soak 2/3": {256.4, 13.78},
+	"nightly-soak 3/3": {234.4, 13.79},
+}
+
+func demoJobsAtStart() []Job {
+	jobs := slices.Clone(DemoJobs)
+	for i, j := range jobs {
+		if v, ok := demoAtStart[j.Name]; ok {
+			jobs[i].Sec, jobs[i].MemGB = v[0], v[1]
+		}
+	}
+	return jobs
+}
+
+// demoWorkBack: DemoJobs worked back to the history's start. The history
+// is made with DemoJobs' numbers, its week after the last change measured
+// (DemoNow), and each job scaled by what it should be over what it came
+// to; twice, as the queue moves a little with the times.
+func demoWorkBack() []Job {
+	jobs := slices.Clone(DemoJobs)
+	for range 2 {
+		now := DemoNow(Generate(demoConfig(jobs)))
+		for i, j := range jobs {
+			want := DemoJobs[i]
+			if m := now[j.Name]; m[0] > 0 && m[1] > 0 {
+				jobs[i].Sec = j.Sec * want.Sec / m[0]
+				jobs[i].MemGB = j.MemGB * want.MemGB / m[1]
+			}
+		}
+	}
+	return jobs
+}
+
 // Demo is the history `--demo` shows: six weeks of a repository, the last
 // of them the week of end, whose team grows a little each week, with a
 // typecheck made faster, an e2e job creeping up, a test step that got slower
-// and a build that takes more memory. It is the same history every time,
-// moved by whole weeks so its weekdays stay; runs after the start of
-// end's day (DemoEnd) are dropped.
+// and a build that takes more memory, its jobs ending as the demo
+// dashboard's run (DemoJobs). It is the same history every time, moved by
+// whole weeks so its weekdays stay; runs after the start of end's day
+// (DemoEnd) are dropped.
 func Demo(end time.Time) History {
 	end = DemoEnd(end)
-	base := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC) // a Monday
-	day := func(d float64) time.Duration { return time.Duration(d*24*float64(time.Hour)) + 10*time.Hour }
-	h := Generate(Config{Seed: 42, Start: base, Days: 42, Merges: demoMerges, NaturalShare: 7.0 / demoMerges, Growth: 0.06, Cores: DemoFleetCores, Inject: []Planned{
-		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 150 * demoMerges / 7}, After: day(9), Label: "e2e creeping up"},
-		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(28), Label: "a slower test step"},
-		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(29), Label: "typecheck made faster"},
-		{Change: Change{Job: "build", Metric: "mem", Factor: 1.35}, After: day(31), Label: "build takes more memory"},
-	}})
+	base := demoBase
+	h := Generate(demoConfig(demoJobsAtStart()))
 	e := end.UTC()
 	monday := time.Date(e.Year(), e.Month(), e.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -((int(e.Weekday()) + 6) % 7))
 	shift := monday.Sub(base.AddDate(0, 0, 35))

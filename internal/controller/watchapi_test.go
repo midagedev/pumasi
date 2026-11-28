@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strconv"
 	"testing"
 	"time"
@@ -179,5 +180,28 @@ func TestDemoForecast(t *testing.T) {
 	}
 	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Load > 0.05 {
 		t.Fatalf("cores=1000: %+v", rep)
+	}
+}
+
+// The demo's CI history ends with its jobs as the demo dashboard runs them:
+// for each job of the same name, its time, cores and memory are the middle
+// of the dashboard's ranges, in the same workflow and class.
+func TestDemoHistoryRunsTheDashboardsJobs(t *testing.T) {
+	mid := func(v [2]float64) float64 { return (v[0] + v[1]) / 2 }
+	n := 0
+	for _, j := range synth.DemoJobs {
+		k, ok := demoKinds[j.Name]
+		if !ok {
+			t.Errorf("%s: the dashboard has no job of that name", j.Name)
+			continue
+		}
+		n++
+		if j.Sec != mid(k.dur) || math.Abs(j.Cores-mid(k.cpu)) > 1e-9 || math.Abs(j.MemGB-mid(k.mem)) > 1e-9 || path.Base(j.Workflow) != k.workflow || j.Class != k.class {
+			t.Errorf("%s: history %.0fs %.2f cores %.2fG %s %s, dashboard %.0fs %.2f cores %.2fG %s %s", j.Name, j.Sec, j.Cores, j.MemGB, path.Base(j.Workflow), j.Class,
+				mid(k.dur), mid(k.cpu), mid(k.mem), k.workflow, k.class)
+		}
+	}
+	if n < 5 {
+		t.Fatalf("%d jobs in common", n)
 	}
 }
