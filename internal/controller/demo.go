@@ -19,6 +19,7 @@ import (
 	"github.com/midagedev/pumasi/internal/decide"
 	"github.com/midagedev/pumasi/internal/ledger"
 	"github.com/midagedev/pumasi/internal/size"
+	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
 // The demo is a made-up shop of four hosts and eight classes that the real
@@ -49,6 +50,19 @@ type Demo struct {
 	checks []*demoWorld
 	specs  map[int][]demoSpec // arrivals by cycle, made once
 	ops    demoOps            // what people did on the demo's priority controls; not replayed by seed
+	hist   *synth.History     // the weeks before the demo began, for trends (made on first use)
+}
+
+// history is five weeks of a made-up repository's CI up to the day the demo
+// began: what `pumasi trend --demo` shows, served to the dashboard's trend.
+func (d *Demo) history() *synth.History {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.hist == nil {
+		h := synth.Demo(d.started)
+		d.hist = &h
+	}
+	return d.hist
 }
 
 // NewDemo makes a demo whose clock starts at demoStartAt now.
@@ -99,7 +113,16 @@ func (s demoSource) url() string             { return s.d.cfg.URL }
 func (s demoSource) demo() bool              { return true }
 func (s demoSource) apis() []string {
 	// priority covers /api/priority, /api/expedite, /api/mode and /api/priority/rules.
-	return []string{"state", "jobs", "job", "series", "explain", "priority"}
+	return []string{"state", "jobs", "job", "series", "explain", "priority", "trend"}
+}
+func (s demoSource) runs(from time.Time) ([]ledger.JobRun, error) {
+	var out []ledger.JobRun
+	for _, r := range s.d.history().Runs {
+		if !r.FinishedAt.Before(from) && !r.FinishedAt.After(s.at) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 func (s demoSource) now() time.Time { return s.at }
 func (s demoSource) priority() *PriorityView {
