@@ -61,6 +61,13 @@ func TestForecastReadsGrowth(t *testing.T) {
 	if f.WaitTenthIn < 0 || !strings.Contains(f.Words, "need every core in ~") {
 		t.Fatalf("%s", f.Words)
 	}
+	// Twenty times the busiest hours' cores is past what the replay tries,
+	// but at 10% a week it is well within a year: not "not within a year".
+	big := 20 * f.Weeks[len(f.Weeks)-1].PeakCores
+	f = Forecast(runs, big, now, 8)
+	if want := math.Log(20) / math.Log(1+f.Growth); f.FullIn <= 0 || math.Abs(f.FullIn-want) > 3 || !strings.Contains(f.Words, "need every core in ~") {
+		t.Fatalf("%.0f cores: full in %.1f, want ~%.1f: %s", big, f.FullIn, want, f.Words)
+	}
 	// Six cores: a run wants eight at once, so its last job waits.
 	f = Forecast(runs, 6, now, 8)
 	if f.WaitShare < 0.1 || f.WaitTenthIn != 0 {
