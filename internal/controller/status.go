@@ -56,6 +56,11 @@ type Expect struct {
 	StartsAt time.Time `json:"startsAt"`
 	Host     string    `json:"host"`
 	After    string    `json:"after,omitempty"`
+	// AfterRunner: After's runner, when that job runs now (decide.Expect).
+	AfterRunner string `json:"afterRunner,omitempty"`
+	// AfterWith: other jobs ending on Host before After whose room the job
+	// needs too (decide.Expect).
+	AfterWith int `json:"afterWith,omitempty"`
 }
 
 // Link is the connection to one host, whichever side opened it.

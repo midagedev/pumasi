@@ -57,7 +57,7 @@ Nobody writes down how much a job uses. pumasi measures it and places the next r
   When the whole workflow is new, that size is a guess, so such jobs are **not placed side by side on one host all at once**: until a job has run 3 minutes, it holds 3 times the first estimate in memory, and meanwhile that host takes the next "unknown job" only when 3 times is free. After 3 minutes, what that job actually holds becomes the size of the rest. It shows in the wait reason as `it watches 1 unmeasured job there …`.
 - **A host's room.** What new runners can use is the whole machine minus what runners hold, what processes outside pumasi use right now, and a memory reserve (10% of the machine, 1–4G).
   What a runner holds is the larger of its estimate and what it uses now. A host busy with other work gets fewer runners, and more again when it is idle. `budget` is only a cap on top of that.
-  Under memory pressure (Linux PSI 10% or more, memory pressure on a Mac) the host gets no new runners.
+  Under memory pressure (Linux PSI 10% or more, memory pressure on a Mac) the host gets no new runners, and the same under disk io pressure (PSI 50% or more). The host's panel shows each pressure next to its line.
 - **CPU is shared, memory is not.** Short of CPU, a job only slows down; short of memory, it dies. So on a server (Linux) that measures CPU pressure (PSI), when `budget` has no cpu, what runners hold in CPU can go up to 1.5 times the cores (`cpuOvercommit`).
   When cores really run short and CPU pressure goes over 40%, that host gets no new runners. Memory stays strict. This does not apply to desktops, hosts with a cpu `budget`, or hosts without PSI (Mac, Windows).
   It shows in the start reason as `cores shared: runners hold 20.0cpu of 14.0 there, cpu pressure 12`. To turn it off, `cpuOvercommit: 1`.
@@ -105,7 +105,7 @@ priority:                                   # top to bottom; the first rule that
 - `level` is `high` · `normal` · `low`. **high counts as having come 30 minutes (`priorityHeadStart`) earlier, low as 30 minutes later.** The line is in order of those counted times.
   So no job starves: a normal job that has waited over 30 minutes is ahead of a high job that just came, and a low job is ahead of newly arrived normal jobs after 30 minutes too.
 - **Changes apply at once.** A running `up` notices the config file changed and rereads only `priority` and `priorityHeadStart` (at the next evaluation, within 10 seconds; the log says `priority: 3 rules read again …`). If the file is wrong, it keeps the previous rules and warns. Other keys change only when `up` is restarted.
-- It also says **when a job will start.** The lines in the dashboard's WAITING and in Explain (`/api/explain`) get `starts in ~3m on server1, when e2e (chromium) ends`. This runs placement forward assuming each running job ends after running as long as its past runs (the median), so it doesn't know about jobs that come later or someone sitting down at a desktop. When a job with no known run time is in the way, or it waits for a closed host, only the reason shows, with no time. In the API it is `waitingJobs[].expect` in `/api/state` (`inSeconds`, `host`, `after`).
+- It also says **when a job will start.** The lines in the dashboard's WAITING and in Explain (`/api/explain`) get `starts in ~3m on server1, when e2e (chromium) ends`. This runs placement forward assuming each running job ends after running as long as its past runs (the median), so it doesn't know about jobs that come later or someone sitting down at a desktop. When a job with no known run time is in the way, or it waits for a closed host, only the reason shows, with no time. When other jobs share that name, it says which: `the e2e (chromium) running there for 3m`; a job it waits for that is still waiting is said to be: `after the e2e (chromium) waiting ahead of it`. When that one end does not make the room alone (what is free now plus what it holds), it says others end there first: `once 2 others there have ended too`. In the API it is `waitingJobs[].expect` in `/api/state` (`inSeconds`, `host`, `after`, `afterRunner` when that job is running now, `afterWith` for the others).
 - `pumasi priority` shows the mode, [jobs put at the front](#one-job-to-the-front-pumasi-expedite), the rules and the line of jobs waiting now. `WAITING` in `pumasi status` comes in line order, and the `LINE` column says why each stands where it does.
 - While a high job waits for lack of room, no lower job is newly placed on the hosts it can go to (within the same level, small jobs fill gaps as before).
 
@@ -340,11 +340,11 @@ The address is a free loopback port by default; to let other tools read it, fix 
 - Opened to the outside like `dashboard: 0.0.0.0:7420`, writing requires sending the config's `dashboardToken:` (16 characters or more) as `Authorization: Bearer <token>` (from this machine too). Without a token, writes from outside get 403. Reading stays open to anyone.
 - The CLI (`pumasi expedite` and others) asks the `up` on the same machine through `controller.addr` in the state directory, and sends the token along if there is one.
 
-To look without a controller, `pumasi open --demo` — runs a made-up shop (4 hosts · 8 classes) on the real placement code. The same `-seed` shows the same scenes, and `?at=<seconds>` after the address freezes one moment.
+To look without a controller, `pumasi open --demo` — runs a made-up shop (4 hosts · 9 classes) on the real placement code. The same `-seed` shows the same scenes, and `?at=<seconds>` after the address freezes one moment.
 
-![The dashboard in motion: crates move along the lines, and the view goes inside a host building](img/demo.gif)
+![The dashboard in motion: a waiting job says why it waits and when it starts, and it does; ready runners step aside; runners start ahead for the jobs that come next](img/demo.gif)
 
-The full video (53 seconds, in close-ups: how full each host is, why each job waits, a host dropping off, expediting a job, high-only, Explain): [img/demo.mp4](img/demo.mp4)
+The full video (59 seconds, in close-ups: why each job waits and when it starts, the forecast coming true, ready runners stepping aside, runners started ahead, job sizes nobody wrote, CI watch, a desktop someone sits at, deploys first): [img/demo.mp4](img/demo.mp4)
 
 **Reading the picture.** The picture is not decoration; it is the values of `/api/state`.
 

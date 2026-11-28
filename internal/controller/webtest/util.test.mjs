@@ -1,0 +1,67 @@
+// The dashboard's words, tested with node (node --test internal/controller/webtest/).
+// It sits outside web/ so that it is not served with the dashboard.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { expectText, expressRow, hostLoad, readyLine } from "../web/js/util.js";
+
+const GiB = 1024 ** 3;
+
+// The same cases as TestExpectText (demo_test.go): the controller and the
+// dashboard say a forecast in the same words.
+test("expectText says which job a wait is for, as the controller does", () => {
+  const R = [{ name: "r1", host: "h1", job: "e2e", ageSeconds: 200 }, { name: "r2", host: "h1", job: "e2e", ageSeconds: 70 }, { name: "r3", host: "h1", job: "build" }, { name: "r4", host: "h1", job: "pack" }];
+  for (const [e, self, want, wait, rs] of [
+    [{ inSeconds: 40, host: "h1" }, "lint", "starts in under a minute on h1", "", R],
+    [{ inSeconds: 150, host: "h1", after: "e2e", afterRunner: "r1" }, "lint", "starts in ~3m on h1, when e2e ends", "", R.slice(0, 1)],
+    [{ inSeconds: 6000, host: "h2", after: "build", afterRunner: "r3" }, "lint", "starts in ~1h40m on h2, when build on h1 ends", "", R],
+    [{ inSeconds: 30, host: "h1", after: "pack", afterRunner: "r4" }, "pack", "starts in under a minute on h1, when another pack ends", "", R],
+    [{ inSeconds: 150, host: "h1", after: "lint" }, "test", "starts in ~3m on h1, after the lint waiting ahead of it", "", R],
+    [{ inSeconds: 30, host: "h1", after: "e2e", afterRunner: "r1" }, "lint", "starts in under a minute on h1, when the e2e running there for 3m ends", "e2e", R],
+    [{ inSeconds: 30, host: "h1", after: "e2e", afterRunner: "r2" }, "lint", "starts in under a minute on h1, when the e2e running there for 1m ends", "e2e", R],
+    [{ inSeconds: 30, host: "h2", after: "build", afterRunner: "r3" }, "lint", "starts in under a minute on h2, when the build running on h1 ends", "build", R],
+    [{ inSeconds: 150, host: "h1", after: "pack", afterRunner: "r4", afterWith: 2 }, "lint", "starts in ~3m on h1, when pack ends, once 2 others there have ended too", "", R],
+    [{ inSeconds: 150, host: "h1", after: "e2e", afterRunner: "r2", afterWith: 1 }, "lint", "starts in ~3m on h1, when the e2e running there for 1m ends, once 1 other there has ended too", "", R],
+  ]) assert.equal(expectText(e, rs, self, wait ? [{ job: wait }] : []), want);
+});
+
+// A host's ready runners are counted the same in its word, its line in the
+// hosts list and the header (every runner up with no job), whether or not
+// each gives way.
+test("a host's ready runners are all counted, those that give way among them", () => {
+  const h = { name: "h1", reachable: true, memBytes: 64 * GiB, cpus: 16, freeMem: 2 * GiB, freeCpus: 1, runners: 4 };
+  const run = (o) => ({ host: "h1", state: "idle", estMem: 8 * GiB, estCpus: 2, ...o });
+  const rs = [run({ job: "e2e", state: "busy", estMem: 40 * GiB, estCpus: 10 }), run({ givesWay: true }), run({ givesWay: true }), run({})];
+  const L = hostLoad(h, rs);
+  assert.equal(L.word, "3 ready");
+  assert.equal(L.ready, 3);
+  assert.equal(L.giving, 2);
+  assert.match(readyLine(L), /^3 ready; 2 give way: /);
+  assert.match(readyLine(hostLoad(h, rs.slice(0, 3))), /^2 ready runners give way: /);
+  assert.equal(readyLine(hostLoad(h, [rs[0], rs[3]])), "1 ready runner keeps its room");
+});
+
+// The room kept on the map is the expedited job's, not that of a job ahead of
+// it in its class that it pulls along (also "expedite" in the line).
+test("expressRow picks the job expedited by hand", () => {
+  const p = {
+    expedited: [{ job: "j9", githubJobId: 9, position: 3 }],
+    line: [
+      { job: "j1", level: "normal", position: 1 },
+      { job: "j7", level: "expedite", position: 2, why: "ahead of j9 in its class" },
+      { job: "j9", githubJobId: 9, level: "expedite", position: 3, waitingFor: "h1" },
+    ],
+  };
+  assert.equal(expressRow(p).job, "j9");
+  assert.equal(expressRow({ ...p, expedited: [{ job: "j9", position: 0 }] }), null);
+});
+
+// A host as full as that only by runners with no job (ready ones keeping
+// their room, starting ones) runs nothing: it is HELD, not BUSY or FULL.
+test("a host whose room is held by runners with no job is held, not busy", () => {
+  const h = { name: "h1", reachable: true, memBytes: 32 * GiB, cpus: 16, freeMem: 6 * GiB, freeCpus: 10, runners: 2 };
+  const idle = { host: "h1", state: "idle", estMem: 12 * GiB, estCpus: 2 };
+  const starting = { host: "h1", state: "starting", estMem: 12 * GiB, estCpus: 2 };
+  assert.equal(hostLoad(h, [idle, starting]).word, "held");
+  // with a job running, the same room is busy
+  assert.equal(hostLoad(h, [{ ...idle, job: "e2e", state: "busy" }, starting]).word, "busy");
+});

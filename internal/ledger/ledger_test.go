@@ -242,6 +242,12 @@ func TestJobRuns(t *testing.T) {
 	if len(keys) != 2 || keys[0] != k || keys[1].Job != "test" {
 		t.Errorf("measured jobs %+v", keys)
 	}
+	if c, err := l.JobClass(k); err != nil || c != "linux-s" {
+		t.Errorf("class %q %v", c, err)
+	}
+	if c, err := l.JobClass(JobKey{Repo: "o/r", Workflow: "o/r/.github/workflows/ci.yml", Job: "none", Platform: "linux/docker"}); err != nil || c != "" {
+		t.Errorf("no such job: class %q %v", c, err)
+	}
 	r, err := l.Runner("r1")
 	must(err)
 	if r.EstCPUs != 2 || r.EstMem != 4<<30 || r.MemWorkPeak != 1<<30 || r.MemPeak != 15<<30 {

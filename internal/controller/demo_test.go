@@ -275,13 +275,35 @@ func TestDemoWaitingJobsHaveAnExpectedStart(t *testing.T) {
 func TestExpectText(t *testing.T) {
 	for _, c := range []struct {
 		e    JobExpect
+		self string
 		want string
+		wait string // the name of a job that waits too
 	}{
-		{JobExpect{InSeconds: 40, Host: "h1"}, "starts in under a minute on h1"},
-		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e"}, "starts in ~3m on h1, when e2e ends"},
-		{JobExpect{InSeconds: 6000, Host: "h2", After: "build"}, "starts in ~1h40m on h2, when build ends"},
+		{JobExpect{InSeconds: 40, Host: "h1"}, "lint", "starts in under a minute on h1", ""},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e", AfterRunner: "r1"}, "lint", "starts in ~3m on h1, when e2e ends", ""},
+		{JobExpect{InSeconds: 6000, Host: "h2", After: "build", AfterRunner: "r3"}, "lint", "starts in ~1h40m on h2, when build on h1 ends", ""},
+		// a job of the same name (another run, a matrix) is not the waiting job itself
+		{JobExpect{InSeconds: 30, Host: "h1", After: "pack", AfterRunner: "r4"}, "pack", "starts in under a minute on h1, when another pack ends", ""},
+		// a job it waits for that waits too does not end before it has run
+		{JobExpect{InSeconds: 150, Host: "h1", After: "lint"}, "test", "starts in ~3m on h1, after the lint waiting ahead of it", ""},
+		// a name more than one job has: the one running there, by how long it has run
+		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r1"}, "lint", "starts in under a minute on h1, when the e2e running there for 3m ends", "e2e"},
+		{JobExpect{InSeconds: 30, Host: "h1", After: "e2e", AfterRunner: "r2"}, "lint", "starts in under a minute on h1, when the e2e running there for 1m ends", "e2e"},
+		{JobExpect{InSeconds: 30, Host: "h2", After: "build", AfterRunner: "r3"}, "lint", "starts in under a minute on h2, when the build running on h1 ends", "build"},
+		// its end alone does not make the room: others ending first do too
+		{JobExpect{InSeconds: 150, Host: "h1", After: "pack", AfterRunner: "r4", AfterWith: 2}, "lint", "starts in ~3m on h1, when pack ends, once 2 others there have ended too", ""},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e", AfterRunner: "r2", AfterWith: 1}, "lint", "starts in ~3m on h1, when the e2e running there for 1m ends, once 1 other there has ended too", ""},
 	} {
-		if got := c.e.Text(); got != c.want {
+		runners := []RunnerState{{Name: "r1", Host: "h1", Job: "e2e", AgeSeconds: 200}, {Name: "r2", Host: "h1", Job: "e2e", AgeSeconds: 70},
+			{Name: "r3", Host: "h1", Job: "build"}, {Name: "r4", Host: "h1", Job: "pack"}}
+		var waiting []JobWait
+		if c.wait != "" {
+			waiting = []JobWait{{Job: c.wait}}
+		}
+		if c.want == "starts in ~3m on h1, when e2e ends" {
+			runners = runners[:1]
+		}
+		if got := c.e.Text(c.self, runners, waiting); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.e, got, c.want)
 		}
 	}
@@ -368,4 +390,29 @@ func releaseMoments() []float64 {
 		}
 	}
 	return out
+}
+
+// The sizes table says what a job's next run is placed with: a job past its
+// class's hard memory limit at the limit, with what it would need.
+func TestDemoSizesHeldAtTheLimit(t *testing.T) {
+	d := NewDemo(1)
+	s := d.view(864, time.Now()).state()
+	found := false
+	for _, j := range s.Sizes {
+		if j.Job != "e2e (firefox)" {
+			continue
+		}
+		found = true
+		if j.EstMem != 20<<30 || j.Over <= 20<<30 {
+			t.Errorf("e2e (firefox) next run %s, over %s: want held at 20G with more over it", gib(j.EstMem), gib(j.Over))
+		}
+	}
+	if !found {
+		t.Fatal("no size for e2e (firefox)")
+	}
+	for _, j := range s.Sizes {
+		if j.Job != "e2e (firefox)" && j.Over != 0 {
+			t.Errorf("%s over its limit: %+v", j.Job, j)
+		}
+	}
 }

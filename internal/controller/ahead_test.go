@@ -51,7 +51,7 @@ func TestSnapshotExpectsTheJobThatFollows(t *testing.T) {
 	unit("uc", 3, now.Add(-95*time.Second), false)
 	s := r.decideSnapshot(now, nil)
 	other := s.Classes[1]
-	if other.Name != "other" || other.Soon != 1 || !strings.HasPrefix(other.SoonFor, "e2e expected in ~8s, when unit ends") {
+	if other.Name != "other" || other.Soon != 1 || len(other.SoonFor) != 1 || !strings.HasPrefix(other.SoonFor[0], "e2e expected in ~8s, when unit ends") {
 		t.Fatalf("other: %+v", other)
 	}
 	if s.Classes[0].Soon != 0 {

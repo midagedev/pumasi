@@ -5,7 +5,7 @@ import { View, TW, TH, TZ } from "./iso.js";
 import { World, HALL_D } from "./world.js";
 import { Scene } from "./draw.js";
 import { store, renderChrome, renderPanel, renderList, renderTimeline, renderStale, renderMode, renderCI, jobKey, atParam, subjectOf, waitRows } from "./hud.js";
-import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive, isReady, aheadOf } from "./util.js";
+import { clamp, ease, rgb, ago, cpus, gb, plainReason, setLive, isReady, aheadOf, expressRow } from "./util.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -97,11 +97,12 @@ function apply() {
   if (deep) { const d = deep; deep = null; select(d, true); }
 }
 
-// expressOf: the expedited job that has room kept for it, and where.
+// expressOf: the expedited job that has room kept for it, and where. Its own
+// row: jobs ahead of it in its class are "expedite" too, pulled along.
 function expressOf() {
   const p = store.prio;
   if (!p || !p.line) return null;
-  const e = p.line.find((x) => x.level === "expedite");
+  const e = expressRow(p);
   if (!e) return null;
   const host = store.state.hosts.find((h) => e.waitingFor && e.waitingFor.includes(h.name));
   return host ? { host: host.name, name: e.name, class: e.class } : { name: e.name, class: e.class };

@@ -67,7 +67,7 @@ func TestExpectedAndSoon(t *testing.T) {
 	}
 	// now = t0+60s, lead 8s: a's e2e at 66s is within it, b's is not.
 	n, why := Soon(exp, sec(60), 8*time.Second)
-	if n["big"] != 1 || why["big"] != "e2e expected in ~6s, when unit ends" {
+	if n["big"] != 1 || len(why["big"]) != 1 || why["big"][0] != "e2e expected in ~6s, when unit ends" {
 		t.Fatalf("soon %v %v", n, why)
 	}
 }
@@ -77,19 +77,20 @@ func TestExpectedAndSoon(t *testing.T) {
 func TestAheadStartsARunner(t *testing.T) {
 	s := warmSnap(0, nil, nil)
 	s.Classes[0].Soon, s.Classes[0].SoonCPUs, s.Classes[0].SoonMem = 2, 2, 2*gb
-	s.Classes[0].SoonFor = "e2e expected in ~6s, when unit ends"
+	// Two jobs expected: each runner names its own, not both the first.
+	s.Classes[0].SoonFor = []string{"e2e (amd64) expected in ~6s, when unit ends", "e2e (arm64) expected in ~6s, when unit ends"}
 	p := Decide(s)
 	if len(p.Start) != 2 {
 		t.Fatalf("started %v, want 2", starts(p))
 	}
-	for _, st := range p.Start {
-		if st.Job != "" || st.CPUs != 2 || st.MemBytes != 2*gb || !strings.HasPrefix(st.Reason, "ahead: e2e expected in ~6s, when unit ends") {
-			t.Fatalf("start %+v", st)
+	for i, st := range p.Start {
+		if st.Job != "" || st.CPUs != 2 || st.MemBytes != 2*gb || !strings.HasPrefix(st.Reason, "ahead: "+s.Classes[0].SoonFor[i]) {
+			t.Fatalf("start %d %+v", i, st)
 		}
 	}
-	// One is up already and listening: one more.
+	// One is up already and listening: one more, for the second job.
 	s.Runners = []Runner{idle("r1", s.Classes[0].Name, "server1", 5*time.Second, 2, 2*gb)}
-	if p := Decide(s); len(p.Start) != 1 {
+	if p := Decide(s); len(p.Start) != 1 || !strings.HasPrefix(p.Start[0].Reason, "ahead: e2e (arm64) expected") {
 		t.Fatalf("with one up: %v", starts(p))
 	}
 	// Kept up past the idle timeout while the job is expected.

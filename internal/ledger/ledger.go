@@ -923,6 +923,18 @@ func (l *Ledger) runs(andJob string, limit int, args ...any) ([]size.Sample, err
 	return out, rows.Err()
 }
 
+// JobClass is the class of a job's newest runner ("" = none): the class
+// whose limits its next run is held to.
+func (l *Ledger) JobClass(k JobKey) (string, error) {
+	var class string
+	err := l.db.QueryRow(`SELECT class FROM runners WHERE repo=? AND `+workflowFile+`=? AND COALESCE(platform,'')=? AND job=?
+	  ORDER BY COALESCE(started_at, created_at) DESC LIMIT 1`, k.Repo, k.Workflow, k.Platform, k.Job).Scan(&class)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return class, err
+}
+
 // MeasuredJobs are the jobs with a measured run among the newest finished
 // runners, the most recently run first.
 func (l *Ledger) MeasuredJobs(limit int) ([]JobKey, error) {
