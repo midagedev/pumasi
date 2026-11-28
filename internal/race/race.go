@@ -113,9 +113,17 @@ var Kinds = []Kind{
 	{"deploy-web", "deploy", "deploy-prod.yml", [2]float64{50, 70}, [2]float64{1.8, 2.2}, [2]float64{3.5, 4.5}},
 }
 
+// Later are jobs a repo gains after the fixed runners were sized and
+// pumasi last measured (Drift.New): nobody sized anything for them.
+var Later = []Kind{
+	{"integration", "pr-checks", "pr-checks.yml", [2]float64{120, 200}, [2]float64{2, 3}, [2]float64{5, 7}},
+}
+
 func kindOf(name string) Kind {
-	i := slices.IndexFunc(Kinds, func(k Kind) bool { return k.Name == name })
-	return Kinds[i]
+	if i := slices.IndexFunc(Kinds, func(k Kind) bool { return k.Name == name }); i >= 0 {
+		return Kinds[i]
+	}
+	return Later[slices.IndexFunc(Later, func(k Kind) bool { return k.Name == name })]
 }
 
 // Job is one job as it arrives and runs. CPU is the cores it uses at full
@@ -176,6 +184,34 @@ type Scenario struct {
 	// Warm is pumasi's warm: the most runners a class keeps up without a
 	// job (0 = none), from its arrivals of the last decide.WarmWindow.
 	Warm int `json:"warm,omitempty"`
+	// Drift: how the jobs changed since the fixed runners were sized and
+	// pumasi last measured them (zero: they did not).
+	Drift Drift `json:"drift,omitempty"`
+}
+
+// Drift is a change in a repo's jobs, of the kinds CI goes through: the
+// jobs grow, the heavy ones come more often, a new job appears, the PR rush
+// gives way to nightly batches.
+type Drift struct {
+	Name string `json:"name,omitempty"`
+	// Grow: every job takes this many times as long, as many cores and as
+	// much memory (0 = as before).
+	Grow float64 `json:"grow,omitempty"`
+	// Heavy: the share of pushes that run the optional heavy jobs, the
+	// webkit e2e and the image build (0 = as before: 40% and 35%).
+	Heavy float64 `json:"heavy,omitempty"`
+	// New: each push also runs a job of Later.
+	New bool `json:"new,omitempty"`
+	// Nightly: half the pushes, and a nightly matrix (eight e2e legs, two
+	// image builds) at the start and in the middle.
+	Nightly bool `json:"nightly,omitempty"`
+}
+
+// Before is sc as it was before its drift: what the fixed runners were
+// sized by and what pumasi measured.
+func (sc Scenario) Before() Scenario {
+	sc.Drift = Drift{}
+	return sc
 }
 
 // Film is the scenario the film shows: a busy quarter hour.
@@ -185,6 +221,9 @@ func (sc Scenario) draw(r *rand.Rand, at float64, kind string) Job {
 	k := kindOf(kind)
 	u := func(v [2]float64) float64 { return v[0] + r.Float64()*(v[1]-v[0]) }
 	j := Job{Kind: kind, At: at, Dur: math.Round(u(k.Dur)), CPU: round2(u(k.CPU)), Mem: round2(u(k.Mem)), Busy: sc.Busy}
+	if g := sc.Drift.Grow; g > 0 {
+		j.Dur, j.CPU, j.Mem = math.Round(j.Dur*g), round2(j.CPU*g), round2(j.Mem*g)
+	}
 	if sc.Tails {
 		switch x := r.Float64(); {
 		case x < 0.1:
@@ -205,21 +244,41 @@ func Stream(sc Scenario) []Job {
 	var out []Job
 	add := func(at float64, kind string) { out = append(out, sc.draw(r, at, kind)) }
 	at := 5.0
-	for range sc.Pushes {
+	webkit, build, pushes := 0.4, 0.35, sc.Pushes
+	if h := sc.Drift.Heavy; h > 0 {
+		webkit, build = h, h
+	}
+	if sc.Drift.Nightly {
+		pushes = sc.Pushes / 2
+	}
+	nightly := func(at float64) {
+		for i := range 8 {
+			add(at+float64(i%3), []string{"e2e (chromium)", "e2e (webkit)"}[i%2])
+		}
+		add(at, "build-image")
+		add(at+1, "build-image")
+	}
+	for i := range pushes {
+		if sc.Drift.Nightly && (i == 0 || i == pushes/2) {
+			nightly(at)
+		}
 		o := func() float64 { return math.Round((at+r.Float64()*3)*10) / 10 }
 		add(o(), "lint")
 		add(o(), "unit-tests")
 		add(o(), "typecheck")
 		add(o(), "e2e (chromium)")
-		if r.Float64() < 0.4 {
+		if r.Float64() < webkit {
 			add(o(), "e2e (webkit)")
 		}
-		if r.Float64() < 0.35 {
+		if r.Float64() < build {
 			add(o(), "build-image")
 		}
 		add(o(), "label-check")
 		if r.Float64() < 0.6 {
 			add(o(), "size-report")
+		}
+		if sc.Drift.New {
+			add(o(), Later[0].Name)
 		}
 		at += sc.Every[0] + r.Float64()*(sc.Every[1]-sc.Every[0])
 	}
@@ -292,6 +351,15 @@ type Summary struct {
 	P90Slowdown  float64 `json:"p90Slowdown"`
 	// PeakPSI: the highest cpu pressure on any linux host.
 	PeakPSI float64 `json:"peakPsi"`
+	// OverRunner: jobs whose peak memory passed what their runner was given:
+	// a fixed runner's slot, the size pumasi placed it with. A fixed runner
+	// with that as its memory limit loses the job; one without it squeezes
+	// the host. pumasi lets the job run and counts what it uses.
+	OverRunner int `json:"overRunner"`
+	// HostMemPeak: the most memory the jobs used on any host, as a share of
+	// its room; HostOverSecs: how long some host's jobs used more than it.
+	HostMemPeak  float64 `json:"hostMemPeak"`
+	HostOverSecs float64 `json:"hostOverSecs"`
 }
 
 // Result is one setup's run.
@@ -362,17 +430,29 @@ func summarize(res *Result, jobs []Job, ends []float64) {
 		c, m := h.Room()
 		roomCPU, roomMem = roomCPU+c, roomMem+float64(m)/gb
 	}
+	hostRoom := map[string]float64{}
+	for _, h := range Hosts {
+		_, m := h.Room()
+		hostRoom[h.Name] = float64(m) / gb
+	}
 	var n, cpu, mem, held float64
 	for _, f := range res.Frames {
 		s.PeakWaiting = max(s.PeakWaiting, len(f.Waiting))
 		var c, m, hm float64
-		any := false
+		any, over := false, false
 		for _, h := range f.Hosts {
+			var used float64
 			for _, r := range h.Jobs {
 				c, m, hm = c+r.CPU, m+r.Mem, hm+r.ResMem
 				any = any || !r.Starting
+				used += r.Mem
 			}
 			s.PeakPSI = math.Max(s.PeakPSI, h.PSI)
+			s.HostMemPeak = math.Max(s.HostMemPeak, used/hostRoom[h.Name])
+			over = over || used > hostRoom[h.Name]+1e-9
+		}
+		if over {
+			s.HostOverSecs += Tick
 		}
 		if any {
 			n, cpu, mem, held = n+1, cpu+c, mem+m, held+hm
@@ -381,7 +461,8 @@ func summarize(res *Result, jobs []Job, ends []float64) {
 	if n > 0 {
 		s.CPUUse, s.MemUse, s.MemHeld = cpu/n/roomCPU, mem/n/roomMem, held/n/roomMem
 	}
-	s.CPUUse, s.MemUse, s.MemHeld, s.PeakPSI = round2(s.CPUUse), round2(s.MemUse), round2(s.MemHeld), math.Round(s.PeakPSI)
+	s.CPUUse, s.MemUse, s.MemHeld, s.PeakPSI, s.HostMemPeak = round2(s.CPUUse), round2(s.MemUse), round2(s.MemHeld), math.Round(s.PeakPSI), round2(s.HostMemPeak)
+	s.OverRunner = res.Summary.OverRunner
 	res.Summary = s
 }
 
@@ -495,10 +576,21 @@ type Fixed struct {
 
 // takes reports whether runner s takes a job of kind k.
 func (f Fixed) takes(s Slot, k Kind) bool {
-	if len(f.Small) > 0 && slices.Contains(f.Small, k.Name) != s.Small {
+	if len(f.Small) > 0 && f.small(k) != s.Small {
 		return false
 	}
 	return s.Small || slices.Contains(s.Classes, k.Class)
+}
+
+// small reports whether a split setup sends k to its small runners: the
+// jobs it named, and a job added later to a class whose jobs it named — the
+// new job's runs-on is its siblings'.
+func (f Fixed) small(k Kind) bool {
+	if slices.Contains(f.Small, k.Name) {
+		return true
+	}
+	return slices.ContainsFunc(Later, func(l Kind) bool { return l.Name == k.Name }) &&
+		slices.ContainsFunc(f.Small, func(n string) bool { return kindOf(n).Class == k.Class })
 }
 
 // peak is the most a kind's job uses.
@@ -616,6 +708,13 @@ func PerClass(jobs []Job) Fixed {
 			if k.Class == c.Name {
 				kc, km := peak(k)
 				cpu, mem = math.Max(cpu, kc), math.Max(mem, math.Ceil(km))
+			}
+		}
+		// Jobs larger than their kind ever was (they grew, or are new) are
+		// sized by what they used: the stream is known in advance.
+		for _, j := range jobs {
+			if kindOf(j.Kind).Class == c.Name {
+				cpu, mem = math.Max(cpu, j.CPU), math.Max(mem, math.Ceil(j.Mem))
 			}
 		}
 		size[c.Name] = [2]float64{cpu, mem}
@@ -737,6 +836,9 @@ func RunFixed(f Fixed, jobs []Job) Result {
 			}
 			busy[si] = start(ji, f.Slots[si].Host, t, jobs)
 			res.Waits[ji] = math.Max(0, t-jobs[ji].At)
+			if jobs[ji].Mem > f.Slots[si].Mem+1e-9 {
+				res.Summary.OverRunner++
+			}
 		}
 		queue = left
 		fr := newFrame(t, done, ids(jobs, queue))
@@ -806,7 +908,7 @@ func history(sc Scenario) map[string][]size.Sample {
 	r := rand.New(rand.NewPCG(sc.Seed, 2))
 	for _, k := range Kinds {
 		for range size.Window {
-			out[k.Name] = append(out[k.Name], sc.draw(r, 0, k.Name).alone())
+			out[k.Name] = append(out[k.Name], sc.Before().draw(r, 0, k.Name).alone())
 		}
 	}
 	return out
@@ -904,6 +1006,9 @@ func RunPumasi(sc Scenario, jobs []Job) Result {
 				demand = slices.Delete(demand, i, i+1)
 				r.run, r.est = start(ji, r.host, t, jobs), estimate(measured, jobs[ji].Kind)
 				res.Waits[ji] = math.Max(0, t-jobs[ji].At)
+				if jobs[ji].Mem*gb > float64(r.est.MemBytes)+1 {
+					res.Summary.OverRunner++
+				}
 				if r.warm {
 					res.Idle.WarmServed++
 				}

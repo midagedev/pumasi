@@ -165,3 +165,38 @@ func TestWarmRunnersTakeJobsAsTheyCome(t *testing.T) {
 		t.Fatalf("warm runners: %+v", st)
 	}
 }
+
+// Fixed runners sized once do not see the jobs change: grown jobs run past
+// their runners' memory and over the hosts', and a class whose heavy jobs
+// come more often than it was sized for has its queue grow. pumasi, which
+// measured the jobs as they were, keeps every host within its memory and
+// its longest wait shorter.
+func TestDriftAfterTheFixedRunnersWereSized(t *testing.T) {
+	for seed := uint64(1); seed <= 3; seed++ {
+		sc := Film
+		sc.Seed, sc.Drift = seed, Drifts[0] // jobs grow
+		rs := DriftRun(sc)
+		perClass, refit, pumasi := rs[0], rs[3], rs[4]
+		if perClass.Summary.OverRunner == 0 || perClass.Summary.HostOverSecs == 0 {
+			t.Fatalf("seed %d, grown jobs on runners sized before: %+v", seed, perClass.Summary)
+		}
+		if refit.Summary.OverRunner != 0 || pumasi.Summary.HostOverSecs != 0 {
+			t.Fatalf("seed %d: sized again %+v, pumasi %+v", seed, refit.Summary, pumasi.Summary)
+		}
+		sc.Drift = Drifts[1] // heavy jobs every push
+		rs = DriftRun(sc)
+		if rs[4].Summary.MaxWait >= rs[0].Summary.MaxWait {
+			t.Fatalf("seed %d, heavy jobs: pumasi waits up to %gs, per-class sized before %gs", seed, rs[4].Summary.MaxWait, rs[0].Summary.MaxWait)
+		}
+	}
+}
+
+// With no drift, the stream is the one it always was.
+func TestNoDriftIsTheSameStream(t *testing.T) {
+	sc := Film
+	sc.Drift = Drift{Name: "none"}
+	a, b := Stream(sc), Stream(Film)
+	if len(a) != len(b) || a[10] != b[10] {
+		t.Fatalf("streams differ")
+	}
+}
