@@ -13,6 +13,16 @@ import (
 // so that a change early in the span has runs before it.
 const Baseline = 14 * 24 * time.Hour
 
+// TrendSpan is the span `pumasi trend` and /api/trend show by default.
+const TrendSpan = 14 * 24 * time.Hour
+
+// TrendFrom is where a trend of span up to now starts: the start of that
+// day, in now's zone.
+func TrendFrom(now time.Time, span time.Duration) time.Time {
+	t := now.Add(-span)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
 // TrendReport is `pumasi trend` and /api/trend: every job's numbers over a
 // span, and the changes whose first run is in it.
 type TrendReport struct {

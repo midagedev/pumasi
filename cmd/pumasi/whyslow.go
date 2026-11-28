@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -84,8 +85,12 @@ func printWhy(w io.Writer, rep watch.WhyReport, web string) {
 	fmt.Fprintf(w, "%s\nagainst the last %d runs of each job on %s before it\n\n", rep.What, rep.Baseline, trunk)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "JOB\tRUNS\tTIME\tUSUAL\tp10-p90\tCHANGE\tVERDICT\tMEM\tCPU")
+	uneven := false
 	row := func(name string, j watch.JobWhy) {
 		v := j.Time.Verdict
+		if v == "usual" && math.Abs(j.Time.Ratio) >= 0.10 {
+			v, uneven = "uneven", true
+		}
 		if j.Failed {
 			v += " (failed)"
 		}
@@ -105,6 +110,9 @@ func printWhy(w io.Writer, rep watch.WhyReport, web string) {
 		row("(whole run)", *rep.Total)
 	}
 	tw.Flush()
+	if uneven {
+		fmt.Fprint(w, "\nuneven: the median is 10% or more off its usual, but not clearly (a run of it was within the usual spread, or too few ran to tell), so it is not called slower or faster")
+	}
 	for _, j := range rep.Jobs {
 		if !j.BaselineSince.IsZero() {
 			fmt.Fprintf(w, "\n%s: main changed in it on %s, so its usual is main's %d runs since", j.Job, j.BaselineSince.Local().Format("Mon Jan 2 15:04"), j.Time.Usual.Runs)

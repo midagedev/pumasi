@@ -387,17 +387,19 @@ func growth(in AlarmInput, limit float64) []Alarm {
 	return out
 }
 
-// Secs is seconds as people read them: 45s, 4m02s, 1h10m.
+// Secs is seconds as people read them: 45s, 4m02s, 1h10m. Rounded to the
+// second, as the dashboard rounds them (269.5s is 4m30s in both).
 func Secs(s float64) string {
+	n := int(math.Round(s))
 	switch {
-	case s <= 0:
+	case n <= 0:
 		return "0s"
-	case s < 60:
-		return fmt.Sprintf("%.0fs", s)
-	case s < 3600:
-		return fmt.Sprintf("%dm%02ds", int(s)/60, int(s)%60)
+	case n < 60:
+		return fmt.Sprintf("%ds", n)
+	case n < 3600:
+		return fmt.Sprintf("%dm%02ds", n/60, n%60)
 	}
-	return fmt.Sprintf("%dh%02dm", int(s)/3600, int(s)%3600/60)
+	return fmt.Sprintf("%dh%02dm", n/3600, n%3600/60)
 }
 
 // GiB is bytes as 3.4G.
