@@ -2,7 +2,7 @@
 // It sits outside web/ so that it is not served with the dashboard.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf } from "../web/js/util.js";
+import { expectText, expressRow, hostLoad, readyLine, shownRatio, stepOf, machineShare, cardGB } from "../web/js/util.js";
 
 const GiB = 1024 ** 3;
 
@@ -79,4 +79,15 @@ test("stepOf names the step that moved most the way the job did", () => {
   assert.equal(stepOf({ ratio: -0.22, steps }).name, "Typecheck");
   assert.equal(stepOf({ ratio: 0.1, steps }).name, "Lint");
   assert.equal(stepOf({ ratio: 0.1, steps: [] }), null);
+});
+
+// held + machine + free on a host's card add up to its memory as written:
+// 128 GB, held 105.7 (reads 106), free 3.62 (reads 3.6): machine 18.4; and
+// 32 GB, held 25.7, free 6.3: no machine share, and the two read 25.7 + 6.3.
+test("a host card's machine share makes held + machine + free its memory", () => {
+  const M = { lend: 128 * GiB, held: 80 * GiB, kept: 12.7 * GiB, give: 13 * GiB, free: 3.62 * GiB };
+  assert.equal(machineShare(M), 18.4);
+  assert.equal(machineShare({ lend: 24 * GiB, held: 16 * GiB, kept: 0, give: 0, free: 8 * GiB }), 0);
+  assert.equal(machineShare({ lend: 32 * GiB, held: 25.7 * GiB, kept: 0, give: 0, free: 6.3 * GiB }), 0);
+  assert.deepEqual([cardGB(25.7), cardGB(26), cardGB(0.66), cardGB(105.7), cardGB(99.96)], ["25.7", "26", "0.7", "106", "100"]);
 });

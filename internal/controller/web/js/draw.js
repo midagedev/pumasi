@@ -3,7 +3,7 @@
 // sorted back to front, then light, smoke and the labels.
 import { TW, TH, TZ, box, cylinder, poly, noiseTile } from "./iso.js";
 import { HALL_D, LY0, BELT_Z } from "./world.js";
-import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords } from "./util.js";
+import { GiB, rgb, shade, mix, hex, clamp, hash, rng, gib, dur, osBadge, since, plainReason, gb, cpus, ago, isReady, aheadOf, overflowWords, machineShare, cardGB } from "./util.js";
 
 const WALL_H = 2.3;
 
@@ -1174,8 +1174,12 @@ export class Scene {
     if (!off && M && !tg.L.why) {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
       const mine = M.held + M.kept;
-      // held is all runners hold; gives way is the part of it ready runners hand over
-      const keys = (long) => [["held", `held ${short((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${short(M.give / GiB)} of it gives way`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
+      // held is all runners hold; gives way is the part of it ready runners hand over;
+      // machine is the rest of what the host has (or lends): other programs and the
+      // memory kept free for it, so that held + machine + free reads as its memory
+      const mach = machineShare(M);
+      const keys = (long) => [["held", `held ${cardGB((mine + (M.give || 0)) / GiB)}${long ? " GB" : ""}`], ...(M.give > 0 ? [["give", `${cardGB(M.give / GiB)} of it gives way`]] : []),
+        ...(mach > 0 ? [["other", `machine ${mach}${long ? " GB" : ""}`]] : []), ["used", `used ${cardGB(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
       // the keys packed into as few lines as fit, the long words first
@@ -1280,7 +1284,7 @@ export class Scene {
         const low = k === "mem" ? GiB : 0.5;
         ctx.fillStyle = p && p.free < low ? rgb(p.room < low ? th.bad : th.ready) : th.text;
         ctx.textAlign = "right";
-        ctx.fillText(p ? (k === "mem" ? short(p.free / GiB) + "G" : short(p.free)) + " free" : "-", x + w - pad, yy + 0.5);
+        ctx.fillText(p ? (k === "mem" ? cardGB(p.free / GiB) + "G" : short(p.free)) + " free" : "-", x + w - pad, yy + 0.5);
         ctx.textAlign = "left";
       };
       bar(cpuLabel, L.cpu, cy + 7, "cpu");
@@ -1293,7 +1297,7 @@ export class Scene {
         // the line (or two) that says the bar's parts: held, gives way, used
         const sq = (style) => (kx, ky) => { ctx.fillStyle = style; ctx.fillRect(kx, ky - 4, 8, 8); };
         const ln = (kx, ky) => { ctx.fillStyle = th.night ? "rgba(255,255,255,0.92)" : "rgba(0,0,0,0.78)"; ctx.fillRect(kx, ky + 1, 8, 3); };
-        const look = { held: [sq(rgb(busyCol)), null], give: [sq(this.giveBar), rgb(th.ready)], used: [ln, null] };
+        const look = { held: [sq(rgb(busyCol)), null], give: [sq(this.giveBar), rgb(th.ready)], other: [sq(rgb(th.off, 0.7)), null], used: [ln, null] };
         ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
         (tg.leg || []).forEach((row, i) => {
           let lx = x + pad;

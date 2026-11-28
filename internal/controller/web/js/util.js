@@ -200,7 +200,7 @@ export function hostLoad(h, runners = []) {
 // the part of them that gives way to another class's waiting job.
 export function readyLine(L) {
   if (!L.ready) return "";
-  const give = `${gb(L.mem ? L.mem.give : 0)}${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
+  const give = `${cardGB((L.mem ? L.mem.give : 0) / GiB)} GB${L.cpu ? " · " + cpus(L.cpu.give) : ""}`;
   if (L.giving === L.ready) return `${L.ready} ready ${L.ready === 1 ? "runner gives" : "runners give"} way: ${give}`;
   if (L.giving) return `${L.ready} ready; ${L.giving} ${L.giving === 1 ? "gives" : "give"} way: ${give}`;
   return `${L.ready} ready ${L.ready === 1 ? "runner keeps its" : "runners keep their"} room`;
@@ -233,6 +233,19 @@ export function stepOf(c) {
   const way = c.ratio >= 0 ? 1 : -1;
   const moved = (c.steps || []).map((x) => ({ x, d: way * (x.after - x.before) })).filter((m) => m.d > 0).sort((a, b) => b.d - a.d);
   return moved.length ? moved[0].x : null;
+}
+// cardGB: memory on a host's card, in GB: to a tenth below 100 (a ".0" left
+// off), whole above, so that the card's numbers add up as written.
+export function cardGB(v) {
+  return v >= 99.95 ? String(Math.round(v)) : String(parseFloat(Math.max(0, v).toFixed(1)));
+}
+// machineShare: what of a host's memory is neither held by runners nor free,
+// in GB as the card writes it: its memory (as the hall's sign has it) less
+// held and free as the card shows them, so the three add up on screen.
+export function machineShare(M) {
+  const n = (b) => parseFloat(cardGB(b / GiB));
+  const m = Math.round((n(M.lend) - n(M.held + M.kept + (M.give || 0)) - n(M.free)) * 10) / 10;
+  return m >= 0.1 ? m : 0;
 }
 // plainReason: why a class's next job waits, in one sentence. Placement says
 // "no host with 3.8cpu/19.2G free (h1 0.8cpu/2.8G, h2 down)"; this says which

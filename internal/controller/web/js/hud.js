@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio, stepOf } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText, isReady, aheadOf, overflowWords, readyLine, shownRatio, stepOf, cardGB, machineShare } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -152,7 +152,7 @@ export function renderChrome(onSelect) {
       onclick: () => onSelect({ kind: "host", id: h.name }),
     }, el("span", { class: "dot " + L.tone }), el("span", { class: "name", text: h.name }), el("span", { class: "word " + L.tone, text: off ? L.word : L.word + (L.why ? ": " + L.why : "") }),
       off ? el("span", { class: "sub", text: `${L.why ? L.why + " · " : ""}${offJobs(h, s.runners, L)}` })
-        : el("span", { class: "gauges" }, gauge("CPU", L.cpu, L.cpu ? short(L.cpu.free) : ""), gauge("Mem", L.mem, L.mem ? short(L.mem.free / GiB) + "G" : "")),
+        : el("span", { class: "gauges" }, gauge("CPU", L.cpu, L.cpu ? short(L.cpu.free) : ""), gauge("Mem", L.mem, L.mem ? cardGB(L.mem.free / GiB) + "G" : "")),
       ready && !off ? el("span", { class: "sub ready", text: ready }) : null, shared && !off ? el("span", { class: "sub", text: shared }) : null));
   }));
 
@@ -295,15 +295,16 @@ function build(sel, actions) {
       const runners = s.runners.filter((r) => r.host === h.name);
       const mem = h.memBytes || 0;
       const M = L.mem, C = L.cpu;
+      const hgb = (b) => cardGB((b || 0) / GiB) + " GB"; // memory as the host's card writes it
       const parts = (p, f) => [["held by busy runners", p.held, ZC.held, f(p.held)], ["held by starting or kept runners", p.kept, ZC.kept, f(p.kept)], ["held by ready runners: gives way", p.give, ZC.give, f(p.give)],
-        ["other programs, kept for the machine", p.other, ZC.others, f(p.other)], ["free", p.free, ZC.free, f(p.free)]];
+        ["other programs, kept for the machine", p.other, ZC.others, p === M && machineShare(M) ? machineShare(M) + " GB" : f(p.other)], ["free", p.free, ZC.free, f(p.free)]]; // memory: the card's "machine"
       const readyN = runners.filter(isReady).length;
       return el("div", { "data-host": h.name },
         el("div", { class: "kind", text: "host · a hall on the map" }), el("h3", { text: h.name }),
         el("div", { class: "state " + L.tone }, el("span", { class: "dot " + L.tone }), " " + L.word + (L.why ? ": " + L.why : ""),
           C && M ? el("span", { class: "note", text: ` · a waiting job finds ${cpus(C.room)} and ${gb(M.room)}` + (M.give || C.give ? " (counting what ready runners give up)" : "") }) : null),
-        M ? section(`Memory · ${gb(M.free)} free` + (M.give ? ` · ${gb(M.give)} more when ready runners give way` : ""), memBar(parts(M, gb)),
-          el("div", { class: "note", text: `Its runners use ${gb(M.used)} now, of the ${gb(M.held + M.kept + M.give)} they hold. A runner holds the largest of its job's last runs plus 20%, or what it uses when that is more, so a job never runs short; a ready runner holds its class's largest recent job until it knows its own. ${gb(mem)} in the machine${h.budgetMem ? ", " + gb(h.budgetMem) + " lent to runners" : ""}.` })) : null,
+        M ? section(`Memory · ${hgb(M.free)} free` + (M.give ? ` · ${hgb(M.give)} more when ready runners give way` : ""), memBar(parts(M, hgb)),
+          el("div", { class: "note", text: `Its runners use ${hgb(M.used)} now, of the ${hgb(M.held + M.kept + M.give)} they hold. A runner holds the largest of its job's last runs plus 20%, or what it uses when that is more, so a job never runs short; a ready runner holds its class's largest recent job until it knows its own. ${gb(mem)} in the machine${h.budgetMem ? ", " + gb(h.budgetMem) + " lent to runners" : ""}.` })) : null,
         C ? section(`CPU · ${cpus(C.free)} free` + (C.give ? ` · ${cpus(C.give)} more when ready runners give way` : ""), memBar(parts(C, cpus)),
           el("div", { class: "note", text: `Its runners use ${cpus(C.used)} now.` + (L.share > 1 ? ` Cores shared: placement counts the ${h.cpus} cores ${L.share}× (${cpus(C.lend)}), as jobs that share a core only take longer; it stops at cpu pressure ${(s.limits || {}).psiCpu || 40}%. Memory is never shared.` : "") })) : null,
         readyN ? el("div", { class: "note ready-note", text: `${readyN} ready ${readyN === 1 ? "runner" : "runners"} (blue): up with no job yet, kept warm for their class's next job. Each takes a job of its own class at once${L.giving ? `; ${L.giving} step aside for a waiting job of another class that needs the room` : ""}.` }) : null,
@@ -603,8 +604,8 @@ export function renderList(actions) {
     const L = hostLoad(h, s.runners), M = L.mem, C = L.cpu;
     const seg = (p) => mbar([[p.held + p.kept, ZC.held, p.lend], [p.give, ZC.give, p.lend], [p.other, ZC.others, p.lend], [p.free, ZC.free, p.lend]]);
     return el("tr", { "data-host": h.name }, td(h.name), td(L.word + (L.why ? ": " + L.why : ""), L.tone === "ok" ? "muted" : L.tone === "ready" ? "ready" : L.tone === "bad" ? "problem" : "waiting"),
-      td(C && M ? `${cpus(C.free)} · ${gb(M.free)}` : "-", "num"),
-      el("td", {}, M ? [seg(M), `${short((M.held + M.kept) / GiB)} held · ${short(M.used / GiB)} used` + (M.give ? ` · ${short(M.give / GiB)} gives way` : "") + ` · of ${gb(M.lend)}` + (h.budgetMem && h.budgetMem < h.memBytes ? ` lent (${gb(h.memBytes)} RAM)` : "")] : "-"),
+      td(C && M ? `${cpus(C.free)} · ${cardGB(M.free / GiB)} GB` : "-", "num"),
+      el("td", {}, M ? [seg(M), `${cardGB((M.held + M.kept) / GiB)} held · ${cardGB(M.used / GiB)} used` + (M.give ? ` · ${cardGB(M.give / GiB)} gives way` : "") + ` · of ${gb(M.lend)}` + (h.budgetMem && h.budgetMem < h.memBytes ? ` lent (${gb(h.memBytes)} RAM)` : "")] : "-"),
       el("td", {}, C ? [seg(C), `${short(C.held + C.kept)} held · ${short(C.used)} used` + (C.give ? ` · ${short(C.give)} gives way` : "") + ` · of ${short(C.lend)}` + (L.share > 1 ? ` (${h.cpus}×${L.share})` : h.budgetCpus && h.budgetCpus < h.cpus ? ` lent (${h.cpus} cores)` : "")] : "-"),
       td(h.runners + (L.ready ? ` (${L.ready} ready)` : ""), "num"), td(h.kind + " · " + (h.os || "-"), "opt muted"),
       td(nearest(pressures(h, s.limits)), "num opt"), td(h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
