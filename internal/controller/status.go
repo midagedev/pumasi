@@ -32,6 +32,18 @@ type Status struct {
 	// oldest jobs runners that are up without a job will take (not in Line).
 	Line     []decide.Lined `json:"line,omitempty"`
 	Covering map[string]int `json:"covering,omitempty"`
+	// Expect: when each waiting job is expected to start, by its id, as the
+	// last round played it forward (decide.Forecast). A job without one waits
+	// for something no end in sight opens.
+	Expect map[string]Expect `json:"expect,omitempty"`
+}
+
+// Expect is when a waiting job is expected to start, where, and whose end
+// makes the room ("" = there is room, or its runner is coming up).
+type Expect struct {
+	StartsAt time.Time `json:"startsAt"`
+	Host     string    `json:"host"`
+	After    string    `json:"after,omitempty"`
 }
 
 // Link is the connection to one host, whichever side opened it.
@@ -51,10 +63,10 @@ type Waiting struct {
 	Priority string `json:"priority,omitempty"`
 }
 
-func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan) {
+func (c *Controller) setStatus(snap decide.Snapshot, plan decide.Plan, expect map[string]Expect) {
 	defers := plan.Defer
 	st := Status{Hosts: map[string]*api.Snapshot{}, Waiting: []Waiting{}, Closed: map[string]string{}, Links: map[string]Link{},
-		Line: plan.Line, Covering: map[string]int{}}
+		Line: plan.Line, Covering: map[string]int{}, Expect: expect}
 	stopped := map[string]bool{}
 	for _, s := range plan.Stop {
 		stopped[s.Runner] = true

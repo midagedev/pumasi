@@ -25,7 +25,7 @@ func TestMetricsHaveTheControllersFamilies(t *testing.T) {
 	r.runner("small-h1-live")
 	r.ag.Sample(context.Background())
 	r.refreshHosts(context.Background(), *r.now)
-	r.setStatus(decide.Snapshot{}, decide.Plan{})
+	r.setStatus(decide.Snapshot{}, decide.Plan{}, nil)
 	var b strings.Builder
 	if err := r.writeMetrics(&b); err != nil {
 		t.Fatal(err)

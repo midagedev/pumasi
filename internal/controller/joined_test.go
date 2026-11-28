@@ -169,7 +169,7 @@ func TestJoinedHostIsAHostLikeAnyOther(t *testing.T) {
 	// status and the dashboard list it next to the config's hosts.
 	now := time.Now()
 	c.refreshHosts(ctx, now)
-	c.setStatus(decide.Snapshot{}, decide.Plan{})
+	c.setStatus(decide.Snapshot{}, decide.Plan{}, nil)
 	st, err := CollectState(c.cfg, c.ledger, c.liveStatus(), true, now)
 	if err != nil || len(st.Hosts) != 2 {
 		t.Fatalf("state %+v %v", st.Hosts, err)

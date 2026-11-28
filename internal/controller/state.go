@@ -40,6 +40,16 @@ type State struct {
 	Limits StateLimits `json:"limits"`
 }
 
+// JobExpect is when a waiting job is expected to start: in so many
+// seconds, on a host, once a job ends ("" = there is room, or its runner is
+// coming up). A forecast from the jobs that run and wait now, with the run
+// times their last runs took.
+type JobExpect struct {
+	InSeconds int64  `json:"inSeconds"`
+	Host      string `json:"host"`
+	After     string `json:"after,omitempty"`
+}
+
 // ClassState is a class as the config gives it, defaults filled in.
 type ClassState struct {
 	Name     string   `json:"name"`
@@ -184,6 +194,9 @@ type JobWait struct {
 	// it was named by it or by its URL.
 	Expedited   bool  `json:"expedited,omitempty"`
 	GithubJobID int64 `json:"githubJobId,omitempty"`
+	// Expect: waiting jobs only, when it is expected to start, if anything in
+	// sight lets it (see Status.Expect).
+	Expect *JobExpect `json:"expect,omitempty"`
 }
 
 type WaitingState struct {
@@ -352,6 +365,9 @@ func CollectState(cfg *config.Config, l *ledger.Ledger, live Status, ok bool, no
 			if lj.WaitingFor != "" && lj.Position > 0 {
 				j.Reason = lj.WaitingFor
 			}
+		}
+		if e, ok := live.Expect[d.JobID]; ok {
+			j.Expect = &JobExpect{InSeconds: int64(max(0, e.StartsAt.Sub(now).Seconds())), Host: e.Host, After: e.After}
 		}
 		out.WaitingJobs = append(out.WaitingJobs, j)
 	}

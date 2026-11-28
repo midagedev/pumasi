@@ -177,6 +177,13 @@ export function plainReason(reason) {
   if (best.cpu < p.needCpu) return `needs ${cpus(p.needCpu)}, ${best.name} has the memory but only ${cpus(best.cpu)} free${tail}`;
   return `needs ${cpus(p.needCpu)} and ${gbn(p.needMem)}; room is opening on ${best.name}${tail}`;
 }
+// expectText: when a waiting job is expected to start (state's expect), in a few words.
+export function expectText(e) {
+  if (!e) return "";
+  const s = e.inSeconds || 0;
+  const inw = s < 60 ? "under a minute" : s < 5400 ? "~" + Math.round(s / 60) + "m" : "~" + Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
+  return `starts in ${inw} on ${e.host}` + (e.after ? `, when ${e.after} ends` : "");
+}
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
 
 export const levelWord = (j) => (j.expedited || j.level === "expedite" ? "expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");

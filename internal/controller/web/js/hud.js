@@ -1,6 +1,6 @@
 // The HUD and the list view: every fact the plant shows, as text, with the
 // command to type next to each problem. Agents read this; people click it.
-import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord } from "./util.js";
+import { el, gib, mib, dur, clock, since, size, osBadge, parseReason, rgb, GiB, gb, gbn, cpus, ago, hostLoad, plainReason, levelWord, kindWord, expectText } from "./util.js";
 import { classesOf } from "./world.js";
 
 const $ = (id) => document.getElementById(id);
@@ -143,7 +143,8 @@ export function renderChrome(onSelect) {
       el("span", { class: "pos", text: i + 1, title: j.position ? ordinal(j.position) + " in the whole line, counting jobs already starting" : null }),
       el("span", { class: "jn" }, lw ? el("span", { class: "lvl " + (lw === "expedited" ? "expedite" : lw), text: lw }) : null, " ", j.job || "(name not known yet)"),
       el("span", { class: "age", text: ago(j.waitedSeconds) }),
-      el("span", { class: "why", text: plainReason(j.reason) })),
+      el("span", { class: "why", text: plainReason(j.reason) }),
+      j.expect ? el("span", { class: "eta", text: expectText(j.expect) }) : null),
       j.expedited ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
   }), ...(held.length > show.length ? [el("li", { class: "more" }, el("button", { type: "button", onclick: () => onSelect({ kind: "priority" }) }, `+${held.length - show.length} more: open Priority`))] : []),
@@ -328,6 +329,7 @@ function build(sel, actions) {
         el("div", { class: "kind", text: "waiting job · a crate on the map" }), el("h3", { text: j.job || "(name not known yet)" }),
         el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? "expedited" : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
         el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + plainReason((line && line.waitingFor) || j.reason) }),
+        j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect) }) : null,
         section("Run it sooner", expediteBox(j, actions)),
         facts([["class", j.class], ["repo", j.repo], ["workflow", j.workflow], ["run", run ? el("a", { href: run, target: "_blank", rel: "noopener", text: String(j.runId) }) : String(j.runId || "-")],
           ["its place", j.ranked || (line && line.why) || "by its age"], ["placement says", (line && line.waitingFor) || j.reason || "-"]]),

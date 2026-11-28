@@ -434,7 +434,8 @@ func (d *Demo) fresh() *demoWorld {
 			for range size.Window {
 				m := kd.mem[0] + r.Float64()*(kd.mem[1]-kd.mem[0])
 				c := kd.cpu[0] + r.Float64()*(kd.cpu[1]-kd.cpu[0])
-				w.measured[k] = append(w.measured[k], size.Sample{CPUs: c * 0.8, MemBytes: int64(m * float64(gb))})
+				sec := kd.dur[0] + r.Float64()*(kd.dur[1]-kd.dur[0])
+				w.measured[k] = append(w.measured[k], size.Sample{CPUs: c * 0.8, MemBytes: int64(m * float64(gb)), Secs: sec})
 			}
 			w.lastRun[k] = demoWarm - 3600 - float64(i)*60
 		}
@@ -602,7 +603,7 @@ func (d *Demo) finish(w *demoWorld, r demoRunner, t float64, result string, oom 
 	}
 	if run := t - r.started; run > 0 && result != "canceled" && !r.job.spec.k().forget {
 		k := sizeKey(r.job.spec.kind, d.class(r.class).Platform())
-		runs := append(w.measured[k], size.Sample{CPUs: r.cpuSec / run, MemBytes: r.memPeak, OOM: oom})
+		runs := append(w.measured[k], size.Sample{CPUs: r.cpuSec / run, MemBytes: r.memPeak, OOM: oom, Secs: run})
 		if len(runs) > size.Window {
 			runs = runs[len(runs)-size.Window:]
 		}
@@ -945,17 +946,46 @@ func (d *Demo) waitIncidents(w *demoWorld, t float64) {
 
 // demoView is the world at t, told as of the wall clock now.
 type demoView struct {
-	d   *Demo
-	w   *demoWorld
-	t   float64
-	now time.Time
-	ops demoOps
+	d      *Demo
+	w      *demoWorld
+	t      float64
+	now    time.Time
+	ops    demoOps
+	expect map[string]decide.Expect // by job id
 }
 
 func (d *Demo) view(t float64, now time.Time) demoView {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return demoView{d, d.at(t).clone(), t, now, d.ops.clone()}
+	w := d.at(t).clone()
+	return demoView{d, w, t, now, d.ops.clone(), d.forecast(w.clone(), t)}
+}
+
+// forecast is when each waiting job is expected to start, as the controller
+// works it out: run times from the measured runs, a runner up in 4s.
+func (d *Demo) forecast(w *demoWorld, t float64) map[string]decide.Expect {
+	s := d.snapshot(w, t)
+	runtime := func(kind, class string) (time.Duration, bool) {
+		return size.Runtime(w.measured[sizeKey(kind, d.class(class).Platform())])
+	}
+	busy := map[string]decide.Busy{}
+	for _, r := range w.runners {
+		if r.started == 0 {
+			continue
+		}
+		b := decide.Busy{Job: r.job.spec.kind}
+		if rt, ok := runtime(r.job.spec.kind, r.class); ok {
+			b.Ends = decide.EndOf(demoEpoch.Add(time.Duration(r.started*float64(time.Second))), s.Now, rt)
+		}
+		busy[r.name] = b
+	}
+	runs := map[string]time.Duration{}
+	for _, j := range w.demand {
+		if rt, ok := runtime(j.spec.kind, j.class); ok {
+			runs[j.id()] = rt
+		}
+	}
+	return decide.Forecast(s, busy, runs, 4*time.Second)
 }
 
 // ts is the wall time of sim second s.
@@ -1068,6 +1098,9 @@ func (v demoView) state() State {
 		lj := line[j.id()]
 		jw.Level, jw.Ranked, jw.Position = cond(lj.level() == "normal", "", lj.level()), lj.Ranked, lj.place
 		jw.Expedited = v.ops.expeditedAt(j.id(), t)
+		if e, ok := v.expect[j.id()]; ok {
+			jw.Expect = &JobExpect{InSeconds: int64(e.In.Seconds()), Host: e.Host, After: e.After}
+		}
 		out.WaitingJobs = append(out.WaitingJobs, jw)
 	}
 	pv := v.priority()

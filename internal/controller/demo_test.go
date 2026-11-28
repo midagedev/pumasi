@@ -249,3 +249,37 @@ func TestDemoPriorityControls(t *testing.T) {
 }
 
 func jsonNum(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+// Waiting jobs say when they are expected to start, where, and whose end
+// makes the room; one waiting for a runner on a host that is down says nothing.
+func TestDemoWaitingJobsHaveAnExpectedStart(t *testing.T) {
+	st := NewDemo(1).view(400, time.Date(2026, 11, 27, 7, 0, 0, 0, time.UTC)).state()
+	var told int
+	for _, j := range st.WaitingJobs {
+		if j.Expect == nil {
+			continue
+		}
+		told++
+		if j.Expect.Host == "" || j.Expect.InSeconds < 0 || j.Expect.InSeconds > 7200 {
+			t.Fatalf("%s: %+v", j.Job, j.Expect)
+		}
+	}
+	if told < 2 {
+		t.Fatalf("%d of %d waiting jobs have an expected start", told, len(st.WaitingJobs))
+	}
+}
+
+func TestExpectText(t *testing.T) {
+	for _, c := range []struct {
+		e    JobExpect
+		want string
+	}{
+		{JobExpect{InSeconds: 40, Host: "h1"}, "starts in under a minute on h1"},
+		{JobExpect{InSeconds: 150, Host: "h1", After: "e2e"}, "starts in ~3m on h1, when e2e ends"},
+		{JobExpect{InSeconds: 6000, Host: "h2", After: "build"}, "starts in ~1h40m on h2, when build ends"},
+	} {
+		if got := c.e.Text(); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.e, got, c.want)
+		}
+	}
+}

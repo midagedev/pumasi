@@ -503,6 +503,24 @@ func countList(by map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
+// Text says the forecast in a few words: "starts in ~3m on h1, when e2e ends".
+func (e JobExpect) Text() string {
+	var in string
+	switch s := e.InSeconds; {
+	case s < 60:
+		in = "under a minute"
+	case s < 90*60:
+		in = fmt.Sprintf("~%dm", (s+30)/60)
+	default:
+		in = fmt.Sprintf("~%dh%02dm", s/3600, s%3600/60)
+	}
+	t := "starts in " + in + " on " + e.Host
+	if e.After != "" {
+		t += ", when " + e.After + " ends"
+	}
+	return t
+}
+
 func dur(sec int64) string {
 	d := time.Duration(max(sec, 0)) * time.Second
 	switch {
@@ -624,6 +642,9 @@ func WriteExplain(w io.Writer, s State, fs []Finding, pv *PriorityView, url stri
 			}
 			if j.Position > 0 {
 				n = fmt.Sprintf("#%d %s", j.Position, n)
+			}
+			if j.Expect != nil {
+				n += " (" + j.Expect.Text() + ")"
 			}
 			names = append(names, n)
 		}

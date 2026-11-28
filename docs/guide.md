@@ -98,6 +98,7 @@ priority:                                   # 위에서부터, 처음 맞는 규
 - `level` 은 `high` · `normal` · `low`. **high 는 30분(`priorityHeadStart`) 먼저 온 것으로, low 는 30분 늦게 온 것으로 친다.** 줄은 그렇게 친 시각 순이다.
   그래서 굶는 잡이 없다: 30분 넘게 기다린 normal 잡은 방금 온 high 잡보다 앞이고, low 잡도 30분이 지나면 새로 온 normal 잡보다 앞이다.
 - **바꾸면 바로 적용된다.** 돌고 있는 `up` 이 설정 파일이 바뀐 것을 보고 `priority` 와 `priorityHeadStart` 만 다시 읽는다(다음 평가, 10초 안. 로그에 `priority: 3 rules read again …`). 파일이 틀리면 전의 규칙을 그대로 쓰고 경고한다. 다른 키는 `up` 을 다시 띄워야 바뀐다.
+- **언제 시작할지**도 말한다. 대시보드의 WAITING 과 Explain(`/api/explain`)의 줄에 `starts in ~3m on server1, when e2e (chromium) ends` 가 붙는다. 지금 도는 잡이 그 잡의 지난 실행 시간(중앙값)만큼 돌고 끝난다고 보고 배치를 앞으로 돌려 본 값이라, 그 뒤에 올 잡이나 사람이 앉는 데스크톱은 모른다. 실행 시간을 모르는 잡이 막고 있거나 닫힌 호스트를 기다리면 시간 없이 사유만 나온다. API 는 `/api/state` 의 `waitingJobs[].expect`(`inSeconds`, `host`, `after`).
 - `pumasi priority` 가 모드, [맨 앞에 세운 잡](#한-잡을-맨-앞으로-pumasi-expedite), 규칙과 지금 기다리는 잡의 줄을 보여 준다. `pumasi status` 의 `WAITING` 은 줄 순서대로 나오고 `LINE` 칸이 그 자리에 선 이유를 말한다.
 - 높은 잡이 자리가 없어 기다리는 동안, 그 잡이 갈 수 있는 호스트에는 그보다 낮은 잡을 새로 놓지 않는다(같은 등급끼리는 전처럼 작은 잡이 빈틈을 채운다).
 

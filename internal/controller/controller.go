@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -64,6 +65,9 @@ type Controller struct {
 	cfgRead time.Time
 	// sized: what each waiting job was taken to need in the last decision (under mu).
 	sized map[string]size.Estimate
+	// runtimes: how long each waiting job is expected to run, of those with
+	// measured runs, in the last decision (under mu).
+	runtimes map[string]time.Duration
 	// seenNow: per workflow, the use right now of its jobs that have run long
 	// enough to show their size. A job of the workflow that never ran is sized by it.
 	seenNow map[ledger.JobKey]size.Sample
@@ -593,7 +597,7 @@ func (c *Controller) Evaluate(ctx context.Context) {
 	c.setTakes(snap, plan)
 	c.recordDefers(plan.Defer, now)
 	c.waitIncidents(plan.Defer, now)
-	c.setStatus(snap, plan)
+	c.setStatus(snap, plan, c.forecast(snap, live))
 	c.unregister(ctx)
 	c.checkStaleDemand(ctx, now)
 	c.probeQuarantined(ctx, now)
@@ -861,12 +865,15 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	perClass := map[string]int{}
-	c.sized = map[string]size.Estimate{}
+	c.sized, c.runtimes = map[string]size.Estimate{}, map[string]time.Duration{}
 	for _, w := range waitingJobs(open, active, rules) {
 		dd := w.d
 		if cl := c.classByName(dd.Class); cl != nil {
 			est := c.estimateLocked(cl.cfg, w.key)
 			c.sized[dd.ID] = est
+			if d, ok := c.runtimeLocked(cl.cfg, w.key); ok {
+				c.runtimes[dd.ID] = d
+			}
 			dd.CPUs, dd.MemBytes, dd.Blind, dd.Sized = est.CPUs, est.MemBytes, est.Blind, "("+est.Source()+")"
 			if dd.Name != "" {
 				dd.Sized = "for " + dd.Name + " " + dd.Sized
@@ -976,6 +983,63 @@ func (c *Controller) estimateLocked(cl config.Class, k ledger.JobKey) size.Estim
 		return blind
 	}
 	return size.Borrow(first, size.Learn(others, size.Estimate{}))
+}
+
+// runtimeLocked is how long a job of key is expected to run on class cl
+// (size.Runtime of its measured runs); ok = false: it has none.
+func (c *Controller) runtimeLocked(cl config.Class, k ledger.JobKey) (time.Duration, bool) {
+	k.Platform = cl.Platform()
+	if k.Job == "" {
+		return 0, false
+	}
+	runs, err := c.ledger.JobRuns(k, size.Window)
+	if err != nil {
+		return 0, false
+	}
+	return size.Runtime(runs)
+}
+
+// forecast is when each waiting job of the last decision is expected to
+// start (decide.Forecast), by job id. The jobs running now end when their
+// measured runs say; a runner comes up in the time the last ones took.
+func (c *Controller) forecast(snap decide.Snapshot, live []ledger.Runner) map[string]Expect {
+	busy := map[string]decide.Busy{}
+	c.mu.Lock()
+	for _, r := range live {
+		cl := c.classByName(r.Class)
+		if r.StartedAt.IsZero() || r.Job == "" || cl == nil {
+			continue
+		}
+		b := decide.Busy{Job: r.Job}
+		if d, ok := c.runtimeLocked(cl.cfg, ledger.KeyOf(r.Repo, r.Workflow, r.Job)); ok {
+			b.Ends = decide.EndOf(r.StartedAt, snap.Now, d)
+		}
+		busy[r.Name] = b
+	}
+	runs := maps.Clone(c.runtimes)
+	c.mu.Unlock()
+	out := map[string]Expect{}
+	for id, e := range decide.Forecast(snap, busy, runs, c.provisionTime()) {
+		out[id] = Expect{StartsAt: snap.Now.Add(e.In), Host: e.Host, After: e.After}
+	}
+	return out
+}
+
+// provisionTime is how long a runner takes to come up: the median of the
+// last runners', 10s while there are none.
+func (c *Controller) provisionTime() time.Duration {
+	jobs, err := c.ledger.RecentJobs(21)
+	var ms []int64
+	for _, j := range jobs {
+		if j.ProvisionMs > 0 {
+			ms = append(ms, j.ProvisionMs)
+		}
+	}
+	if err != nil || len(ms) == 0 {
+		return 10 * time.Second
+	}
+	slices.Sort(ms)
+	return time.Duration(ms[len(ms)/2]) * time.Millisecond
 }
 
 // keepMem is what stays free on a machine whatever else is true: a tenth of
