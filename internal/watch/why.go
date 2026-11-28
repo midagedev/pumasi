@@ -350,7 +350,7 @@ func jobWhy(wf, job string, mine, base, all []ledger.JobRun, slow map[string]flo
 		if r.Result == "succeeded" {
 			ok = append(ok, r)
 		}
-		hosts[r.Host] = true
+		hosts[machine(r)] = true
 	}
 	var calm []ledger.JobRun
 	for _, r := range ok {
@@ -367,8 +367,8 @@ func jobWhy(wf, job string, mine, base, all []ledger.JobRun, slow map[string]flo
 	default:
 		use, j.Failed = mine, true
 	}
-	// Every value as on the target's host (when it ran on one), else as on
-	// the job's hosts together.
+	// Every value as on the target's machine (host and class, when it ran on
+	// one), else as on the job's machines together.
 	var clean []ledger.JobRun
 	for _, r := range all {
 		if r.Result == "succeeded" && !r.Contended() {
@@ -387,7 +387,7 @@ func jobWhy(wf, job string, mine, base, all []ledger.JobRun, slow map[string]flo
 			}
 		}
 		return func(r ledger.JobRun) float64 {
-			if from := hf[r.Host]; from > 0 {
+			if from := hf[machine(r)]; from > 0 {
 				return to / from
 			}
 			return 1

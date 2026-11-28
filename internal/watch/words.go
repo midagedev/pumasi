@@ -6,6 +6,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 )
 
 // How changes read, for `pumasi trend`, `pumasi why-slow` and the
@@ -126,4 +127,109 @@ func PctSigned(f float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%+.0f%%", 100*f)
+}
+
+// ShiftLine: "server2: 6 jobs 30–60% faster since Thu Nov 19 10:05 — the
+// machine, not the code", or for a job that moved, "ci.yml / e2e: time -40%
+// (10m00s -> 6m00s) when it moved from server1/small to server1/large, …".
+func ShiftLine(s Shift) string {
+	at := func(t time.Time) string { return t.Local().Format("Mon Jan 2 15:04") }
+	way := "faster"
+	if s.Slower {
+		way = "slower"
+		if c := s.Changes[0]; c.Metric == "memory" && len(unitsOf(s.Changes)[0]) == 1 {
+			way = "bigger"
+		}
+	} else if c := s.Changes[0]; c.Metric == "memory" && len(unitsOf(s.Changes)[0]) == 1 {
+		way = "smaller"
+	}
+	if s.Kind == "moved" {
+		us := unitsOf(s.Changes)
+		if len(us) == 1 {
+			c := us[0].lead()
+			var what []string
+			for _, m := range us[0] {
+				what = append(what, fmt.Sprintf("%s %s (%s -> %s)", m.Metric, PctSigned(m.Ratio), MetricText(m.Metric, m.Before), MetricText(m.Metric, m.After)))
+			}
+			return fmt.Sprintf("%s: %s when it moved from %s to %s, %s — another kind of machine, not the code",
+				JobName(c.Workflow, c.Job), strings.Join(what, ", "), strings.Join(c.Moved.From, ", "), strings.Join(c.Moved.To, ", "), at(c.First.At))
+		}
+		var from []string
+		last := s.At
+		for _, u := range us {
+			c := u.lead()
+			for _, m := range c.Moved.From {
+				if !slices.Contains(from, m) {
+					from = append(from, m)
+				}
+			}
+			if c.First.At.After(last) {
+				last = c.First.At
+			}
+		}
+		return fmt.Sprintf("%d jobs %s %s when they moved from %s to %s, %s to %s — another kind of machine, not the code",
+			s.Jobs, rangeText(s), way, strings.Join(from, ", "), strings.Join(us[0].lead().Moved.To, ", "), at(s.At), last.Local().Format("15:04"))
+	}
+	hosts := strings.Join(s.Hosts, ", ")
+	if hosts == "" {
+		hosts = "every host"
+	}
+	size := rangeText(s)
+	who := fmt.Sprintf("%d jobs", s.Jobs)
+	if s.Jobs == 1 {
+		c := s.Changes[0]
+		who = JobName(c.Workflow, c.Job)
+	}
+	line := fmt.Sprintf("%s: %s %s %s", hosts, who, size, way)
+	switch {
+	case s.Until.IsZero():
+		line += " since " + at(s.At)
+	case s.Back:
+		line += fmt.Sprintf(" from %s to %s, back since", at(s.At), at(s.Until))
+	default:
+		line += fmt.Sprintf(" from %s, the other way since %s", at(s.At), at(s.Until))
+	}
+	if s.Jobs == 1 && s.Changes[0].OneHost {
+		line += ", on that host's runs only"
+	}
+	return line + " — the machine, not the code"
+}
+
+// ShiftJobs: the jobs of a host's shift and each one's step, the biggest
+// first: "unit-tests -63%, lint -60%".
+func ShiftJobs(s Shift) []string {
+	type js struct {
+		name string
+		r    float64
+	}
+	var out []js
+	seen := map[string]bool{}
+	for _, u := range unitsOf(s.Changes) {
+		c := u.lead()
+		if seen[u.job()] {
+			continue
+		}
+		seen[u.job()] = true
+		r := c.Ratio
+		if c.OneHost {
+			r = c.OnHost
+		}
+		out = append(out, js{JobName(c.Workflow, c.Job), r})
+	}
+	slices.SortStableFunc(out, func(a, b js) int { return cmpFloat(math.Abs(b.r), math.Abs(a.r)) })
+	var names []string
+	for _, j := range out {
+		names = append(names, j.name+" "+PctSigned(j.r))
+	}
+	return names
+}
+
+// rangeText: a shift's jobs' steps, "30–60%".
+func rangeText(s Shift) string {
+	lo, hi := math.Abs(s.Low), math.Abs(s.High)
+	lo, hi = math.Min(lo, hi), math.Max(lo, hi)
+	if fmt.Sprintf("%.0f", 100*lo) == fmt.Sprintf("%.0f", 100*hi) {
+		return fmt.Sprintf("%.0f%%", 100*hi)
+	}
+	return fmt.Sprintf("%.0f–%.0f%%", 100*lo, 100*hi)
 }

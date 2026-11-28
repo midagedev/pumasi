@@ -1,6 +1,6 @@
 // watcheval scores the regression search on made-up histories:
 //
-//	go run ./internal/watch/cmd/watcheval [-n 100] [-merges 8] [-after 48h] [-slope 0.1] [-why] [-forecast 0.08]
+//	go run ./internal/watch/cmd/watcheval [-n 100] [-merges 8] [-after 48h] [-slope 0.1] [-why] [-shift] [-young] [-forecast 0.08]
 package main
 
 import (
@@ -20,6 +20,8 @@ func main() {
 	minRuns := flag.Int("minruns", 0, "runs on each side (0 = default)")
 	slope := flag.Float64("slope", 0, "score the growth alarm at this limit instead (0.10 = 10% a week)")
 	why := flag.Bool("why", false, "score why-slow on the culprit pull requests instead")
+	shift := flag.Bool("shift", false, "score telling a host's change from the jobs' instead")
+	young := flag.Bool("young", false, "score the history rule (how long each side of a change must span) instead")
 	forecast := flag.Float64("forecast", 0, "score the capacity forecast on teams growing this much a week instead (0.08)")
 	load := flag.Float64("load", 0.35, "forecast: the first week's busiest hours against the cores")
 	weeks := flag.Int("weeks", 16, "forecast: weeks of history")
@@ -29,6 +31,14 @@ func main() {
 	if *forecast > 0 {
 		fe := synth.ForecastEval{Histories: *n, Growth: *forecast, Load: *load, Weeks: *weeks, Base: *base, Merges: *merges}
 		synth.WriteForecastReport(os.Stdout, fe, synth.EvalForecast(fe))
+		return
+	}
+	if *young {
+		synth.WriteYoungReport(os.Stdout, ec, synth.EvalYoung(ec))
+		return
+	}
+	if *shift {
+		synth.WriteShiftReport(os.Stdout, ec, synth.EvalShift(ec))
 		return
 	}
 	if *why {

@@ -33,7 +33,19 @@ type Options struct {
 	// Transient: a step up that comes back down within this long is a bad
 	// spell, not a regression (default 3 days).
 	Transient time.Duration
+	// MinBefore and MinAfter: a job's change is listed only once the runs
+	// on each side of it span this long (default MinSide). Shorter sides
+	// may be a few hours of a host's mood.
+	MinBefore, MinAfter time.Duration
+	// Plain: the search as it was before machines were told apart from
+	// jobs (no machine shifts, no history rule); for the evaluation.
+	Plain bool
 }
+
+// MinSide is how long the runs on each side of a job's change must span
+// before it is listed. Set on the evaluation (watcheval -young): see
+// docs/watch.md.
+const MinSide = 24 * time.Hour
 
 func (o Options) withDefaults() Options {
 	if o.MinEffect == 0 {
@@ -50,6 +62,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Transient == 0 {
 		o.Transient = 72 * time.Hour
+	}
+	if o.MinBefore == 0 {
+		o.MinBefore = MinSide
+	}
+	if o.MinAfter == 0 {
+		o.MinAfter = MinSide
 	}
 	return o
 }
@@ -137,13 +155,42 @@ type Change struct {
 	// step: the job crept, and First is only where the climb was steepest,
 	// not the commit that did it.
 	Gradual bool `json:"gradual,omitempty"`
+	// Host: the host the step was on, when the runs around it were mostly
+	// on one host, or when it showed on one host's runs only.
+	Host string `json:"host,omitempty"`
+	// OneHost: it showed on Host's runs and not on another host's runs of
+	// the same days, so the host changed, not the job; OnHost is the step
+	// on Host's runs.
+	OneHost bool    `json:"oneHost,omitempty"`
+	OnHost  float64 `json:"onHost,omitempty"`
+	// Moved: the job's runs on the two sides ran on different machines
+	// (host and class), and the runs on a machine it ran on before and after
+	// do not show the step: it moved to another kind of machine.
+	Moved *Move `json:"moved,omitempty"`
+	// SpanBefore and SpanAfter: how long the runs on each side span.
+	SpanBefore time.Duration `json:"-"`
+	SpanAfter  time.Duration `json:"-"`
+}
+
+// Move is where a job's runs went: the machines (host/class) that ran most
+// of them on each side of a change.
+type Move struct {
+	From []string `json:"from"`
+	To   []string `json:"to"`
 }
 
 // Slower says whether the change is for the worse.
 func (c Change) Slower() bool { return c.Ratio > 0 }
 
-// Find looks for changes in every job of the runs.
+// Find looks for changes in every job of the runs: the steps that are the
+// job's, not its machine's (FindAll), and whose sides span long enough.
 func Find(runs []ledger.JobRun, o Options) []Change {
+	jobs, _ := FindAll(runs, o)
+	return jobs
+}
+
+// find is every step found in every job, the machine's ones too.
+func find(runs []ledger.JobRun, o Options) []Change {
 	o = o.withDefaults()
 	type key struct{ repo, wf, job string }
 	by, left := map[key][]ledger.JobRun{}, map[key][]ledger.JobRun{}
@@ -220,15 +267,26 @@ func codeTime(r ledger.JobRun) time.Time {
 	return r.StartedAt
 }
 
-// hostFactors: what each host gives for the job against all hosts (the
-// median of its runs over the median of all), for hosts with enough runs.
+// machine is the kind of machine a run had: its host and its runner class
+// (a class sets the cores, the memory and the disk a runner gets, so the
+// same host in two classes is two machines).
+func machine(r ledger.JobRun) string {
+	if r.Class == "" {
+		return r.Host
+	}
+	return r.Host + "/" + r.Class
+}
+
+// hostFactors: what each machine (host and class) gives for the job against
+// all of them (the median of its runs over the median of all), for machines
+// with enough runs. Keyed by machine(r).
 func hostFactors(rs []ledger.JobRun, m string) map[string]float64 {
 	all := make([]float64, 0, len(rs))
 	per := map[string][]float64{}
 	for _, r := range rs {
 		v := metricOf(m, r)
 		all = append(all, v)
-		per[r.Host] = append(per[r.Host], v)
+		per[machine(r)] = append(per[machine(r)], v)
 	}
 	mid := median(all)
 	f := map[string]float64{}
@@ -254,7 +312,7 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 		if v <= 0 {
 			continue
 		}
-		if f := hf[r.Host]; f > 0 {
+		if f := hf[machine(r)]; f > 0 {
 			v /= f
 		}
 		x = append(x, math.Log(v))
@@ -266,23 +324,14 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 	}
 	cps := segment(x, 0, len(x), o, 0)
 	sort.Ints(cps)
-	// The level of each segment between the change points.
-	bounds := append(append([]int{0}, cps...), len(x))
-	level := make([]float64, len(bounds)-1)
-	for i := range level {
-		level[i] = median(slices.Clone(x[bounds[i]:bounds[i+1]]))
-	}
 	minStep := math.Log1p(o.MinEffect)
-	drop := make([]bool, len(cps))
-	// A step that comes back within Transient to where it was is a bad spell.
-	for i := 0; i+1 < len(cps); i++ {
-		a, b := cps[i], cps[i+1]
-		up := level[i+1] - level[i]
-		back := level[i+2] - level[i+1]
-		if math.Abs(up) >= minStep && math.Signbit(up) != math.Signbit(back) && math.Abs(level[i+2]-level[i]) < minStep/2 &&
-			codeTime(rs[b]).Sub(codeTime(rs[a])) <= o.Transient {
-			drop[i], drop[i+1] = true, true
-		}
+	bounds, level, drop := levels(rs, x, cps, minStep, o)
+	if !o.Plain {
+		// Only the steps that are listed bound the levels, and a level held
+		// for less than a side's span between two steps is not one: the
+		// later step goes, so a regression that a slow spell hid at first is
+		// one step, from its start.
+		cps, bounds, level, drop = settle(rs, x, cps, minStep, o)
 	}
 	newest := median(slices.Clone(x[max(0, len(x)-o.MinRuns):]))
 	var out []Change
@@ -308,9 +357,87 @@ func findIn(rs []ledger.JobRun, m string, o Options) []Change {
 		if m == "time" {
 			c.Steps = stepDeltas(rs[lo:k], rs[k:hi])
 		}
+		if !o.Plain {
+			c.SpanBefore = codeTime(rs[k-1]).Sub(codeTime(rs[bounds[i]]))
+			c.SpanAfter = codeTime(rs[bounds[i+2]-1]).Sub(codeTime(rs[k]))
+			// Like with like: the step on the machines that ran the job on
+			// both sides. When a third of the runs or more were on others,
+			// and those machines do not show it (or there are none): the
+			// job moved.
+			if like, other, ok := sameMachineStep(rs, x, lo, k, hi); !ok || other >= 1.0/3 && (math.Abs(like) < minStep || math.Signbit(like) != math.Signbit(d)) {
+				c.Moved = &Move{From: machines(rs[lo:k]), To: machines(rs[k:hi])}
+			}
+			c.Host, c.OneHost, c.OnHost = stepHost(rs, x, lo, k, hi, d, o)
+		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// levels: the bounds of the segments between change points, the level
+// (median) of each, and the steps dropped as a bad spell: a step that comes
+// back within Transient to where it was.
+func levels(rs []ledger.JobRun, x []float64, cps []int, minStep float64, o Options) (bounds []int, level []float64, drop []bool) {
+	bounds = append(append([]int{0}, cps...), len(x))
+	level = make([]float64, len(bounds)-1)
+	for i := range level {
+		level[i] = median(slices.Clone(x[bounds[i]:bounds[i+1]]))
+	}
+	drop = make([]bool, len(cps))
+	for i := 0; i+1 < len(cps); i++ {
+		a, b := cps[i], cps[i+1]
+		up := level[i+1] - level[i]
+		back := level[i+2] - level[i+1]
+		if math.Abs(up) >= minStep && math.Signbit(up) != math.Signbit(back) && math.Abs(level[i+2]-level[i]) < minStep/2 &&
+			codeTime(rs[b]).Sub(codeTime(rs[a])) <= o.Transient {
+			drop[i], drop[i+1] = true, true
+		}
+	}
+	return bounds, level, drop
+}
+
+// settle keeps the change points that are listed: not a bad spell, a step
+// of MinEffect or more, and none that closes a level held for less than
+// the sides' span (min of MinBefore and MinAfter) after another. Each round
+// takes out one (a bad spell's two) and measures the levels again.
+func settle(rs []ledger.JobRun, x []float64, cps []int, minStep float64, o Options) ([]int, []int, []float64, []bool) {
+	side := min(o.MinBefore, o.MinAfter)
+	for {
+		bounds, level, drop := levels(rs, x, cps, minStep, o)
+		gone := -1
+		for i := range cps {
+			if drop[i] {
+				cps = slices.Delete(slices.Clone(cps), i, i+2)
+				gone = i
+				break
+			}
+		}
+		if gone >= 0 {
+			continue
+		}
+		small, smallest := -1, minStep
+		for i := range cps {
+			if d := math.Abs(level[i+1] - level[i]); d < smallest {
+				small, smallest = i, d
+			}
+		}
+		if small >= 0 {
+			cps = slices.Delete(slices.Clone(cps), small, small+1)
+			continue
+		}
+		short := -1
+		for i := 1; side > 0 && i < len(cps); i++ {
+			if codeTime(rs[cps[i]-1]).Sub(codeTime(rs[cps[i-1]])) < side {
+				short = i
+				break
+			}
+		}
+		if short >= 0 {
+			cps = slices.Delete(slices.Clone(cps), short, short+1)
+			continue
+		}
+		return cps, bounds, level, drop
+	}
 }
 
 // segment finds change points in x[lo:hi] by binary segmentation: the split

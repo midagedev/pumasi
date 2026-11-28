@@ -13,6 +13,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/ledger"
@@ -79,12 +80,17 @@ const trendUsage = `pumasi trend: how long each job and workflow takes, day by d
   pumasi trend --json               the same as JSON (also GET /api/trend on the dashboard)
 
 Numbers are of runs that succeeded: p50 is the middle run, p90 the slow end.
+MACHINES lists steps that were a host's, not a job's: several jobs on a host
+stepping together, a step on one host's runs only, a job that moved to
+another kind of machine (host and runner class).
 CHANGED lists steps up or down that held across runs (not single slow runs),
-found among runs whose host was not saturated by others, with the first run
-after the step: its commit, its pull request, and the job's steps that grew;
-then jobs slowly growing with no step to show for it (looked for over the last
-28 days at least). CHANGE is a job's listed time steps and creep together
-(marked *), or for a job with none its last third of days against its first.
+found among runs whose host was not saturated by others, once the runs on
+each side span a day (--min-side), with the first run after the step: its
+commit, its pull request, and the job's steps that grew; then jobs slowly
+growing with no step to show for it (looked for over the last 28 days at
+least). CHANGE is a job's listed time steps and creep together (marked *), or
+for a job with none its last third of days against its first. The table fits
+the terminal (100 columns when not one); --json keeps full names.
 
 Flags:
 `
@@ -102,6 +108,7 @@ func runTrend(args []string) error {
 	fs.StringVar(&f.Workflow, "workflow", "", "only workflows whose file matches (ci.yml)")
 	fs.StringVar(&f.Repo, "repo", "", "only repositories that match (owner/name)")
 	fs.StringVar(&f.Branch, "branch", "", "only runs on this branch")
+	minSide := fs.String("min-side", "", "list a job's change once the runs on each side of it span this long (default "+watch.Span(watch.MinSide)+"; 0 = at once)")
 	asJSON := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -119,7 +126,18 @@ func runTrend(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep := watch.BuildTrend(runs, watch.TrendQuery{From: from, To: now, Week: *week, Loc: time.Local, Filter: f}, watch.Options{})
+	var o watch.Options
+	if *minSide != "" {
+		d, err := config.ParseSpan(*minSide)
+		if err != nil || d < 0 {
+			return fmt.Errorf("--min-side: %q is not a span (1d, 12h, 0)", *minSide)
+		}
+		if d == 0 {
+			d = -1 // at once
+		}
+		o.MinBefore, o.MinAfter = d, d
+	}
+	rep := watch.BuildTrend(runs, watch.TrendQuery{From: from, To: now, Week: *week, Loc: time.Local, Filter: f}, o)
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -131,7 +149,7 @@ func runTrend(args []string) error {
 		}
 		return errors.New("no job matches")
 	}
-	printTrend(os.Stdout, rep, src.web, *days)
+	printTrend(os.Stdout, rep, src.web, *days, tableWidth())
 	return nil
 }
 
@@ -139,11 +157,29 @@ func dayStart(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
-func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool) {
-	fmt.Fprintf(w, "%s to %s, a row a %s\n\n", rep.From.Format("Mon Jan 2"), rep.To.Format("Mon Jan 2 15:04"), rep.Grain)
+func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool, width int) {
+	fmt.Fprintf(w, "%s to %s, a row a %s\n", rep.From.Format("Mon Jan 2"), rep.To.Format("Mon Jan 2 15:04"), rep.Grain)
+	if rep.Notice != "" {
+		fmt.Fprintln(w, rep.Notice)
+	}
+	fmt.Fprintln(w)
+	if len(rep.Shifts) > 0 {
+		fmt.Fprintln(w, "MACHINES (steps of hosts, not of jobs; newest first)")
+		for _, s := range rep.Shifts {
+			fmt.Fprintln(w, "  "+watch.ShiftLine(s))
+			if s.Jobs > 1 {
+				fmt.Fprintln(w, "      "+fitList(watch.ShiftJobs(s), width-6))
+			}
+		}
+		fmt.Fprintln(w)
+	}
 	fmt.Fprintln(w, "CHANGED (newest first)")
 	if len(rep.Changes) == 0 && len(rep.Creeping) == 0 {
-		fmt.Fprintln(w, "  nothing: no job's time, memory or cpu stepped up or down and stayed there, or crept up")
+		if rep.Notice != "" {
+			fmt.Fprintln(w, "  nothing yet: too little history to tell a step from a few hours of a host")
+		} else {
+			fmt.Fprintln(w, "  nothing: no job's time, memory or cpu stepped up or down and stayed there, or crept up")
+		}
 	}
 	for _, g := range watch.GroupChanges(rep.Changes) {
 		fmt.Fprintln(w, "  "+watch.ChangeLine(g))
@@ -162,18 +198,7 @@ func printTrend(w io.Writer, rep watch.TrendReport, web string, days bool) {
 		}
 		return
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "JOB\tRUNS\tTIME p50\tp90\tCHANGE\tMEM p90\tCPU p50\tWAIT p90\tTIME p50 BY %s\n", strings.ToUpper(rep.Grain))
-	for _, s := range rep.Series {
-		name := "  " + s.Job
-		if s.Job == "" {
-			name = path.Base(s.Workflow) + " (workflow)"
-		}
-		a := s.All
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, a.Runs, secs(a.Sec.P50), secs(a.Sec.P90), changeCell(s),
-			gib(int64(a.MemBytes.P90)), secs(a.CPUSec.P50), secs(a.WaitSec.P90), spark(s))
-	}
-	tw.Flush()
+	printTable(w, rep, width)
 	fmt.Fprintln(w, "\nCHANGE: a job's time steps and creep listed above, together (marked *); for one with none, the median of the span's last third of days against its first.\n"+
 		"Creep is looked for over the last 28 days at least: it is too slow to tell in less.")
 }
@@ -243,4 +268,64 @@ func spark(s watch.Series) string {
 		}
 	}
 	return string(out)
+}
+
+// printTable is a line a job, fitted to width: long job names are shortened
+// (shortNames), the other columns kept whole.
+func printTable(w io.Writer, rep watch.TrendReport, width int) {
+	head := []string{"JOB", "RUNS", "TIME p50", "p90", "CHANGE", "MEM p90", "CPU p50", "WAIT p90", "TIME p50 BY " + strings.ToUpper(rep.Grain)}
+	rows := [][]string{head}
+	var labels []string
+	for _, s := range rep.Series {
+		if s.Job != "" {
+			labels = append(labels, s.Job)
+		}
+		a := s.All
+		rows = append(rows, []string{s.Job, fmt.Sprint(a.Runs), secs(a.Sec.P50), secs(a.Sec.P90), changeCell(s),
+			gib(int64(a.MemBytes.P90)), secs(a.CPUSec.P50), secs(a.WaitSec.P90), spark(s)})
+	}
+	// What the columns after the name take, each with the two spaces
+	// before it.
+	rest := 0
+	for c := 1; c < len(head); c++ {
+		cw := 0
+		for _, r := range rows {
+			cw = max(cw, utf8.RuneCountInString(r[c]))
+		}
+		rest += 2 + cw
+	}
+	room := max(width-rest, 16)
+	short := shortNames(labels, room-2)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for i, r := range rows {
+		if i > 0 {
+			if s := rep.Series[i-1]; s.Job != "" {
+				r[0] = "  " + short[r[0]]
+			} else {
+				r[0] = cutMiddle(path.Base(s.Workflow), room-len(" (workflow)")) + " (workflow)"
+			}
+		}
+		fmt.Fprintln(tw, strings.Join(r, "\t"))
+	}
+	tw.Flush()
+}
+
+// fitList joins items with ", " up to width, and says how many more.
+func fitList(items []string, width int) string {
+	out := ""
+	for i, it := range items {
+		next := it
+		if i > 0 {
+			next = out + ", " + it
+		}
+		more := ""
+		if i+1 < len(items) {
+			more = fmt.Sprintf(", and %d more", len(items)-i-1)
+		}
+		if i > 0 && utf8.RuneCountInString(next+more) > width {
+			return out + fmt.Sprintf(", and %d more", len(items)-i)
+		}
+		out = next
+	}
+	return out
 }

@@ -113,6 +113,22 @@ type Config struct {
 	// waits (first come, first served) until its cores are free; otherwise
 	// every job finds room.
 	Cores float64
+	// HostShifts: a host that gets slower or faster for every job from a
+	// moment (a disk filling up, caches cleared, a noisy neighbour).
+	HostShifts []HostShift
+	// Pinned: each job always runs on the same host (by its place in Jobs,
+	// taking turns), as jobs pinned to a runner class do; else each run
+	// picks a host by its share.
+	Pinned bool
+}
+
+// HostShift multiplies the time of every job on a host from After (from
+// Start) by Factor, for For (0 = from then on).
+type HostShift struct {
+	Host   string // "" = every host
+	After  time.Duration
+	For    time.Duration
+	Factor float64
 }
 
 // Planned is a change to inject after a moment.
@@ -325,6 +341,9 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 		if rng.Float64() >= h.share {
 			h = hosts[1]
 		}
+		if g.cfg.Pinned {
+			h = hosts[ji%len(hosts)] // the draw above is kept: the rest of the history stays the same
+		}
 		// Noise: the job's spread, the busy hours, outliers, contention.
 		f := math.Exp(rng.NormFloat64() * j.Spread)
 		if hr := at.Hour(); hr >= 10 && hr < 18 {
@@ -339,6 +358,12 @@ func (g *gen) run(at time.Time, event, branch, sha string, pr, upto, own int, ni
 		for _, sp := range g.spells {
 			if sp.host == h.name && !at.Before(sp.from) && at.Before(sp.to) {
 				f *= sp.factor
+			}
+		}
+		for _, hs := range g.cfg.HostShifts {
+			from := g.cfg.Start.Add(hs.After)
+			if (hs.Host == "" || hs.Host == h.name) && !at.Before(from) && (hs.For == 0 || at.Before(from.Add(hs.For))) {
+				f *= hs.Factor
 			}
 		}
 		contended, flagged := rng.Float64() < g.cfg.ContendedRate, false

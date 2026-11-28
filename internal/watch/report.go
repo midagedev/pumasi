@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"time"
@@ -20,15 +21,25 @@ type TrendReport struct {
 	Grain   string    `json:"grain"` // day | week
 	Series  []Series  `json:"series"`
 	Changes []Change  `json:"changes"`
+	// Shifts: steps of the machines, not of the jobs (a host that got
+	// slower or faster for several jobs at once, a job that moved to another
+	// kind of machine), whose first run is in the span or that ended in it.
+	Shifts []Shift `json:"shifts"`
 	// Creeping: jobs whose time grew slowly over the span, with no step at
 	// a commit to show for it.
 	Creeping []Creep `json:"creeping"`
+	// HistoryFrom: the oldest run read; Notice, when the history is too
+	// short for a job's change to be listed yet, says so and from when.
+	HistoryFrom time.Time `json:"historyFrom,omitzero"`
+	Notice      string    `json:"notice,omitempty"`
 	// Note says what the numbers are of, for a reader without the docs.
 	Note string `json:"note"`
 }
 
 const trendNote = "time, memory and cpu are of runs that succeeded (p50/p90, nearest rank); memory leaves page cache out; " +
-	"changes are steps that held across runs, found among runs whose host was not saturated by others, each set against what its host usually gives; " +
+	"changes are steps that held across runs, found among runs whose host was not saturated by others, each set against what its machine (host and runner class) usually gives, " +
+	"listed once the runs on each side span a day; " +
+	"shifts are steps of the machines, not the jobs: several jobs on a host stepping together, a step on one host's runs only, a job that moved to another kind of machine; " +
 	"creeping is a job's time that grew 12% or more along a trend over the span or the last 28 days, whichever is longer (Theil–Sen on its daily medians, the 95% interval above zero), with no step; " +
 	"a series' change is the time steps listed (and creep) together, or for one with none the median of its last third of days against its first"
 
@@ -47,15 +58,28 @@ func BuildTrend(runs []ledger.JobRun, q TrendQuery, o Options) TrendReport {
 			picked = append(picked, r)
 		}
 	}
-	all := Find(picked, o)
-	for _, c := range all {
+	jobs, shifts := FindAll(picked, o)
+	for _, c := range jobs {
 		if !c.First.At.Before(q.From) {
 			rep.Changes = append(rep.Changes, c)
 		}
 	}
+	rep.Shifts = []Shift{}
+	for _, s := range shifts {
+		if !s.At.Before(q.From) || (!s.Until.IsZero() && !s.Until.Before(q.From)) {
+			rep.Shifts = append(rep.Shifts, s)
+		}
+	}
 	// The newest first: what a reader wants to know about is what just happened.
 	slices.Reverse(rep.Changes)
-	rep.Creeping = creeping(picked, q, all)
+	slices.Reverse(rep.Shifts)
+	// A job whose time stepped with its machine is not creeping either.
+	stepped := slices.Clone(jobs)
+	for _, s := range shifts {
+		stepped = append(stepped, s.Changes...)
+	}
+	rep.Creeping = creeping(picked, q, stepped)
+	rep.HistoryFrom, rep.Notice = historyNotice(runs, q.To, o)
 	// Each series' change: what the lists above say of it, so one screen
 	// does not say two things.
 	for i := range rep.Series {
@@ -143,7 +167,7 @@ func creeping(runs []ledger.JobRun, q TrendQuery, found []Change) []Creep {
 				continue
 			}
 			v := r.RunSec
-			if f := hf[r.Host]; f > 0 {
+			if f := hf[machine(r)]; f > 0 {
 				v /= f
 			}
 			d := int(r.StartedAt.Sub(from).Hours() / 24)
@@ -228,4 +252,33 @@ func Growth(s Series) float64 {
 		return 0
 	}
 	return last/first - 1
+}
+
+// historyNotice: the oldest run, and when the runs reach back less than
+// both sides of a change must span, a line that says so.
+func historyNotice(runs []ledger.JobRun, now time.Time, o Options) (time.Time, string) {
+	o = o.withDefaults()
+	var first time.Time
+	for _, r := range runs {
+		if t := codeTime(r); first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	need := o.MinBefore + o.MinAfter
+	if first.IsZero() || o.Plain || need <= 0 || now.Sub(first) >= need {
+		return first, ""
+	}
+	return first, fmt.Sprintf("only %s of history: a change is listed once the runs on each side of it span %s, so not before %s",
+		Span(now.Sub(first)), Span(o.MinBefore), first.Add(need).Local().Format("Mon Jan 2 15:04"))
+}
+
+// Span is a length of time as a person says it: 30h, 2d, 45m.
+func Span(d time.Duration) string {
+	switch {
+	case d >= 48*time.Hour || d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%.0fd", d.Hours()/24)
+	case d >= 2*time.Hour:
+		return fmt.Sprintf("%.0fh", d.Hours())
+	}
+	return fmt.Sprintf("%.0fm", d.Minutes())
 }
