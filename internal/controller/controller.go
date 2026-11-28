@@ -912,7 +912,8 @@ func (c *Controller) decideSnapshot(now time.Time, runners []decide.Runner) deci
 			Native: cl.cfg.Driver == "native", Paths: mountPaths(cl.cfg.Mounts), Reserve: cl.cfg.Reserve,
 			MayBeHigh: config.MayBeHigh(rules, cl.cfg.Name)}
 		if !cl.cfg.Overflow {
-			dc.Warm = decide.WarmCount(arrived[cl.cfg.Name], c.cfg.WarmMax())
+			dc.Warm = max(decide.WarmCount(arrived[cl.cfg.Name], c.cfg.WarmMax()), cl.cfg.WarmMin)
+			dc.WarmMin = cl.cfg.WarmMin
 		}
 		if !cl.cfg.Overflow && soon[cl.cfg.Name] > 0 {
 			e := soonSize[cl.cfg.Name]

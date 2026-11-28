@@ -23,6 +23,7 @@
 | `path` | native 러너의 `PATH` 앞에 붙일 디렉터리(고정 러너의 `.path`). 컨테이너 클래스에는 못 적는다 | 없음 |
 | `work` | native 러너의 작업 디렉터리(`_work`: checkout·node_modules·빌드 산출물)를 둘 곳. `{slot}` 이 꼭 들어가야 한다(`/srv/ci/w{slot}`). 러너는 그 슬롯 디렉터리(링크면 그 끝의 실제 경로)를 작업 디렉터리로 받는다 — 잡이 받는 `GITHUB_WORKSPACE`·`RUNNER_TEMP` 가 실제 위치라서 일부 디렉터리만 마운트하는 docker VM(colima 는 `$HOME`)에서도 잡의 bind mount 가 보인다. 러너가 사라져도 남고 그 슬롯의 다음 러너가 이어 쓴다 — 고정 러너의 다음 잡처럼 `pnpm install`·checkout 이 데워진 채로 시작한다. 없으면 잡마다 빈 디렉터리에서 시작한다(큰 모노레포는 매번 수십만 파일을 다시 써서 디스크 IO 가 막힐 수 있다) | 없음 — 러너와 함께 지워진다 |
 | `reserve` | 이 클래스 러너 N개가 들어갈 자리를 다른 클래스가 못 쓰게 남겨 둔다(배포 잡이 빌드 뒤에 서지 않게) | 0 |
+| `warmMin` | 최근에 잡이 왔든 안 왔든 이 클래스 러너를 적어도 N개 잡 없이 띄워 둔다(하루 한 번의 배포가 러너가 뜨는 시간도 기다리지 않게). 이 N개는 다른 클래스의 기다리는 잡에 비켜 주지 않는다 — 그만큼 다른 잡이 기다릴 수 있다. overflow 클래스에는 못 적는다 | 0 |
 | `maxDuration` | 잡이 이보다 오래 돌면 러너를 멈춘다(`90m`). pumasi 가 도는 잡을 건드리는 유일한 설정이다 | 없음 |
 | `docker: inside` | 컨테이너 러너에 자기 docker 데몬을 준다. 잡이 띄운 컨테이너·compose 스택이 클래스 한도와 수치 안에 들어가고 러너와 함께 사라진다. 러너 컨테이너가 **privileged** 가 된다 | 없음 |
 
@@ -117,7 +118,7 @@ build    2     1: ahead of deploy in its class, which is high by rule 1 (job: de
 nightly  1     2                                                                       no host with 2.0cpu/4.0G free (…)
 ```
 
-배포처럼 꼭 먼저 가야 하는 잡은 자기 클래스(`runs-on`)를 따로 주는 것이 가장 분명하다. 자리를 아예 남겨 두려면 `reserve`.
+배포처럼 꼭 먼저 가야 하는 잡은 자기 클래스(`runs-on`)를 따로 주는 것이 가장 분명하다. 자리를 아예 남겨 두려면 `reserve`, 러너까지 띄워 두려면 `warmMin`.
 
 ### 한 잡을 맨 앞으로: `pumasi expedite`
 

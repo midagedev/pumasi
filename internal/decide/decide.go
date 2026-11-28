@@ -46,6 +46,9 @@ type Class struct {
 	// does, and leave a host that stops taking the class. Not for an
 	// overflow class.
 	Warm int
+	// WarmMin: of Warm, those the class keeps whatever its jobs did lately
+	// (config warmMin), for the reason.
+	WarmMin int
 	// Soon: jobs of the class expected to come within the time a runner
 	// takes to come up — jobs that need one running now, which is expected
 	// to end (see Coming). A runner is kept up for each, as for Warm, held

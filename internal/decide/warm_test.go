@@ -135,6 +135,17 @@ func TestSpareRunnersGiveRoom(t *testing.T) {
 	if len(p.Start) != 1 || p.Start[0].Class != "linux-l" || !strings.Contains(p.Start[0].Reason, "once 1 spare runner(s) without a job give it up") {
 		t.Fatalf("starts %+v", p.Start)
 	}
+	// warmMin 3: the class keeps them whatever waits.
+	s := warmSnap(3, demand("linux-l", 1), rs)
+	s.Classes[0].WarmMin = 3
+	if p := Decide(s); len(p.Stop) != 0 || len(p.Start) != 0 {
+		t.Fatalf("warmMin gave its room: stops %+v starts %v", p.Stop, starts(p))
+	}
+	// warmMin 2: one of the three may go.
+	s.Classes[0].WarmMin = 2
+	if p := Decide(s); len(p.Stop) != 1 || len(p.Start) != 1 {
+		t.Fatalf("warmMin 2 of 3: stops %+v starts %v", p.Stop, starts(p))
+	}
 	// Three linux-s jobs wait: the runners are theirs, the linux-l job waits.
 	p = Decide(warmSnap(3, append(demand("linux-s", 3), demand("linux-l", 1)...), rs))
 	if len(p.Stop) != 0 || len(p.Start) != 0 || len(p.Defer) != 1 {
@@ -185,5 +196,15 @@ func TestWorkingRunnerIsNoSpare(t *testing.T) {
 	}
 	if p := Decide(warmSnap(3, demand("linux-l", 1), rs)); len(p.Stop) != 0 || len(p.Start) != 0 {
 		t.Fatalf("stops %+v starts %v", p.Stop, starts(p))
+	}
+}
+
+// A runner kept by warmMin says so.
+func TestWarmMinSaysSo(t *testing.T) {
+	s := warmSnap(1, nil, nil)
+	s.Classes[0].WarmMin = 1
+	p := Decide(s)
+	if len(p.Start) != 1 || !strings.Contains(p.Start[0].Reason, "(1 of 1, warmMin 1)") {
+		t.Fatalf("%+v", p.Start)
 	}
 }

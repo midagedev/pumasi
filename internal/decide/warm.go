@@ -146,6 +146,10 @@ func (sp spareSet) all() []Runner {
 	return out
 }
 
+// held is how many of a class's spare runners give up their room to no
+// job: its WarmMin, which the class keeps whatever waits.
+func (sp spareSet) held(c Class) int { return c.WarmMin }
+
 func (sp spareSet) take(r Runner) {
 	sp.n[r.Class]--
 	sp.gone[r.Name] = true
@@ -158,7 +162,7 @@ func (sp spareSet) yieldFor(s Snapshot, h Host, a [2]float64, class string, cpu,
 	var out []Runner
 	used := map[string]int{}
 	for _, r := range sp.idle[h.Name] {
-		if sp.gone[r.Name] || r.Class == class || used[r.Class] >= sp.n[r.Class] {
+		if sp.gone[r.Name] || r.Class == class || used[r.Class] >= sp.n[r.Class]-sp.held(classes[r.Class]) {
 			continue
 		}
 		used[r.Class]++
@@ -178,7 +182,7 @@ func (sp spareSet) without(alloc map[string][2]float64, classes map[string]Class
 	out := maps.Clone(alloc)
 	used := map[string]int{}
 	for _, r := range sp.all() {
-		if used[r.Class] >= sp.n[r.Class] {
+		if used[r.Class] >= sp.n[r.Class]-sp.held(classes[r.Class]) {
 			continue
 		}
 		used[r.Class]++
@@ -241,8 +245,12 @@ func warmStarts(s Snapshot, hostNames []string, hosts map[string]Host, alloc map
 			}
 			fc, fm := s.free(hosts[best], alloc[best])
 			have := c.up() - want[c.Name]
-			reason := fmt.Sprintf("warm: kept up for the class's next job (%d of %d), holds %.1fcpu/%s of the free %.1fcpu/%s, the largest of its recent jobs",
-				have+1, c.Warm, bestCPU, gib(bestMem), fc, gib(fm))
+			of := fmt.Sprint(c.Warm)
+			if c.WarmMin > 0 {
+				of += fmt.Sprintf(", warmMin %d", c.WarmMin)
+			}
+			reason := fmt.Sprintf("warm: kept up for the class's next job (%d of %s), holds %.1fcpu/%s of the free %.1fcpu/%s, the largest of its recent jobs",
+				have+1, of, bestCPU, gib(bestMem), fc, gib(fm))
 			if have >= c.Warm {
 				reason = fmt.Sprintf("ahead: %s (%d of %d expected), holds %.1fcpu/%s of the free %.1fcpu/%s",
 					cmp.Or(c.SoonFor, "a job of the class is expected"), have+1, c.Soon, bestCPU, gib(bestMem), fc, gib(fm))

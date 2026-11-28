@@ -369,6 +369,23 @@ func TestWarm(t *testing.T) {
 	}
 }
 
+func TestWarmMin(t *testing.T) {
+	load := func(class string) error {
+		p := filepath.Join(t.TempDir(), "pumasi.yaml")
+		os.WriteFile(p, []byte("url: u\nclasses: ["+class+"]\nhosts: [{ssh: h}]\n"), 0o600)
+		_, err := Load(p)
+		return err
+	}
+	if err := load("{name: a, warmMin: 1}"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"{name: a, warmMin: -1}", "{name: a, warmMin: 33}", "{name: a, warmMin: 1, overflow: true}"} {
+		if err := load(bad); err == nil || !strings.Contains(err.Error(), "warmMin") {
+			t.Errorf("%s: err %v", bad, err)
+		}
+	}
+}
+
 func TestAhead(t *testing.T) {
 	for extra, want := range map[string]bool{"": true, "ahead: false\n": false} {
 		p := filepath.Join(t.TempDir(), "pumasi.yaml")

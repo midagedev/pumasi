@@ -208,6 +208,9 @@ type Scenario struct {
 	// one is about to end (decide.Class.Soon), from which job followed which
 	// in the Days before (or, Cold, earlier in the stream).
 	Ahead bool `json:"ahead,omitempty"`
+	// WarmMin: pumasi's warmMin by class: runners kept up whatever the
+	// class's jobs did lately.
+	WarmMin map[string]int `json:"warmMin,omitempty"`
 }
 
 // Drift is a change in a repo's jobs, of the kinds CI goes through: the
@@ -1286,7 +1289,7 @@ func warmCost(s decide.Snapshot, plan decide.Plan, runners []runner) []int {
 // (decide.WarmCount of the arrivals of the last decide.WarmWindow) and the size of
 // its next job: the largest estimate of the kinds that arrived.
 func warmed(classes []decide.Class, sc Scenario, jobs []Job, arr *arrivals, measured map[string][]size.Sample, t float64) []decide.Class {
-	if sc.Warm <= 0 {
+	if sc.Warm <= 0 && len(sc.WarmMin) == 0 {
 		return classes
 	}
 	out := slices.Clone(classes)
@@ -1304,6 +1307,19 @@ func warmed(classes []decide.Class, sc Scenario, jobs []Job, arr *arrivals, meas
 			c.NextCPUs, c.NextMem = math.Max(c.NextCPUs, e.CPUs), max(c.NextMem, e.MemBytes)
 		}
 		c.Warm = decide.WarmCount(ts, sc.Warm)
+		if n := sc.WarmMin[c.Name]; n > 0 {
+			c.Warm, c.WarmMin = max(c.Warm, n), n
+			if c.NextMem == 0 {
+				// Nothing came lately: the largest of the class's jobs, as
+				// the controller takes it from the last it was given.
+				for _, k := range Kinds {
+					if k.Class == c.Name {
+						e := estimate(measured, k.Name)
+						c.NextCPUs, c.NextMem = math.Max(c.NextCPUs, e.CPUs), max(c.NextMem, e.MemBytes)
+					}
+				}
+			}
+		}
 	}
 	return out
 }

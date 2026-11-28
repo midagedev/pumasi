@@ -11,6 +11,7 @@ classes:
 # - {name: cache, mounts: [/srv/ci-cache]}                                # a host path, only on hosts that have it
 # - {name: build, driver: native, hosts: [server1]}                       # a process of the host's user, on that host only
 # - {name: deploy, reserve: 1}                                            # room other classes may not take
+# - {name: release, warmMin: 1}                                           # one runner always up for it, whatever came lately
 # - {name: shared, driver: native, labels: [self-hosted, Linux, X64, ci-pool]}  # takes over fixed runners' jobs
 # - {name: some, labels: [self-hosted, ci-pool], overflow: true}          # takes only what fits now; the rest goes to the fixed runners
 # - {name: macos, os: macos}                                              # os: macos | windows, on hosts of that OS

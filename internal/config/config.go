@@ -155,6 +155,11 @@ type Class struct {
 	// Reserve keeps room for this many runners of the class: other classes may
 	// not take it (deploy jobs that must not queue behind builds).
 	Reserve int `yaml:"reserve"`
+	// WarmMin: the class keeps at least this many runners up without a job
+	// whatever its jobs did lately, where there is room nobody waits for
+	// (a deploy class whose one job a day should not wait for a runner to
+	// come up). Not for an overflow class. Default 0.
+	WarmMin int `yaml:"warmMin"`
 	// Driver: docker (a container per runner) or native (a process of the
 	// host's user, which sees the host's paths, credentials and docker).
 	// Default: docker on linux, native on macos and windows.
@@ -541,6 +546,10 @@ func (c *Config) validate() error {
 		switch {
 		case cl.Reserve < 0:
 			return fmt.Errorf("class %s: reserve must not be negative", cl.Name)
+		case cl.WarmMin < 0 || cl.WarmMin > 32:
+			return fmt.Errorf("class %s: warmMin must be 0 to 32", cl.Name)
+		case cl.WarmMin > 0 && cl.Overflow:
+			return fmt.Errorf("class %s: warmMin is not for an overflow class: it takes only the jobs it has room for", cl.Name)
 		case cl.Driver != "docker" && cl.Driver != "native":
 			return fmt.Errorf("class %s: driver must be docker or native", cl.Name)
 		case cl.Docker != "" && cl.Docker != "inside":
