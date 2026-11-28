@@ -504,8 +504,9 @@ function priorityPanel(actions) {
   // same room, waits for that one (not one whose runner is coming up)
   const front = {};
   const whyRow = (r) => {
-    const f = front[r.class] || (front[r.class] = r);
-    if (f !== r && r.waitingFor === f.waitingFor && parseReason(r.waitingFor)) return `behind ${f.name || "an older job"}, the next ${r.class} job`;
+    const lack = parseReason(r.waitingFor);
+    const f = front[r.class] || (lack ? (front[r.class] = r) : null);
+    if (f && f !== r && lack && r.waitingFor === f.waitingFor) return `behind ${f.name || "an older job"}, the next ${r.class} job`;
     return r.waitingFor ? plainReason(r.waitingFor) : "";
   };
   const rules = (p && p.rules) || [];
