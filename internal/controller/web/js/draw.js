@@ -1158,7 +1158,8 @@ export class Scene {
     const M = tg.L.mem;
     if (!off && M && !tg.L.why) {
       ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
-      const keys = (long) => [["held", `held ${short((M.held + M.kept) / GiB)}`], ...(M.give > 0 ? [["give", `${long ? "gives way" : "ready"} ${short(M.give / GiB)}`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
+      const mine = M.held + M.kept;
+      const keys = (long) => [...(mine > 0 || !(M.give > 0) ? [["held", `held ${short(mine / GiB)}${long ? " GB" : ""}`]] : []), ...(M.give > 0 ? [["give", `${long ? "gives way" : "ready"} ${short(M.give / GiB)}${long ? " GB" : ""}`]] : []), ["used", `used ${short(M.used / GiB)} GB`]];
       const wide = (ks) => ks.reduce((a, k) => a + 19 + ctx.measureText(k[1]).width, -8);
       const room = W - 2 * pad;
       const one = [keys(true), keys(false)].find((ks) => wide(ks) <= room);

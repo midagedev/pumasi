@@ -106,7 +106,7 @@ export function renderChrome(onSelect) {
   const down = s.hosts.filter((h) => h.reachable === false).length;
   $("counts").replaceChildren(
     el("span", { class: "chip" + (down ? " bad" : "") }, el("b", { text: s.hosts.length }), " hosts" + (down ? ` · ${down} offline` : "")),
-    el("span", { class: "chip" }, el("b", { text: s.runners.length }), " running"),
+    el("span", { class: "chip" }, el("b", { text: s.runners.filter((r) => r.job).length }), " running" + (s.runners.some(isReady) ? ` · ${s.runners.filter(isReady).length} ready` : "")),
     el("span", { class: "chip" + (waiting ? " warn" : "") }, el("b", { text: waiting }), " waiting" + (starting ? ` · ${starting} starting` : "")),
     el("span", { class: "chip opt" + (problems ? " bad" : "") }, el("b", { text: problems }), problems === 1 ? " problem" : " problems"));
   document.querySelector("#scene").setAttribute("aria-label", `The plant: ${s.hosts.length} hosts as halls, ${s.runners.length} runners as machines, ${waiting} waiting jobs as crates on their belts, ${problems} open problems. The List view has the same as tables.`);
@@ -148,7 +148,7 @@ export function renderChrome(onSelect) {
       el("span", { class: "jn" }, lw ? el("span", { class: "lvl " + (lw === "expedited" ? "expedite" : lw), text: lw }) : null, " ", j.job || "(name not known yet)"),
       el("span", { class: "age", text: ago(j.waitedSeconds) }),
       el("span", { class: "why", text: whyText(j) }),
-      j.expect ? el("span", { class: "eta", text: expectText(j.expect) }) : null),
+      j.expect ? el("span", { class: "eta", text: expectText(j.expect, store.state.runners) }) : null),
       j.expedited ? null : el("button", { type: "button", class: "runnext", "data-action": "run-next", title: "Expedite: put this job first and keep room for it", "aria-label": "run " + (j.job || "this job") + " next",
         onclick: () => onSelect({ kind: "job", id: jobKey(j), expedite: true }) }, "Run next"));
   }), ...(held.length > show.length ? [el("li", { class: "more" }, el("button", { type: "button", onclick: () => onSelect({ kind: "priority" }) }, `+${held.length - show.length} more: open Priority`))] : []),
@@ -345,7 +345,7 @@ function build(sel, actions) {
         el("div", { class: "kind", text: "waiting job · a crate on the map" }), el("h3", { text: j.job || "(name not known yet)" }),
         el("div", {}, el("span", { class: "lvl " + level, text: level === "expedite" ? "expedited" : level }), " ", el("span", { class: "note", text: `${ordinal(pos)} in line · waiting ${ago(j.waitedSeconds)}` })),
         el("div", { class: "why-big", text: row && row._go ? "A runner is starting for it." : "Why it waits: " + plainReason((line && line.waitingFor) || j.reason) }),
-        j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect) }) : null,
+        j.expect && !(row && row._go) ? el("div", { class: "eta-big", text: "Expected: " + expectText(j.expect, store.state.runners) }) : null,
         section("Run it sooner", expediteBox(j, actions)),
         facts([["class", j.class], ["repo", j.repo], ["workflow", j.workflow], ["run", run ? el("a", { href: run, target: "_blank", rel: "noopener", text: String(j.runId) }) : String(j.runId || "-")],
           ["its place", j.ranked || (line && line.why) || "by its age"], ["placement says", (line && line.waitingFor) || j.reason || "-"]]),
@@ -560,7 +560,7 @@ export function renderList(actions) {
   const jobs = waitRows(s);
   fill("l-jobs", jobs.map((j) => el("tr", { "data-job-id": j.githubJobId || null, "data-run-id": j.runId, "data-class": j.class },
     td(j.position || "-", "num"), td(j.job), td(j.class), el("td", {}, j.expedited || (j.level && j.level !== "normal") ? el("span", { class: "lvl " + (j.expedited ? "expedite" : j.level), text: j.expedited ? "expedite" : j.level }) : null),
-    td(ago(j.waitedSeconds), "num"), el("td", { class: "wrap" }, whyText(j), j.expect && !j._go ? el("div", { class: "eta", text: expectText(j.expect) }) : null), td(j.workflow, "opt muted"))), "l-jobs-empty");
+    td(ago(j.waitedSeconds), "num"), el("td", { class: "wrap" }, whyText(j), j.expect && !j._go ? el("div", { class: "eta", text: expectText(j.expect, store.state.runners) }) : null), td(j.workflow, "opt muted"))), "l-jobs-empty");
   const mbar = (parts) => el("span", { class: "mbar" }, parts.map(([v, c, tot]) => el("i", { style: `width:${tot ? (100 * v) / tot : 0}%;background:${c}` })));
   fill("l-hosts", s.hosts.map((h) => {
     const L = hostLoad(h, s.runners), M = L.mem, C = L.cpu;
@@ -743,7 +743,7 @@ function ciBody(m, max) {
     el("h4", { text: "Changes" }), m.items.length ? el("ul", { class: "ci-list" }, m.items.slice(0, max).map(ciItem)) : el("div", { class: "note", text: "no job changed in the last two weeks" }),
     m.items.length > max ? el("div", { class: "note", text: `+${m.items.length - max} more: pumasi trend` }) : null,
     el("h4", { text: "Limits" }), m.alarms.length ? el("ul", { class: "ci-list" }, m.alarms.map((a) => el("li", { "data-kind": a.kind }, el("div", { class: "ci-l1" }, el("span", { class: "ci-tag slower", text: kindWord(a.kind).replace(/^ci /, "") }), el("span", { text: a.detail })))))
-      : el("div", { class: "note", text: "no limit crossed (job time, memory, wait, deadline, cpu-hours: watch: in pumasi.yaml)" }),
+      : el("div", { class: "note", text: "no limit crossed (job time, memory, wait, deadline and cpu-hours, set under watch: in pumasi.yaml)" }),
   ];
 }
 export function renderCI() {
