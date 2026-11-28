@@ -261,7 +261,9 @@ export function expectText(e, runners = [], self = "") {
 }
 const plainNote = (n) => (/^(down|unreach)/.test(n) ? "offline" : n);
 
-export const levelWord = (j) => (j.expedited || j.level === "expedite" ? "expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");
+// One job is expedited; the older jobs of its class go first with it (GitHub gives a
+// class its oldest job first) and say so, not that they were expedited.
+export const levelWord = (j) => (j.expedited ? "expedited" : j.level === "expedite" ? "with expedited" : j.level === "high" ? "high" : j.level === "low" ? "low" : "");
 
 // Problem kinds as headings.
 export const kindWord = (k) => ({ "host-unreachable": "host offline", "job-waiting": "waiting too long", "out-of-memory": "out of memory", "runner-died": "runner died", "disk-low": "disk almost full", "agent-restarted": "agent restarted" })[k] || String(k || "").replace(/-/g, " ");
