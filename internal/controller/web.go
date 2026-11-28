@@ -120,7 +120,7 @@ func (s ctlSource) priority() *PriorityView {
 	return &v
 }
 func (s ctlSource) apis() []string {
-	return []string{"state", "jobs", "job", "series", "explain", "metrics", "priority", "trend", "why-slow"}
+	return []string{"state", "jobs", "job", "series", "explain", "metrics", "priority", "trend", "why-slow", "forecast"}
 }
 func (s ctlSource) runs(from time.Time) ([]ledger.JobRun, error) {
 	return s.c.ledger.FinishedRuns(from, time.Time{})

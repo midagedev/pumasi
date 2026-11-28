@@ -47,14 +47,15 @@ func BuildTrend(runs []ledger.JobRun, q TrendQuery, o Options) TrendReport {
 			picked = append(picked, r)
 		}
 	}
-	for _, c := range Find(picked, o) {
+	all := Find(picked, o)
+	for _, c := range all {
 		if !c.First.At.Before(q.From) {
 			rep.Changes = append(rep.Changes, c)
 		}
 	}
 	// The newest first: what a reader wants to know about is what just happened.
 	slices.Reverse(rep.Changes)
-	rep.Creeping = creeping(picked, q, rep.Changes)
+	rep.Creeping = creeping(picked, q, all)
 	// Each series' change: what the lists above say of it, so one screen
 	// does not say two things.
 	for i := range rep.Series {
@@ -102,15 +103,21 @@ const (
 	CreepMin  = 0.12
 )
 
-// creeping: jobs with no time step listed whose daily median time (runs
+// creeping: jobs with no time step in the span whose daily median time (runs
 // that succeeded on a host not saturated by others, each on its host's
 // scale) grew CreepMin or more over the span (at least CreepSpan), its 95%
 // interval above zero. The runs should reach that far back.
-func creeping(runs []ledger.JobRun, q TrendQuery, listed []Change) []Creep {
+func creeping(runs []ledger.JobRun, q TrendQuery, found []Change) []Creep {
 	type key struct{ repo, wf, job string }
+	// Creep is slow: it is looked for over at least CreepSpan.
+	from := q.From
+	if q.To.Sub(from) < CreepSpan {
+		from = q.To.Add(-CreepSpan)
+	}
+	// A job whose time stepped in that span (listed or not) is not creeping.
 	has := map[key]bool{}
-	for _, c := range listed {
-		if c.Metric == "time" {
+	for _, c := range found {
+		if c.Metric == "time" && !c.First.At.Before(from) {
 			has[key{c.Repo, c.Workflow, c.Job}] = true
 		}
 	}
@@ -125,11 +132,6 @@ func creeping(runs []ledger.JobRun, q TrendQuery, listed []Change) []Creep {
 			order = append(order, k)
 		}
 		by[k] = append(by[k], r)
-	}
-	// Creep is slow: it is looked for over at least CreepSpan.
-	from := q.From
-	if q.To.Sub(from) < CreepSpan {
-		from = q.To.Add(-CreepSpan)
 	}
 	out := []Creep{}
 	for _, k := range order {

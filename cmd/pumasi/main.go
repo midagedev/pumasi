@@ -38,6 +38,8 @@ const usage = `pumasi places self-hosted GitHub Actions runners across your mach
                  the commit, the pull request and the step that grew (--json; --demo)
   pumasi why-slow <run URL | pull request URL | --pr N | commit>
                  did it make CI slower, and where: each job and step against main's usual
+  pumasi forecast  how fast CI grows, and when its busiest hours fill the cores
+                 and the wait for room doubles at that rate (--cores N; --json; --demo)
   pumasi priority  the mode, expedited jobs, rules and where they put the jobs waiting now
   pumasi priority add workflow='deploy-*.yml' --level high [--for 2h]
   pumasi priority rm r-1
@@ -89,6 +91,8 @@ func main() {
 		err = runTrend(args)
 	case "why-slow":
 		err = runWhySlow(args)
+	case "forecast":
+		err = runForecast(args)
 	case "expedite":
 		err = runExpedite(args)
 	case "mode":

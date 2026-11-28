@@ -109,6 +109,10 @@ type Config struct {
 	ContendedRate float64
 	// Growth: the merge rate grows by this share each week (a team that grows).
 	Growth float64
+	// Cores: when set, the hosts hold this many cores together and a job
+	// waits (first come, first served) until its cores are free; otherwise
+	// every job finds room.
+	Cores float64
 }
 
 // Planned is a change to inject after a moment.
@@ -249,6 +253,9 @@ func Generate(cfg Config) History {
 			s = merges[n-1].sha
 		}
 		g.run(at, "schedule", "main", s, 0, n, -1, true)
+	}
+	if cfg.Cores > 0 {
+		queue(g.runs, cfg)
 	}
 	var runs []ledger.JobRun
 	for _, r := range g.runs {
@@ -392,6 +399,9 @@ func sha(seed uint64, kind string, i int) string {
 	return hex.EncodeToString(s[:])
 }
 
+// DemoCores are the cores the demo's history ran on, for its forecast.
+const DemoCores = 24
+
 // Demo is the history `--demo` shows: six weeks of a repository, the last
 // of them the week of end, whose team grows a little each week, with a
 // typecheck made faster, an e2e job creeping up, a test step that got slower
@@ -434,4 +444,62 @@ func Demo(end time.Time) History {
 		h.Injected[i].At = mv(h.Injected[i].At)
 	}
 	return h
+}
+
+// queue makes each job wait until its job's cores are free among cfg.Cores,
+// first come first served, and moves its times by the wait.
+func queue(runs []ledger.JobRun, cfg Config) {
+	cores := map[string]float64{}
+	for _, j := range cfg.Jobs {
+		cores[j.Name] = j.Cores
+	}
+	slices.SortStableFunc(runs, func(a, b ledger.JobRun) int { return a.StartedAt.Compare(b.StartedAt) })
+	type busy struct {
+		until time.Time
+		cores float64
+	}
+	var running []busy
+	free := cfg.Cores
+	var last time.Time
+	for i := range runs {
+		r := &runs[i]
+		need := math.Min(cores[r.Job], cfg.Cores)
+		at := r.StartedAt // ready: queued and its runner up
+		if at.Before(last) {
+			at = last
+		}
+		for {
+			// Free what ended by then.
+			kept := running[:0]
+			for _, b := range running {
+				if !b.until.After(at) {
+					free += b.cores
+				} else {
+					kept = append(kept, b)
+				}
+			}
+			running = kept
+			if free >= need-1e-9 {
+				break
+			}
+			next := running[0].until
+			for _, b := range running {
+				if b.until.Before(next) {
+					next = b.until
+				}
+			}
+			at = next
+		}
+		d := at.Sub(r.StartedAt)
+		r.StartedAt = r.StartedAt.Add(d)
+		r.FinishedAt = r.FinishedAt.Add(d)
+		for k := range r.Steps {
+			r.Steps[k].StartedAt = r.Steps[k].StartedAt.Add(d)
+			r.Steps[k].CompletedAt = r.Steps[k].CompletedAt.Add(d)
+		}
+		r.WaitSec = r.StartedAt.Sub(r.QueuedAt).Seconds()
+		free -= need
+		running = append(running, busy{r.FinishedAt, need})
+		last = at
+	}
 }

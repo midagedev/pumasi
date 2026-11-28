@@ -156,3 +156,23 @@ func TestDemoWhySlow(t *testing.T) {
 		}
 	}
 }
+
+// The demo's forecast reads its growing history against its hosts' cores.
+func TestDemoForecast(t *testing.T) {
+	d := NewDemo(1)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	var rep watch.ForecastReport
+	if code := getJSON(t, srv.URL+"/api/forecast", &rep); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	if rep.Cores != synth.DemoCores || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
+		t.Fatalf("%+v", rep)
+	}
+	if code := getJSON(t, srv.URL+"/api/forecast?weeks=2", &rep); code != http.StatusBadRequest {
+		t.Fatalf("weeks=2: %d", code)
+	}
+	if getJSON(t, srv.URL+"/api/forecast?cores=1000", &rep); rep.CoresFrom != "asked" || rep.Load > 0.05 {
+		t.Fatalf("cores=1000: %+v", rep)
+	}
+}

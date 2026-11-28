@@ -51,3 +51,20 @@ func TestWhySlowHolds(t *testing.T) {
 		}
 	}
 }
+
+// The forecast's replay of the last week sees about the share of jobs that
+// wait that a queue of the same history does (`watcheval -forecast 0.08`
+// for the dates).
+func TestForecastReplayHolds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluation")
+	}
+	for _, c := range EvalForecast(ForecastEval{Histories: 8}) {
+		if d := c.WaitOdds - c.WaitShare; d < -0.15 || d > 0.15 {
+			t.Errorf("waiting: the replay %.2f, the queue %.2f", c.WaitOdds, c.WaitShare)
+		}
+		if c.GrowthSeen < 0 || c.GrowthSeen > 0.2 {
+			t.Errorf("growth %+.3f read from a team growing 8%% a week", c.GrowthSeen)
+		}
+	}
+}
