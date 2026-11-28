@@ -80,7 +80,7 @@ Ctrl-C stops only the controller. Running jobs finish on their hosts, and the ne
 
 ## What it does
 
-**Placement by measured size.** A job is identified by its repo, workflow file and job name. Its next run is placed with the largest of its last 10 runs plus 20% (memory without page cache). A job never seen before starts at the class's first estimate (2 CPUs / 4 GB unless you set one), or at the size of other jobs in the same workflow. A host's room is measured live: what its runners hold, what other processes use, and a memory reserve. A host under memory pressure gets no new runners. An estimate is not a limit. A job that outgrows it keeps running and is placed bigger next time.
+**Placement by measured size.** A job is identified by its repo, workflow file and job name. Its next run is placed with the largest of its last 10 runs plus 20% (memory without page cache). A job never seen before starts at the class's first estimate (2 CPUs / 4 GB unless you set one), or at the size of other jobs in the same workflow. A host's room is measured live: what its runners hold, what other processes use, and a memory reserve. A host under pressure (Linux PSI: cpu, memory or disk io over its line, 40%, 10% and 50% by default) gets no new runners. An estimate is not a limit. A job that outgrows it keeps running and is placed bigger next time.
 
 <table>
 <tr>

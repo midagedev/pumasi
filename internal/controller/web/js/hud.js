@@ -17,6 +17,15 @@ const offJobs = (h, rs, L) => {
   const n = rs.filter((r) => r.host === h.name && r.job).length;
   return `${n} ${n === 1 ? "job" : "jobs"} still running` + (L.ready ? ` · ${L.ready} ready` : "");
 };
+// pressures: a host's PSI (cpu, memory, disk io), each with the line at which
+// it gets no new runners (limits: psiCpu, psiMemory, psiIo; 0 = no line).
+const pressures = (h, lim = {}) => [["cpu", h.cpuPressure, lim.psiCpu], ["mem", h.memPressure, lim.psiMemory], ["io", h.ioPressure, lim.psiIo]]
+  .filter(([, v]) => v !== null && v !== undefined).map(([k, v, at]) => ({ k, v, at: at || 0 }));
+// nearest: the pressure nearest its line, for one cell ("io 21% / 50%").
+const nearest = (ps) => {
+  const p = ps.filter((x) => x.at).sort((a, b) => b.v / b.at - a.v / a.at)[0] || ps[0];
+  return p ? `${p.k} ${p.v.toFixed(0)}%` + (p.at ? ` / ${p.at}%` : "") : "-";
+};
 const runCount = (rs) => [`${rs.filter((r) => r.job).length} running`, ...(rs.some(isReady) ? [`${rs.filter(isReady).length} ready`] : [])].join(" · ");
 export const store = { state: null, jobs: [], findings: [], explainText: "", prio: null, prioMissing: false, series: null, base: "" };
 
@@ -299,7 +308,7 @@ function build(sel, actions) {
         section(`Runners here (${runCount(runners)})`, runnerRows(runners, actions)),
         facts([["kind", h.kind], ["os", h.os || "-"], ["agent", h.agent || "-"], ["last heard", h.seenSeconds === null || h.seenSeconds === undefined ? "-" : ago(h.seenSeconds) + " ago · " + Math.round(h.rttMs) + "ms"], ["last dropped", h.lastDrop || "-"],
           ["shares", h.budgetCpus || h.budgetMem ? `at most ${h.budgetCpus ? cpus(h.budgetCpus) : "any CPU"} and ${h.budgetMem ? gb(h.budgetMem) : "any memory"}` : "whatever it has free"],
-          ["pressure", ["cpu", "mem", "io"].map((k) => { const v = h[{ cpu: "cpuPressure", mem: "memPressure", io: "ioPressure" }[k]]; return v === null || v === undefined ? null : `${k} ${v.toFixed(1)}%`; }).filter(Boolean).join(" · ") || "-"],
+          ["pressure / no new runners at", pressures(h, s.limits).map((p) => `${p.k} ${p.v.toFixed(1)}%` + (p.at ? ` / ${p.at}%` : "")).join(" · ") || "-"],
           ["disk free", h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%" + (h.diskPath ? " on " + h.diskPath : "")]]),
         section("What to do", ...mine((f) => f.host === h.name), copyable("pumasi status", "on the controller", "HELD, FREE and STATE per host"), copyable("pumasi doctor", "on " + h.name, "checks the way to the controller, what runners need there, and the agent")));
     }
@@ -596,7 +605,7 @@ export function renderList(actions) {
       el("td", {}, M ? [seg(M), `${short((M.held + M.kept) / GiB)} held · ${short(M.used / GiB)} used` + (M.give ? ` · ${short(M.give / GiB)} gives way` : "") + ` · of ${gb(M.lend)}` + (h.budgetMem && h.budgetMem < h.memBytes ? ` lent (${gb(h.memBytes)} RAM)` : "")] : "-"),
       el("td", {}, C ? [seg(C), `${short(C.held + C.kept)} held · ${short(C.used)} used` + (C.give ? ` · ${short(C.give)} gives way` : "") + ` · of ${short(C.lend)}` + (L.share > 1 ? ` (${h.cpus}×${L.share})` : h.budgetCpus && h.budgetCpus < h.cpus ? ` lent (${h.cpus} cores)` : "")] : "-"),
       td(h.runners + (L.ready ? ` (${L.ready} ready)` : ""), "num"), td(h.kind + " · " + (h.os || "-"), "opt muted"),
-      td(h.cpuPressure === null || h.cpuPressure === undefined ? "-" : h.cpuPressure.toFixed(1) + "%", "num opt"), td(h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
+      td(nearest(pressures(h, s.limits)), "num opt"), td(h.diskFreePct === null || h.diskFreePct === undefined ? "-" : h.diskFreePct.toFixed(0) + "%", "num opt"),
       td(h.seenSeconds === null || h.seenSeconds === undefined ? "-" : dur(h.seenSeconds) + " ago", "num opt"), td(h.lastDrop || "-", "opt muted"));
   }));
   fill("l-runners", s.runners.map((r) => el("tr", { "data-runner": r.name, "data-class": r.class, "data-host": r.host }, td(r.name), td(r.class), td(r.host), td(aheadOf(r) ? "ahead" + (r.state === "starting" ? " · starting" : "") : isReady(r) ? "ready" + (r.givesWay ? " · gives way" : "") : r.state, isReady(r) || aheadOf(r) ? "ready" : "muted"), td(r.job || (aheadOf(r) ? "for " + aheadOf(r).job : "-")),
