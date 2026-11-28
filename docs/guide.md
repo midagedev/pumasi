@@ -344,7 +344,7 @@ To look without a controller, `pumasi open --demo` — runs a made-up shop (4 ho
 
 ![The dashboard in motion: crates move along the lines, and the view goes inside a host building](img/demo.gif)
 
-The full video (44 seconds: a host dropping off, the line, expediting a job, high-only, Explain): [img/demo.mp4](img/demo.mp4)
+The full video (53 seconds, in close-ups: how full each host is, why each job waits, a host dropping off, expediting a job, high-only, Explain): [img/demo.mp4](img/demo.mp4)
 
 **Reading the picture.** The picture is not decoration; it is the values of `/api/state`.
 

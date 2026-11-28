@@ -273,7 +273,7 @@ Pushes every 35–55 seconds, mean of 10 seeds. Wait median / p90 / max, and the
 - The `listen` port accepts only joining, binary downloads and sessions. The dashboard and status listen on loopback only.
 - **Keeping credentials apart from jobs**: the GitHub token and `join.key` are only on the controller machine, and hosts get only one runner's JIT config. This separation breaks the moment a job can run as the controller's user:
   when the host is the controller's own machine and the runner is a process of that user (or a process of a user who can use docker, a privileged container, or a container that mounts the state directory).
-  The agent puts a hash of the boot id and the user id in its snapshot, and when they match the controller's own, the controller warns with the class and the reason. Why it does not block, and the key that turns the warning off: the README's "Security model".
+  The agent puts a hash of the boot id and the user id in its snapshot, and when they match the controller's own, the controller warns with the class and the reason. Why it does not block, and the key that turns the warning off: the guide's [Security model](guide.md#security-model).
 
 ### What differs by OS
 

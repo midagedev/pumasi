@@ -132,7 +132,7 @@ What pumasi can't do, because GitHub or the platform gives it no handle:
 
 Early, pre-1.0. It has run real GitHub jobs on a Linux server (Docker), a WSL2 desktop, an Apple silicon Mac and a Windows 11 desktop. [docs/verified.md](docs/verified.md) lists every behavior of the design and how far each was checked: on real hosts, by unit tests only, or not yet run. Not yet run, among others: Windows size measurement, real host reboots, and a GitHub App end to end (the App path is unit-tested).
 
-The detailed docs are in Korean for now: [guide](docs/guide.md) (every config key and command), [design](docs/design.md), [verified](docs/verified.md), [research](docs/research/). Watching CI is in English: [watch](docs/watch.md). The CLI, the dashboard and their output are in English.
+More: [guide](docs/guide.md) (every config key and command), [design](docs/design.md), [verified](docs/verified.md) (what was checked on real hosts and what was not), [watch](docs/watch.md) (watching CI), [research](docs/research/).
 
 ## License
 
