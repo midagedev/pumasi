@@ -105,6 +105,9 @@ type Config struct {
 	Inject []Planned
 	// Natural: the slow growth of a suite (default on).
 	NoNatural bool
+	// NaturalShare scales how many merges carry natural growth (0 = 1): a
+	// team of more, smaller merges grows its suite no faster.
+	NaturalShare float64
 	// ContendedRate: share of runs on a host saturated by others (default 6%).
 	ContendedRate float64
 	// Growth: the merge rate grows by this share each week (a team that grows).
@@ -203,8 +206,12 @@ func Generate(cfg Config) History {
 		}
 	}
 	if !cfg.NoNatural {
+		ns := cfg.NaturalShare
+		if ns == 0 {
+			ns = 1
+		}
 		for i := range merges {
-			switch r := rng.Float64(); {
+			switch r := rng.Float64() / ns; {
 			case r < 0.25:
 				merges[i].changes = append(merges[i].changes, Change{Job: jobNames[rng.IntN(len(jobNames))], Metric: "duration", Factor: 1 + 0.002 + 0.008*rng.Float64()})
 			case r < 0.30:
@@ -424,16 +431,34 @@ func sha(seed uint64, kind string, i int) string {
 	return hex.EncodeToString(s[:])
 }
 
+// DemoFleetCores are the cores the demo dashboard's hosts lend (each its
+// budget, else its cores: controller.DemoCores, which a test holds equal).
+// The demo's history queues on them, so its CI and its map are one shop.
+const DemoFleetCores = 66
+
+// demoMerges: a weekday's merges at the demo's start, so that its last
+// week's busiest hours keep about half of DemoFleetCores busy. Its suite
+// grows, and its e2e job creeps, by the days of a team of 7 merges a day.
+const demoMerges = 36
+
+// DemoEnd is where the demo's history ends for a moment: the start of its
+// day, so the same seed tells the same numbers all day.
+func DemoEnd(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
 // Demo is the history `--demo` shows: six weeks of a repository, the last
 // of them the week of end, whose team grows a little each week, with a
 // typecheck made faster, an e2e job creeping up, a test step that got slower
 // and a build that takes more memory. It is the same history every time,
-// moved by whole weeks so its weekdays stay; runs after end are dropped.
+// moved by whole weeks so its weekdays stay; runs after the start of
+// end's day (DemoEnd) are dropped.
 func Demo(end time.Time) History {
+	end = DemoEnd(end)
 	base := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC) // a Monday
 	day := func(d float64) time.Duration { return time.Duration(d*24*float64(time.Hour)) + 10*time.Hour }
-	h := Generate(Config{Seed: 42, Start: base, Days: 42, Merges: 7, Growth: 0.06, Inject: []Planned{
-		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 150}, After: day(9), Label: "e2e creeping up"},
+	h := Generate(Config{Seed: 42, Start: base, Days: 42, Merges: demoMerges, NaturalShare: 7.0 / demoMerges, Growth: 0.06, Cores: DemoFleetCores, Inject: []Planned{
+		{Change: Change{Job: "e2e (chromium)", Metric: "duration", Factor: 1.25, Creep: 150 * demoMerges / 7}, After: day(9), Label: "e2e creeping up"},
 		{Change: Change{Job: "unit-tests", Metric: "duration", Step: "Run tests", Factor: 1.7}, After: day(28), Label: "a slower test step"},
 		{Change: Change{Job: "typecheck", Metric: "duration", Factor: 0.75}, After: day(29), Label: "typecheck made faster"},
 		{Change: Change{Job: "build", Metric: "mem", Factor: 1.35}, After: day(31), Label: "build takes more memory"},

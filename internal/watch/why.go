@@ -214,8 +214,20 @@ func Trunk(runs []ledger.JobRun) string {
 }
 
 // WhySlow sets the target's runs against the baseline. runs should reach
-// two weeks and more before the target.
+// two weeks and more before the target. Now is when the newest run finished.
 func WhySlow(runs []ledger.JobRun, t Target) (WhyReport, error) {
+	var newest time.Time
+	for _, r := range runs {
+		if r.FinishedAt.After(newest) {
+			newest = r.FinishedAt
+		}
+	}
+	return WhySlowAt(runs, t, newest.Local())
+}
+
+// WhySlowAt is WhySlow at now: main's changes are read as `pumasi trend`
+// reads them at now.
+func WhySlowAt(runs []ledger.JobRun, t Target, now time.Time) (WhyReport, error) {
 	rep := WhyReport{Target: t, Changes: []Change{}, Own: []Change{}, OwnSure: []bool{}, Note: "each job against the median (p50) and spread (p10-p90) " +
 		"of its last runs on the baseline branch before the target that succeeded on a host not saturated by others, as on the target's host; " +
 		"slower = 10% or more over p50 and z >= 3 (robust spread of the baseline) over two runs or more; maybe = z >= 2, or one run"}
@@ -275,13 +287,7 @@ func WhySlow(runs []ledger.JobRun, t Target) (WhyReport, error) {
 	// Read as `pumasi trend` reads them (its default span and the Baseline
 	// before it), so a change says the same numbers in both; reaching back a
 	// Baseline before the target when it is older than that.
-	var newest time.Time
-	for _, r := range runs {
-		if r.FinishedAt.After(newest) {
-			newest = r.FinishedAt
-		}
-	}
-	cut := TrendFrom(newest.Local(), TrendSpan).Add(-Baseline)
+	cut := TrendFrom(now, TrendSpan).Add(-Baseline)
 	if t := codeTime(mine[0]).Add(-Baseline); t.Before(cut) {
 		cut = t
 	}

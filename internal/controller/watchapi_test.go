@@ -166,9 +166,10 @@ func TestDemoForecast(t *testing.T) {
 	if code := getJSON(t, srv.URL+"/api/forecast", &rep); code != 200 {
 		t.Fatalf("status %d", code)
 	}
-	// Each host's budget, else its cores: 32 + 8 + 10 + 16.
-	if DemoCores() != 66 {
-		t.Fatalf("demo cores %.0f", DemoCores())
+	// Each host's budget, else its cores: 32 + 8 + 10 + 16, the cores the
+	// demo's history queued on.
+	if DemoCores() != 66 || DemoCores() != synth.DemoFleetCores {
+		t.Fatalf("demo cores %.0f, the history's %d", DemoCores(), synth.DemoFleetCores)
 	}
 	if rep.Cores != DemoCores() || rep.Fitted < 3 || rep.Growth <= 0 || rep.Load <= 0 || rep.FullIn <= 0 || rep.Words == "" {
 		t.Fatalf("%+v", rep)

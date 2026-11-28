@@ -28,24 +28,24 @@ pumasi trend --min-side 0          # list a job's change at once, not after a da
 
 ```
 CHANGED (newest first)
-  ci.yml / build: memory +35% (11.1G -> 15.0G), since commit 2ed2250 on main, Thu Nov 19 19:27; still so
-      or 85f834f just before it (not counted: busy host or failed); https://github.com/OWNER/REPO/commit/2ed2250…
-  ci.yml / typecheck: time -24% (1m34s -> 1m11s), cpu -25% (1m30s -> 1m08s), since commit 564563e on main, Tue Nov 17 19:33 (pull request #1162 ran at the new level before it); still so
-      step "Install" 28s -> 21s, step "Typecheck" 53s -> 40s; https://github.com/OWNER/REPO/commit/564563e…
-  ci.yml / unit-tests: time +39% (4m30s -> 6m15s), cpu +37% (8m26s -> 11m33s), since commit 9f3001a on main, Mon Nov 16 19:02 (pull request #1148 ran at the new level before it); still so
-      step "Run tests" 2m28s -> 4m01s; https://github.com/OWNER/REPO/commit/9f3001a…
-  ci.yml / e2e (chromium): slowly growing, time +29% over 28d along its trend (11m33s -> 14m50s, at least +21%), no single commit
+  ci.yml / build: memory +35% (11.0G -> 14.9G), since commit 9c97a3f on main, Thu Nov 19 19:09 (pull request #1993 ran at the new level before it); still so
+      https://github.com/OWNER/REPO/commit/9c97a3f…
+  ci.yml / typecheck: time -27% (1m29s -> 1m05s), cpu -27% (1m27s -> 1m04s), since commit 7bba353 on main, Tue Nov 17 19:19; still so
+      step "Install" 25s -> 20s, step "Typecheck" 47s -> 37s; https://github.com/OWNER/REPO/commit/7bba353…
+  ci.yml / unit-tests: time +39% (4m26s -> 6m10s), cpu +39% (8m48s -> 12m11s), since commit e343094 on main, Mon Nov 16 19:06 (pull request #1882 ran at the new level before it); still so
+      step "Run tests" 2m16s -> 4m37s; https://github.com/OWNER/REPO/commit/e343094…
+  ci.yml / e2e (chromium): slowly growing, time +26% over 28d along its trend (11m47s -> 14m52s, at least +22%), no single commit
 
 JOB                     RUNS  TIME p50  p90     CHANGE  MEM p90  CPU p50  WAIT p90  TIME p50 BY DAY
-ci.yml (workflow)       358   14m53s    20m30s  +10%    15.4G    2h15m    30s       ▇▅▂▁▃▄▆▂▂▃█▅▇▆▅
-  build                 358   5m42s     7m34s   -1%     15.4G    27m11s   28s       █▂▃▂▇▂▁▃▅▃▂▅▂▂▅
-  e2e (chromium)        358   14m18s    19m52s  +29%*   9.8G     43m38s   28s       ▅▃▁▁▃▅▇▃▃▄█▆▆▄▄
-  typecheck             358   1m22s     1m48s   -24%*   2.3G     1m19s    28s       ▇█▇▆▂▂▁▂▂▁▄▁▅▂▆
-  unit-tests            358   5m52s     8m09s   +39%*   3.4G     10m44s   28s       ▂▁▃▆▅▅█▆▄▅▅▅▅▅▆
+ci.yml (workflow)       1843  14m48s    20m14s  +6%     15.3G    2h14m    30s       ▁▃▂▂▃▃▃▆▆▂▅▃▃█
+  build                 1842  5m39s     7m36s   +2%     15.3G    27m15s   28s       ▆▄▂▁▁▄▂█▇▂▅▁▄▄
+  e2e (chromium)        1843  14m02s    19m11s  +26%*   9.8G     42m39s   28s       ▁▄▁▂▂▃▄█▆▃▆▃▃▆
+  typecheck             1842  1m13s     1m43s   -27%*   2.3G     1m09s    28s       █▇▇▆▂▂▁▁▃▁▁▁▁▁
+  unit-tests            1842  5m54s     8m05s   +39%*   3.3G     10m49s   28s       ▁▁▂▄▅▆▅█▅▅▅▅▅▅
   …
 ```
 
-(`pumasi trend --demo`.) Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end. CHANGE is what the list above says of the job (its time steps and creep together, marked `*`); for a job with nothing listed, the median of the span's last third of days against its first.
+(`pumasi trend --demo`. The demo's six weeks queued on its dashboard's 66 cores, and end at the start of today, so the same day shows the same numbers.) Numbers are of runs that succeeded. A workflow's time is a run's, from its first job's start to its last job's end. CHANGE is what the list above says of the job (its time steps and creep together, marked `*`); for a job with nothing listed, the median of the span's last third of days against its first.
 
 The table is fitted to the terminal, or to 100 columns when the output is not one. A long job name is cut in the middle. A matrix job's name first loses the values that every job of its matrix shares, so `build (linux, dev, bucket-1, x) / deploy` reads `build (linux, …, x) / deploy`, and names that would read the same are cut less until they differ. `--json` keeps the full names.
 
@@ -66,8 +66,8 @@ A ledger younger than two days says so once, at the top, instead of listing step
 2. The series is split where its median level moves (binary segmentation on L1 cost), and each split is kept only when the two sides differ by 10% or more and a rank test (Mann–Whitney) gives z ≥ 3.5, with at least 8 runs on each side. A move that goes back within three days is dropped as transient. A level held for less than a day between two steps is not a level: the later step is dropped and the levels are measured again, so a regression that a slow spell hid at first becomes one step from its start.
 3. The commit: the best split among the main branch's own runs near it. Main's runs that were not counted there (contended or failed) are named as possible too ("or 85f834f just before it"). Steps of one job within three days of each other, the same way, are named by the clearest of them, and are one line; two steps of the same number become one change from the level before the first to the level after the last ("memory -60% (2.0G -> 0.8G, in 2 steps)").
 4. The pull request: one whose runs before the change were all at the new level, at least two of them, the last within two days before it. When more than one fits, none is named.
-5. A step that turns out to be part of a slow climb (the drift around it is half the step or more) is shown as crept ("no single commit"), not pinned on whichever commit happened to cross the line.
-6. Like with like: the step is measured again on the runs of the machines the job used both before and after it. If a third or more of a side's runs were on other machines and the shared ones do not show the step, the job *moved* to another kind of machine, and the step is not the job's.
+5. A step that turns out to be part of a slow climb (the drift around it, over a week of runs on each side at least, is half the step or more) is shown as crept ("no single commit"), not pinned on whichever commit happened to cross the line.
+6. Like with like: the step is measured again on the runs of the machines the job used both before and after it (a day of runs on each side at least: in a busy job the runs next to a step are an hour or two, and one host's slow hour is not its step). If a third or more of a side's runs were on other machines and the shared ones do not show the step, the job *moved* to another kind of machine, and the step is not the job's.
 7. A host's step, not a job's: see below. What is left is listed once the runs on each side of it span a day (`--min-side`).
 
 **Steps of the machines, not the code.** A step is set aside as its machine's, not the job's, when:
@@ -181,16 +181,16 @@ pumasi forecast                 # the running up's hosts (each its budget, else 
 pumasi forecast --cores 48      # the ledger, against 48 cores
 pumasi forecast --weeks 12      # read 12 weeks (default 8)
 pumasi forecast --json          # also GET /api/forecast (weeks=, cores=)
-pumasi forecast --demo          # the demo's history, against the demo dashboard's hosts
+pumasi forecast --demo          # the demo's history, which queued on the demo dashboard's 66 cores
 ```
 
 ```
-CI used 434 cpu-hours in the last 7 days (389 the week before); over the last 6 weeks it grew +12% a week (+10% to +21%, 80% interval). At the busiest hours it keeps 7 of the 66 cores busy (11%); at this rate they need every core in ~22 weeks (13 to 26 weeks).
+CI used 2292 cpu-hours in the last 7 days (1880 the week before); over the last 5 weeks it grew +12% a week (+6% to +19%, 80% interval). At the busiest hours it keeps 34 of the 66 cores busy (52%); at this rate they need every core in ~7 weeks (4 to 13 weeks); one job in ten waits a minute or more for room in ~4 weeks (now 1%, 1s on average).
 ```
 
 - **Growth** is the Theil–Sen slope of the weekly cpu-hours (on logs), with its 80% interval. A week the ledger does not reach the start of is shown but not fitted; a ledger whose last job is more than two days old ends the weeks there.
 - **The busiest hours** are the 95th percentile of the hours' cores in use (each job's cpu-seconds spread over its time).
-- **The waits** come from replaying the last week's jobs on the cores, first come first served, each taking the cores it used: a run brings all its jobs at once, which is most of why CI waits. CI growing is the same week with more runs, each a copy of a run of that week at the time another run came (give or take an hour). "Need every core" is when the replay's busiest hours want all the cores; it comes later than the cpu-hours alone say, since more runs fill the quiet hours too. The replay goes up to eight times the runs; past that the hours are smooth and their busiest grow with the runs, so it scales the busiest hours at eight times up to the cores (on the demo, within 3% of replaying on to the cores).
+- **The waits** come from replaying the last week's jobs on the cores, first come first served, each taking the cores it used: a run brings all its jobs at once, which is most of why CI waits. CI growing is the same week with more runs, each a copy of a run of that week at the time another run came (give or take an hour). "Need every core" is when the replay's busiest hours want all the cores; it comes later than the cpu-hours alone say, since more runs fill the quiet hours too. The replay goes up to eight times the runs; past that the hours are smooth and their busiest grow with the runs, so it scales the busiest hours at eight times up to the cores (on a made-up week at 11% of its cores, within 3% of replaying on to the cores).
 - Every date is "at this rate": the growth, carried forward. The ranges are the same dates at the ends of the growth's interval.
 
 What the replay leaves out, so real waits come **sooner** than it says: hosts are not one pool (a job needs room on one host), memory is not counted, and pumasi reserves a job's largest recent size plus 20%, more than the cores it used on average.

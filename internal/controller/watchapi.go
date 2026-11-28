@@ -10,6 +10,7 @@ import (
 
 	"github.com/midagedev/pumasi/internal/config"
 	"github.com/midagedev/pumasi/internal/watch"
+	"github.com/midagedev/pumasi/internal/watch/synth"
 )
 
 // watchRoutes: the trend of every job and where it changed (GET /api/trend),
@@ -42,7 +43,7 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 		} else {
 			cores, from = hostCores(s)
 		}
-		now := s.now()
+		now := watchNow(s)
 		runs, err := s.runs(now.Add(-time.Duration(weeks) * 7 * 24 * time.Hour))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -71,12 +72,12 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 			http.Error(w, fmt.Sprint("why-slow: ", err), http.StatusBadRequest)
 			return
 		}
-		runs, err := s.runs(s.now().Add(-60 * 24 * time.Hour))
+		runs, err := s.runs(watchNow(s).Add(-60 * 24 * time.Hour))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		rep, err := watch.WhySlow(runs, t)
+		rep, err := watch.WhySlowAt(runs, t, watchNow(s))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -95,7 +96,7 @@ func watchRoutes(mux *http.ServeMux, src func(*http.Request) dashSource) {
 			}
 			since = d
 		}
-		now := s.now()
+		now := watchNow(s)
 		from := watch.TrendFrom(now, since)
 		runs, err := s.runs(from.Add(-watch.Baseline))
 		if err != nil {
@@ -127,6 +128,15 @@ func hostCores(s dashSource) (float64, string) {
 		return 0, ""
 	}
 	return total, "the hosts joined now"
+}
+
+// watchNow is the moment the CI watch reads up to: now, or for the demo
+// the start of today, where its history ends (the same numbers all day).
+func watchNow(s dashSource) time.Time {
+	if s.demo() {
+		return synth.DemoEnd(s.now())
+	}
+	return s.now()
 }
 
 // lendCores: what a host lends runners, its budget or else its cores.
